@@ -17,9 +17,10 @@
 package mathx
 
 import (
-	"fmt"
 	"math"
 	"testing"
+
+	"arcoris.dev/bufferpool/internal/testutil"
 )
 
 // ratioTestBytes represents a domain-specific byte counter used only by ratio
@@ -184,7 +185,7 @@ func TestRatioPreservesNamedNumericTypes(t *testing.T) {
 func TestRatioPanicsForZeroDenominator(t *testing.T) {
 	t.Parallel()
 
-	mustPanicWithMessage(t, errRatioZeroDenominator, func() {
+	testutil.MustPanicWithMessage(t, errRatioZeroDenominator, func() {
 		_ = Ratio(10, 0)
 	})
 }
@@ -201,7 +202,7 @@ func TestRatioPanicsForNaNInputs(t *testing.T) {
 	t.Run("NaN numerator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioNaNNumerator, func() {
+		testutil.MustPanicWithMessage(t, errRatioNaNNumerator, func() {
 			_ = Ratio(math.NaN(), 1.0)
 		})
 	})
@@ -209,7 +210,7 @@ func TestRatioPanicsForNaNInputs(t *testing.T) {
 	t.Run("NaN denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioNaNDenominator, func() {
+		testutil.MustPanicWithMessage(t, errRatioNaNDenominator, func() {
 			_ = Ratio(1.0, math.NaN())
 		})
 	})
@@ -225,7 +226,7 @@ func TestRatioPanicsForInfiniteInputs(t *testing.T) {
 	t.Run("positive infinite numerator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioInfiniteNumerator, func() {
+		testutil.MustPanicWithMessage(t, errRatioInfiniteNumerator, func() {
 			_ = Ratio(math.Inf(1), 1.0)
 		})
 	})
@@ -233,7 +234,7 @@ func TestRatioPanicsForInfiniteInputs(t *testing.T) {
 	t.Run("negative infinite numerator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioInfiniteNumerator, func() {
+		testutil.MustPanicWithMessage(t, errRatioInfiniteNumerator, func() {
 			_ = Ratio(math.Inf(-1), 1.0)
 		})
 	})
@@ -241,7 +242,7 @@ func TestRatioPanicsForInfiniteInputs(t *testing.T) {
 	t.Run("positive infinite denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioInfiniteDenominator, func() {
+		testutil.MustPanicWithMessage(t, errRatioInfiniteDenominator, func() {
 			_ = Ratio(1.0, math.Inf(1))
 		})
 	})
@@ -249,7 +250,7 @@ func TestRatioPanicsForInfiniteInputs(t *testing.T) {
 	t.Run("negative infinite denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioInfiniteDenominator, func() {
+		testutil.MustPanicWithMessage(t, errRatioInfiniteDenominator, func() {
 			_ = Ratio(1.0, math.Inf(-1))
 		})
 	})
@@ -263,7 +264,7 @@ func TestRatioPanicsForInfiniteInputs(t *testing.T) {
 func TestRatioPanicsForInfiniteResult(t *testing.T) {
 	t.Parallel()
 
-	mustPanicWithMessage(t, errRatioInfiniteResult, func() {
+	testutil.MustPanicWithMessage(t, errRatioInfiniteResult, func() {
 		_ = Ratio(math.MaxFloat64, math.SmallestNonzeroFloat64)
 	})
 }
@@ -346,7 +347,7 @@ func TestRatioOrZeroStillValidatesWhenDividing(t *testing.T) {
 	t.Run("NaN numerator with non-zero denominator panics", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioNaNNumerator, func() {
+		testutil.MustPanicWithMessage(t, errRatioNaNNumerator, func() {
 			_ = RatioOrZero(math.NaN(), 1.0)
 		})
 	})
@@ -354,7 +355,7 @@ func TestRatioOrZeroStillValidatesWhenDividing(t *testing.T) {
 	t.Run("infinite denominator with non-zero denominator panics", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioInfiniteDenominator, func() {
+		testutil.MustPanicWithMessage(t, errRatioInfiniteDenominator, func() {
 			_ = RatioOrZero(1.0, math.Inf(1))
 		})
 	})
@@ -478,7 +479,7 @@ func TestUnitRatioPanicsForInvalidInvariants(t *testing.T) {
 	t.Run("negative numerator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errUnitRatioNegativeNumerator, func() {
+		testutil.MustPanicWithMessage(t, errUnitRatioNegativeNumerator, func() {
 			_ = UnitRatio(-1, 10)
 		})
 	})
@@ -486,7 +487,7 @@ func TestUnitRatioPanicsForInvalidInvariants(t *testing.T) {
 	t.Run("zero denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errUnitRatioNonPositiveDenominator, func() {
+		testutil.MustPanicWithMessage(t, errUnitRatioNonPositiveDenominator, func() {
 			_ = UnitRatio(0, 0)
 		})
 	})
@@ -494,7 +495,7 @@ func TestUnitRatioPanicsForInvalidInvariants(t *testing.T) {
 	t.Run("negative denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errUnitRatioNonPositiveDenominator, func() {
+		testutil.MustPanicWithMessage(t, errUnitRatioNonPositiveDenominator, func() {
 			_ = UnitRatio(0, -1)
 		})
 	})
@@ -502,7 +503,7 @@ func TestUnitRatioPanicsForInvalidInvariants(t *testing.T) {
 	t.Run("numerator greater than denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errUnitRatioNumeratorExceedsDenominator, func() {
+		testutil.MustPanicWithMessage(t, errUnitRatioNumeratorExceedsDenominator, func() {
 			_ = UnitRatio(11, 10)
 		})
 	})
@@ -520,7 +521,7 @@ func TestUnitRatioPanicsForNaNInputs(t *testing.T) {
 	t.Run("NaN numerator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioNaNNumerator, func() {
+		testutil.MustPanicWithMessage(t, errRatioNaNNumerator, func() {
 			_ = UnitRatio(math.NaN(), 1.0)
 		})
 	})
@@ -528,7 +529,7 @@ func TestUnitRatioPanicsForNaNInputs(t *testing.T) {
 	t.Run("NaN denominator", func(t *testing.T) {
 		t.Parallel()
 
-		mustPanicWithMessage(t, errRatioNaNDenominator, func() {
+		testutil.MustPanicWithMessage(t, errRatioNaNDenominator, func() {
 			_ = UnitRatio(0.5, math.NaN())
 		})
 	})
@@ -601,30 +602,7 @@ func TestUnitRatioOrZero(t *testing.T) {
 func TestUnitRatioOrZeroPanicsForNonZeroNumeratorInEmptyWindow(t *testing.T) {
 	t.Parallel()
 
-	mustPanicWithMessage(t, errUnitRatioNumeratorExceedsDenominator, func() {
+	testutil.MustPanicWithMessage(t, errUnitRatioNumeratorExceedsDenominator, func() {
 		_ = UnitRatioOrZero(1, 0)
 	})
-}
-
-// mustPanicWithMessage verifies that fn panics with the expected message.
-//
-// The helper checks the exact panic payload because ratio helpers are internal
-// invariant guards. A generic "some panic happened" assertion would be too weak:
-// the tests should prove that the failing path is the intended one.
-func mustPanicWithMessage(t *testing.T, want string, fn func()) {
-	t.Helper()
-
-	defer func() {
-		got := recover()
-		if got == nil {
-			t.Fatalf("function did not panic, want panic %q", want)
-		}
-
-		gotMessage := fmt.Sprint(got)
-		if gotMessage != want {
-			t.Fatalf("panic message = %q, want %q", gotMessage, want)
-		}
-	}()
-
-	fn()
 }

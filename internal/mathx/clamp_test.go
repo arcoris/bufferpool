@@ -20,6 +20,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"arcoris.dev/bufferpool/internal/testutil"
 )
 
 // testRetainedBytes represents a domain-specific byte counter.
@@ -433,7 +435,7 @@ func TestClampSupportsDuration(t *testing.T) {
 func TestClampPanicsForInvalidSignedRange(t *testing.T) {
 	t.Parallel()
 
-	mustPanic(t, func() {
+	testutil.MustPanic(t, func() {
 		_ = Clamp(10, 32, 1)
 	})
 }
@@ -446,7 +448,7 @@ func TestClampPanicsForInvalidSignedRange(t *testing.T) {
 func TestClampPanicsForInvalidUnsignedRange(t *testing.T) {
 	t.Parallel()
 
-	mustPanic(t, func() {
+	testutil.MustPanic(t, func() {
 		_ = Clamp(uint64(10), uint64(32), uint64(1))
 	})
 }
@@ -459,7 +461,7 @@ func TestClampPanicsForInvalidUnsignedRange(t *testing.T) {
 func TestClampPanicsForInvalidFloatRange(t *testing.T) {
 	t.Parallel()
 
-	mustPanic(t, func() {
+	testutil.MustPanic(t, func() {
 		_ = Clamp(0.5, 1.0, 0.0)
 	})
 }
@@ -481,21 +483,4 @@ func TestClampDoesNotValidateNaN(t *testing.T) {
 	if !math.IsNaN(got) {
 		t.Fatalf("Clamp returned %f, want NaN", got)
 	}
-}
-
-// mustPanic verifies that fn panics.
-//
-// The helper keeps panic assertions consistent across numeric categories and
-// makes each test case focus on the invalid range being exercised instead of
-// repeating defer/recover boilerplate.
-func mustPanic(t *testing.T, fn func()) {
-	t.Helper()
-
-	defer func() {
-		if recover() == nil {
-			t.Fatal("function did not panic")
-		}
-	}()
-
-	fn()
 }

@@ -16,7 +16,11 @@
 
 package mathx
 
-import "testing"
+import (
+	"testing"
+
+	"arcoris.dev/bufferpool/internal/testutil"
+)
 
 // TestIsPowerOfTwo verifies the canonical power-of-two predicate.
 //
@@ -273,7 +277,7 @@ func TestNextPowerOfTwoRoundsUp(t *testing.T) {
 func TestNextPowerOfTwoPanicsForZero(t *testing.T) {
 	t.Parallel()
 
-	mustPanic(t, func() {
+	testutil.MustPanic(t, func() {
 		_ = NextPowerOfTwo(0)
 	})
 }
@@ -309,7 +313,7 @@ func TestNextPowerOfTwoPanicsForOverflow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mustPanic(t, func() {
+			testutil.MustPanic(t, func() {
 				_ = NextPowerOfTwo(tt.value)
 			})
 		})
