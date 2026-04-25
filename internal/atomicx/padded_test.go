@@ -69,6 +69,26 @@ func TestPaddedUint64Layout(t *testing.T) {
 	}
 }
 
+// TestPaddedUint64ArrayStride verifies separation between adjacent array
+// elements.
+//
+// The struct-level layout test protects padding around one value. This test
+// protects the array/slice case described by PaddedUint64's documentation:
+// adjacent elements should not place their atomic values inside the same
+// padding window.
+func TestPaddedUint64ArrayStride(t *testing.T) {
+	t.Parallel()
+
+	var counters [2]PaddedUint64
+
+	firstValue := uintptr(unsafe.Pointer(&counters[0].value))
+	secondValue := uintptr(unsafe.Pointer(&counters[1].value))
+
+	if stride := secondValue - firstValue; stride < CacheLinePadSize {
+		t.Fatalf("PaddedUint64 array value stride = %d, want at least %d", stride, CacheLinePadSize)
+	}
+}
+
 // TestPaddedInt64Layout verifies that PaddedInt64 keeps its atomic value
 // separated from surrounding fields by leading and trailing padding.
 //
@@ -92,6 +112,25 @@ func TestPaddedInt64Layout(t *testing.T) {
 
 	if totalSize < minTotalSize {
 		t.Fatalf("unsafe.Sizeof(PaddedInt64{}) = %d, want at least %d", totalSize, minTotalSize)
+	}
+}
+
+// TestPaddedInt64ArrayStride verifies separation between adjacent array
+// elements.
+//
+// Signed padded atomics have the same array/slice false-sharing concern as
+// unsigned padded atomics. Adjacent atomic values must remain physically
+// separated by the padded wrapper layout.
+func TestPaddedInt64ArrayStride(t *testing.T) {
+	t.Parallel()
+
+	var counters [2]PaddedInt64
+
+	firstValue := uintptr(unsafe.Pointer(&counters[0].value))
+	secondValue := uintptr(unsafe.Pointer(&counters[1].value))
+
+	if stride := secondValue - firstValue; stride < CacheLinePadSize {
+		t.Fatalf("PaddedInt64 array value stride = %d, want at least %d", stride, CacheLinePadSize)
 	}
 }
 
