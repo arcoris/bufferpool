@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"arcoris.dev/bufferpool/internal/testutil"
@@ -965,5 +966,73 @@ func TestShardConcurrentGetAndRetain(t *testing.T) {
 
 	if afterGet.Bucket.RetainedBuffers != 0 {
 		t.Fatalf("Bucket.RetainedBuffers after concurrent get = %d, want 0", afterGet.Bucket.RetainedBuffers)
+	}
+}
+
+// TestShardConcurrentRetainDoesNotExceedCredit verifies that credit evaluation
+// and bucket push are strict for concurrent retain calls.
+func TestShardConcurrentRetainDoesNotExceedCredit(t *testing.T) {
+	t.Parallel()
+
+	const attempts = 64
+
+	shard := newShard(attempts)
+	shard.updateCredit(newShardCreditLimit(1, 1024))
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var retained atomic.Uint64
+
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			defer wg.Done()
+
+			<-start
+
+			result := shard.tryRetain(make([]byte, 0, 1024))
+			if result.Retained {
+				retained.Add(1)
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	state := shard.state()
+	retainedCount := retained.Load()
+
+	if retainedCount > 1 {
+		t.Fatalf("retained attempts = %d, want <= 1", retainedCount)
+	}
+
+	if state.Counters.CurrentRetainedBuffers > 1 {
+		t.Fatalf("CurrentRetainedBuffers = %d, want <= 1", state.Counters.CurrentRetainedBuffers)
+	}
+
+	if state.Counters.CurrentRetainedBytes > 1024 {
+		t.Fatalf("CurrentRetainedBytes = %d, want <= 1024", state.Counters.CurrentRetainedBytes)
+	}
+
+	if state.Bucket.RetainedBuffers > 1 {
+		t.Fatalf("Bucket.RetainedBuffers = %d, want <= 1", state.Bucket.RetainedBuffers)
+	}
+
+	if state.Bucket.RetainedBytes > 1024 {
+		t.Fatalf("Bucket.RetainedBytes = %d, want <= 1024", state.Bucket.RetainedBytes)
+	}
+
+	if state.Counters.Puts != attempts {
+		t.Fatalf("Puts = %d, want %d", state.Counters.Puts, attempts)
+	}
+
+	if state.Counters.Retains != retainedCount {
+		t.Fatalf("Retains = %d, want %d", state.Counters.Retains, retainedCount)
+	}
+
+	wantDrops := uint64(attempts) - retainedCount
+	if state.Counters.Drops != wantDrops {
+		t.Fatalf("Drops = %d, want %d", state.Counters.Drops, wantDrops)
 	}
 }

@@ -27,7 +27,7 @@ const (
 	//
 	// This should not happen through normal constructors or AtomicLifecycle
 	// methods. If it does happen, it indicates memory corruption, direct invalid
-	// Store usage from future code, or an internal bug.
+	// Store usage from caller code, or an internal bug.
 	errUnknownLifecycleState = "bufferpool.LifecycleState: unknown lifecycle state"
 
 	// errInvalidLifecycleTransition is used when a lifecycle transition violates
@@ -80,8 +80,8 @@ const (
 // LifecycleState describes the lifecycle phase of a runtime component.
 //
 // It is intentionally generic and does not mention concrete runtime objects.
-// Pool, partition, group, controller, and future runtime entities can all use
-// the same state machine while keeping their own higher-level shutdown logic.
+// Pool, partition, group, controller, and runtime entities can all use the same
+// state machine while keeping their own higher-level shutdown logic.
 //
 // The canonical state flow is:
 //
@@ -236,7 +236,7 @@ func (s LifecycleState) MustTransitionTo(next LifecycleState) LifecycleState {
 // lifecycle checks on hot or hot-adjacent paths, for example:
 //
 //   - Pool acquire/release admission checks;
-//   - Partition controller state;
+//   - partition controller state;
 //   - PoolGroup shutdown state;
 //   - background trim or coordination loops.
 //

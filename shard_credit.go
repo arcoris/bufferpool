@@ -49,10 +49,10 @@ const (
 //
 // Responsibility boundary:
 //
-//   - budget_allocation.go computes higher-level budget distribution;
+//   - budget allocation computes higher-level budget distribution;
 //   - class_budget.go derives per-shard credit limits from class targets;
 //   - shard_credit.go stores and evaluates one shard-local credit limit;
-//   - admission.go maps credit decisions to retain/drop outcomes;
+//   - admission code maps credit decisions to public drop reasons;
 //   - bucket.go physically stores retained buffers;
 //   - bucket_trim.go physically removes retained buffers;
 //   - shard_counters.go records retained and removed accounting;
@@ -80,9 +80,9 @@ const (
 //
 // shardCredit is safe for concurrent hot-path reads and control-plane updates.
 // The target fields are loaded independently. A reader may observe a mixed pair
-// during a concurrent update. This is acceptable because shard credit is an
-// approximate local gate, while higher-level budget state and corrective trim
-// remain authoritative.
+// during a concurrent update. This is acceptable because inconsistent observed
+// credit rejects retention, while higher-level budget state and corrective trim
+// remain authoritative after target changes.
 //
 // Copying:
 //
@@ -92,7 +92,7 @@ type shardCredit struct {
 	// generation is advanced after every applied credit update.
 	//
 	// It gives snapshots a cheap publication marker for tests, diagnostics,
-	// controller sampling, and future policy snapshot correlation.
+	// controller sampling and policy snapshot correlation.
 	generation AtomicGeneration
 
 	// targetBuffers is the current local retained-buffer credit.
@@ -109,8 +109,8 @@ type shardCredit struct {
 // both buffer-count and byte-capacity credit consistently.
 //
 // The generation is advanced after the target fields are stored. A concurrent
-// reader may still observe old, new, or mixed target values; this is acceptable
-// for the approximate hot-path gate.
+// reader may still observe old, new, or mixed target values; inconsistent mixed
+// target values reject retention.
 func (c *shardCredit) update(limit shardCreditLimit) Generation {
 	limit.validate()
 
@@ -133,8 +133,8 @@ func (c *shardCredit) disable() Generation {
 //
 // The snapshot is not a strict multi-field atomic publication. Individual fields
 // are loaded atomically, but concurrent updates can produce a mixed pair. This is
-// acceptable because credit is advisory hot-path enforcement, not the hard budget
-// ledger.
+// acceptable because shard code applies credit against retained usage under its
+// own synchronization, and budget state remains the higher-level target source.
 func (c *shardCredit) snapshot() shardCreditSnapshot {
 	return shardCreditSnapshot{
 		Generation:    c.generation.Load(),
@@ -264,8 +264,8 @@ func (u shardCreditUsage) IsZero() bool {
 // shardCreditSnapshot is an immutable view of a shard-local credit assignment.
 //
 // Admission code can evaluate multiple candidates against one snapshot without
-// repeatedly loading atomics. The snapshot represents an approximate local gate,
-// not a globally consistent budget publication.
+// repeatedly loading atomics. The snapshot represents a local shard gate, not a
+// globally consistent budget publication.
 //
 // Because target fields are loaded independently, a snapshot can temporarily
 // contain a mixed pair during concurrent update. Evaluation treats such a pair as
@@ -395,7 +395,7 @@ func (s shardCreditSnapshot) remaining(usage shardCreditUsage) shardCreditRemain
 // overage returns retained storage above this credit snapshot.
 //
 // Overage is saturated at zero when usage is within target. It is useful for
-// diagnostics and future trim planning, but it does not perform physical trim.
+// diagnostics and trim planning, but it does not perform physical trim.
 //
 // Disabled credit treats all retained usage as over-target. This is intentional:
 // disabling credit stops new retention, but already retained memory still needs
@@ -448,7 +448,7 @@ func (r shardCreditRemaining) IsZero() bool {
 
 // shardCreditAmount describes a buffer-count and byte amount.
 //
-// It is used for over-target diagnostics and future trim planning helpers.
+// It is used for over-target diagnostics and trim planning helpers.
 type shardCreditAmount struct {
 	// Buffers is a buffer-count amount.
 	Buffers uint64
@@ -462,7 +462,8 @@ func (a shardCreditAmount) IsZero() bool {
 	return a.Buffers == 0 && a.Bytes == 0
 }
 
-// shardCreditDecision describes the result of a shard credit admission check.
+// shardCreditDecision describes a shard-credit admission result or the absence
+// of shard-credit evaluation when class admission rejected earlier.
 //
 // This is intentionally internal. Public drop reasons, if exposed later, should
 // be modeled separately so internal credit mechanics can evolve.
@@ -497,6 +498,10 @@ const (
 	// shardCreditRejectByteAccountingOverflow means adding the candidate capacity
 	// to current retained bytes would overflow uint64.
 	shardCreditRejectByteAccountingOverflow
+
+	// shardCreditNotEvaluated means class-level admission rejected retention
+	// before shard credit was evaluated.
+	shardCreditNotEvaluated
 )
 
 // AllowsRetain reports whether this decision accepts the candidate.
@@ -521,6 +526,8 @@ func (d shardCreditDecision) String() string {
 		return "reject_byte_credit_exhausted"
 	case shardCreditRejectByteAccountingOverflow:
 		return "reject_byte_accounting_overflow"
+	case shardCreditNotEvaluated:
+		return "not_evaluated"
 	default:
 		return "unknown"
 	}

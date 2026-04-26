@@ -23,7 +23,7 @@ import "sync"
 // bucket is the first concurrency boundary above bucketSegment. bucketSegment
 // owns the raw LIFO slot storage and retained-byte accounting, but it is not
 // goroutine-safe. bucket wraps that segment with a mutex so shard, class, or
-// future pool storage code can safely perform local retain/reuse operations.
+// pool storage code can safely perform local retain/reuse operations.
 //
 // Responsibility boundary:
 //
@@ -126,7 +126,7 @@ func (b *bucket) tryPop() ([]byte, bool) {
 
 // state returns an immutable point-in-time view of local bucket storage state.
 //
-// The state is intended for shard/class inspection, tests, and future snapshot
+// The state is intended for shard/class inspection, tests, and snapshot
 // aggregation. It is not a public API snapshot and deliberately does not include
 // policy, pressure, ownership, trim, or metrics fields.
 func (b *bucket) state() bucketState {
@@ -139,8 +139,8 @@ func (b *bucket) state() bucketState {
 // stateLocked returns the current bucket state.
 //
 // The caller MUST hold b.mu. Keeping the state assembly in one helper prevents
-// future fields from drifting between state(), tests, and higher-level
-// aggregation code.
+// fields from drifting between state(), tests, and higher-level aggregation
+// code.
 func (b *bucket) stateLocked() bucketState {
 	return bucketState{
 		RetainedBuffers: b.segment.len(),

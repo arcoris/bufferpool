@@ -34,6 +34,13 @@ const (
 	// capacities, such as make([]byte, 0, n). The conversion must fail fast
 	// instead of silently truncating.
 	errSizeTooLargeForInt = "bufferpool.Size: value exceeds int range"
+
+	// errSizeClampInvalidRange is used when Clamp receives an invalid inclusive
+	// range where minValue is greater than maxValue.
+	//
+	// Invalid bounds indicate broken caller-side normalization. Clamp fails fast
+	// instead of silently returning a misleading boundary value.
+	errSizeClampInvalidRange = "bufferpool.Size.Clamp: minValue must be less than or equal to maxValue"
 )
 
 // Size is a generic byte-size value used by bufferpool configuration, requests,
@@ -165,8 +172,12 @@ func (s Size) GreaterOrEqual(other Size) bool {
 // Clamp returns s constrained to the inclusive range [minValue, maxValue].
 //
 // The caller MUST pass a valid range where minValue <= maxValue. Invalid ranges
-// are treated as programmer errors by the underlying clamp helper.
+// are treated as programmer errors and cause a panic.
 func (s Size) Clamp(minValue, maxValue Size) Size {
+	if minValue > maxValue {
+		panic(errSizeClampInvalidRange)
+	}
+
 	if s < minValue {
 		return minValue
 	}

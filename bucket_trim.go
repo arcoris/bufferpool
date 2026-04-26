@@ -56,7 +56,7 @@ func (b *bucket) trim(maxBuffers int) bucketTrimResult {
 //   - policy changes that invalidate retained storage;
 //   - hard pressure cleanup;
 //   - tests;
-//   - future bucket reinitialization paths.
+//   - bucket reinitialization paths.
 //
 // clear is idempotent. Clearing an already empty bucket returns a zero removal
 // result and the current empty bucket state.

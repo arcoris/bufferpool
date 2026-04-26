@@ -29,13 +29,14 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 // Responsibility boundary:
 //
 //   - class_table.go normalizes requested sizes to SizeClass descriptors;
-//   - class.go owns class-level routing across shards;
+//   - class_state.go owns class-level routing across shards;
 //   - shard.go executes shard-local storage operations;
 //   - shard_counters.go records shard-local facts;
 //   - class_counters.go records class-scope aggregate facts;
 //   - class_budget.go owns class-level target bytes;
-//   - admission.go owns retain/drop decisions and public drop-reason mapping;
-//   - metrics.go owns public aggregation and export.
+//   - class_admission.go owns minimal class-local retain eligibility checks;
+//   - admission code owns policy/drop-reason mapping;
+//   - metrics code owns public aggregation and export.
 //
 // The class counter group does not decide whether a buffer should be retained,
 // which shard should be selected, or whether trim should happen. It only records
@@ -83,7 +84,7 @@ type classCounters struct {
 	// allocations counts new backing-buffer allocations associated with this
 	// class.
 	//
-	// Allocation is separate from miss because future paths may allocate for
+	// Allocation is separate from miss because owner paths may allocate for
 	// reasons other than a direct retained-storage miss.
 	allocations atomicx.Uint64Counter
 
@@ -153,9 +154,9 @@ func (c *classCounters) recordGet(requestedSize uint64) {
 
 // recordGetResult records a completed class-level get/reuse attempt.
 //
-// The method is a convenience for class.go: it records the routed get and then
-// records either a hit or a miss using the shard-local get result observed by the
-// class owner.
+// The method is a convenience for classState: it records the routed get and then
+// records either a hit or a miss using the shard-local get result observed by
+// the class owner.
 func (c *classCounters) recordGetResult(requestedSize Size, result shardGetResult) {
 	c.recordGet(requestedSize.Bytes())
 
@@ -187,7 +188,7 @@ func (c *classCounters) recordMiss() {
 // recordAllocation records a newly allocated backing-buffer capacity.
 //
 // Allocation is tracked separately from miss because not every miss necessarily
-// allocates in the same place, and future paths may allocate for reasons other
+// allocates in the same place, and owner paths may allocate for reasons other
 // than a bucket miss.
 func (c *classCounters) recordAllocation(capacity uint64) {
 	c.allocations.Inc()
@@ -214,7 +215,7 @@ func (c *classCounters) recordPut(capacity uint64) {
 
 // recordRetainResult records a completed class-level retain attempt.
 //
-// The method is a convenience for class.go: it records the routed put and then
+// The method is a convenience for classState: it records the routed put and then
 // records either retain or drop using the shard-local retain result observed by
 // the class owner.
 func (c *classCounters) recordRetainResult(result shardRetainResult) {
@@ -226,6 +227,17 @@ func (c *classCounters) recordRetainResult(result shardRetainResult) {
 	}
 
 	c.recordDrop(result.Capacity)
+}
+
+// recordRejectedPut records a returned buffer rejected before shard storage was
+// attempted.
+//
+// Class-level rejection is still a put/drop outcome for the class because a
+// buffer was returned to this class. It must not be recorded in shard counters
+// because no shard-local storage path observed the buffer.
+func (c *classCounters) recordRejectedPut(capacity uint64) {
+	c.recordPut(capacity)
+	c.recordDrop(capacity)
 }
 
 // recordRetain records that a returned buffer was successfully retained.
@@ -244,7 +256,7 @@ func (c *classCounters) recordRetain(capacity uint64) {
 //
 // Drop reasons are intentionally not represented here. Admission, pressure,
 // ownership, full-bucket, class, and policy-specific reasons belong to
-// higher-level accounting or future reason-specific counters.
+// higher-level accounting or reason-specific counters.
 func (c *classCounters) recordDrop(capacity uint64) {
 	c.drops.Inc()
 	c.droppedBytes.Add(capacity)
@@ -290,13 +302,32 @@ func (c *classCounters) recordClear(result bucketTrimResult) {
 	c.currentRetainedBytes.Sub(result.RemovedBytes)
 }
 
+// recordClearAmount records a class-level clear operation from an aggregate
+// physical removal amount.
+func (c *classCounters) recordClearAmount(removedBuffers int, removedBytes uint64) {
+	c.clearOperations.Inc()
+
+	if removedBuffers == 0 && removedBytes == 0 {
+		return
+	}
+
+	removedBufferCount := uint64(removedBuffers)
+
+	c.clearedBuffers.Add(removedBufferCount)
+	c.clearedBytes.Add(removedBytes)
+
+	c.currentRetainedBuffers.Sub(removedBufferCount)
+	c.currentRetainedBytes.Sub(removedBytes)
+}
+
 // snapshot returns an immutable point-in-time view of class counters.
 //
 // The snapshot is not globally atomic across all fields. Individual fields are
 // loaded atomically, but concurrent updates may make different fields represent
 // slightly different instants. This is acceptable for metrics, workload windows,
-// pressure heuristics, and controller sampling. Strongly consistent accounting,
-// if needed, must be performed by the owner under its own synchronization.
+// pressure heuristics, and controller sampling. Strongly consistent
+// accounting, if needed, must be performed by the owner under its own
+// synchronization.
 func (c *classCounters) snapshot() classCountersSnapshot {
 	return classCountersSnapshot{
 		Gets:           c.gets.Load(),
@@ -334,9 +365,8 @@ func (c *classCounters) snapshot() classCountersSnapshot {
 // classCountersSnapshot is an immutable point-in-time view of one class's
 // counters.
 //
-// The type is internal. Public metrics should be modeled separately in
-// metrics.go or metrics_snapshot.go so internal accounting can evolve without
-// freezing the public API.
+// The type is internal. Public metrics should be modeled separately so internal
+// accounting can evolve without freezing the public API.
 //
 // Lifetime fields are monotonic counters. CurrentRetainedBuffers and
 // CurrentRetainedBytes are gauges.

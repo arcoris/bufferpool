@@ -79,8 +79,8 @@ const (
 //   - class_size.go owns ClassSize semantics;
 //   - class_budget.go owns class-level target bytes;
 //   - shard_credit.go owns per-shard local credit;
-//   - admission.go decides whether a returned buffer is retained;
-//   - ownership.go verifies origin class and returned-capacity growth;
+//   - class_admission.go owns minimal class-local retain eligibility checks;
+//   - ownership code verifies origin class and returned-capacity growth;
 //   - bucket.go stores already admitted buffers.
 //
 // The class table does not perform memory admission. A successful lookup means

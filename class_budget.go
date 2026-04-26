@@ -37,7 +37,7 @@ const (
 	// limit violates whole-buffer arithmetic invariants.
 	//
 	// Limits produced by newClassBudgetLimit are valid by construction. This guard
-	// exists for tests, defensive checks, and future code paths that may build
+	// exists for tests, defensive checks, and caller code paths that may build
 	// limits outside the constructor.
 	errClassBudgetInvalidLimit = "bufferpool.classBudget: invalid budget limit"
 
@@ -71,7 +71,7 @@ const (
 //
 // Responsibility boundary:
 //
-//   - budget_allocation.go assigns target bytes to each class;
+//   - budget allocation assigns target bytes to each class;
 //   - class_budget.go normalizes that byte target to whole class buffers;
 //   - class_budget.go builds a deterministic per-shard credit plan;
 //   - shard_credit.go evaluates one already-derived shardCreditLimit;
@@ -260,8 +260,8 @@ func newClassBudgetLimit(classSize ClassSize, assignedBytes Size) classBudgetLim
 // limit.
 //
 // The constructor always produces a valid limit. This method exists because tests
-// and future code may manually construct limits. Invalid arithmetic is treated as
-// a programming error.
+// and caller code may manually construct limits. Invalid arithmetic is treated
+// as a programming error.
 func (l classBudgetLimit) validate() {
 	if l.ClassSize.IsZero() {
 		panic(errClassBudgetZeroClassSize)

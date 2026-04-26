@@ -16,6 +16,8 @@
 
 package bufferpool
 
+import "sync"
+
 const (
 	// errClassStateInvalidClass is used when class runtime state is constructed
 	// for an invalid size-class descriptor.
@@ -35,6 +37,13 @@ const (
 	// errClassStateShardIndexOutOfRange is used when a class operation references
 	// a shard index outside the class-owned shard slice.
 	errClassStateShardIndexOutOfRange = "bufferpool.classState: shard index out of range"
+
+	// errClassStateRequestExceedsClassSize is used when a request larger than the
+	// normalized class size reaches classState.
+	//
+	// classState is called after class-table request routing. A larger request
+	// means the caller selected the wrong class.
+	errClassStateRequestExceedsClassSize = "bufferpool.classState: requested size exceeds class size"
 )
 
 // classState owns runtime state for one normalized size class.
@@ -54,11 +63,11 @@ const (
 //   - class.go describes SizeClass identity and capacity;
 //   - class_state.go owns runtime state for one SizeClass;
 //   - shard_selection.go chooses shard indexes;
+//   - class_admission.go owns minimal class-local retain eligibility checks;
 //   - shard.go executes shard-local storage operations;
 //   - class_counters.go records class-scope workload facts;
 //   - class_budget.go computes whole-buffer class targets and shard credit;
-//   - admission.go owns policy/drop-reason mapping;
-//   - pool/partition/group layers own higher-level coordination.
+//   - owner layers own lifecycle, ownership, policy, and coordination.
 //
 // classState deliberately does not contain class-table lookup logic. It is
 // constructed after a SizeClass is already known.
@@ -72,7 +81,9 @@ const (
 //
 // classState is safe for concurrent operations through its components:
 //
-//   - shard serializes physical bucket access;
+//   - classState serializes retained-storage operations with class retained
+//     accounting;
+//   - shard serializes physical bucket access with retained accounting;
 //   - classCounters uses atomics;
 //   - classBudget uses atomics;
 //   - shardCredit uses atomics.
@@ -85,6 +96,10 @@ const (
 // classState MUST NOT be copied after first use because it contains shards,
 // buckets, mutexes, and atomic values.
 type classState struct {
+	// mu serializes class retained-storage operations with class retained-counter
+	// updates.
+	mu sync.Mutex
+
 	// class is the immutable descriptor for this runtime state.
 	class SizeClass
 
@@ -213,14 +228,21 @@ func (s *classState) applyShardCreditPlan(plan classShardCreditPlan) {
 // tryGet attempts to reuse a retained buffer from one selected shard.
 //
 // requestedSize is the caller-requested size before class normalization. The
-// class has already been selected by the caller. shardIndex is selected by a
-// future shard-selection layer.
+// class has already been selected by the caller. requestedSize MUST be less than
+// or equal to the class size.
 //
 // The method records both shard-scope and class-scope accounting:
 //
 //   - shard.tryGet records shard counters;
 //   - classState records class counters from the observed shard result.
 func (s *classState) tryGet(shardIndex int, requestedSize Size) classGetResult {
+	if requestedSize > s.class.ByteSize() {
+		panic(errClassStateRequestExceedsClassSize)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	shardResult := s.shardAt(shardIndex).tryGet(requestedSize)
 	s.counters.recordGetResult(requestedSize, shardResult)
 
@@ -229,6 +251,11 @@ func (s *classState) tryGet(shardIndex int, requestedSize Size) classGetResult {
 		ShardIndex: shardIndex,
 		Shard:      shardResult,
 	}
+}
+
+// tryGetSelected attempts to reuse a retained buffer through a selected shard.
+func (s *classState) tryGetSelected(selector shardSelector, requestedSize Size) classGetResult {
+	return s.tryGet(s.selectShard(selector), requestedSize)
 }
 
 // recordAllocation records an allocation associated with one selected shard and
@@ -251,21 +278,46 @@ func (s *classState) recordAllocatedBuffer(shardIndex int, buffer []byte) {
 //
 // The method records both shard-scope and class-scope accounting:
 //
-//   - shard.tryRetain records shard counters;
-//   - classState records class counters from the observed shard result.
+//   - class admission rejects buffers that cannot serve this class;
+//   - shard.tryRetain records shard counters only after class acceptance;
+//   - classState records class counters from the observed class/shard result.
 //
-// Higher layers must still perform lifecycle, ownership, supported-class,
-// max-retained-capacity, pressure, and public drop-reason mapping checks before
-// or around this method.
+// Owner layers must still perform lifecycle, ownership, max-retained-capacity,
+// policy, and public drop-reason mapping checks before or around this method.
 func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult {
-	shardResult := s.shardAt(shardIndex).tryRetain(buffer)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	selectedShard := s.shardAt(shardIndex)
+	capacity := uint64(cap(buffer))
+	classDecision := evaluateClassRetain(s.class, buffer)
+	if !classDecision.AllowsShardRetain() {
+		s.counters.recordRejectedPut(capacity)
+
+		return classRetainResult{
+			Class:            s.class,
+			ShardIndex:       shardIndex,
+			ClassDecision:    classDecision,
+			ReturnedCapacity: capacity,
+		}
+	}
+
+	shardResult := selectedShard.tryRetain(buffer)
 	s.counters.recordRetainResult(shardResult)
 
 	return classRetainResult{
-		Class:      s.class,
-		ShardIndex: shardIndex,
-		Shard:      shardResult,
+		Class:            s.class,
+		ShardIndex:       shardIndex,
+		ClassDecision:    classDecision,
+		Shard:            shardResult,
+		ReturnedCapacity: shardResult.Capacity,
 	}
+}
+
+// tryRetainSelected attempts to retain a returned buffer through a selected
+// shard.
+func (s *classState) tryRetainSelected(selector shardSelector, buffer []byte) classRetainResult {
+	return s.tryRetain(s.selectShard(selector), buffer)
 }
 
 // trimShard removes up to maxBuffers retained buffers from one shard owned by
@@ -274,6 +326,9 @@ func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult 
 // The shard records shard-scope trim counters. classState records class-scope
 // trim counters from the observed physical removal result.
 func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	result := s.shardAt(shardIndex).trim(maxBuffers)
 	s.counters.recordTrim(result)
 
@@ -285,6 +340,9 @@ func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult 
 // The shard records shard-scope clear counters. classState records class-scope
 // clear counters from the observed physical removal result.
 func (s *classState) clearShard(shardIndex int) bucketTrimResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	result := s.shardAt(shardIndex).clear()
 	s.counters.recordClear(result)
 
@@ -295,14 +353,24 @@ func (s *classState) clearShard(shardIndex int) bucketTrimResult {
 //
 // The returned result is the aggregate physical removal across all shards.
 func (s *classState) clear() classStorageReductionResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var total classStorageReductionResult
 
 	for index := range s.shards {
-		result := s.clearShard(index)
+		result := s.shards[index].clear()
 		total.addBucketTrimResult(result)
 	}
 
+	s.counters.recordClearAmount(total.RemovedBuffers, total.RemovedBytes)
+
 	return total
+}
+
+// selectShard chooses and validates a shard index for this class state.
+func (s *classState) selectShard(selector shardSelector) int {
+	return selectShardIndex(selector, len(s.shards))
 }
 
 // state returns an observational snapshot of this class runtime state.
@@ -311,6 +379,9 @@ func (s *classState) clear() classStorageReductionResult {
 // It is intended for tests, diagnostics, metrics aggregation, and controller
 // sampling.
 func (s *classState) state() classStateSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	shards := make([]shardState, len(s.shards))
 	for index := range s.shards {
 		shards[index] = s.shards[index].state()
@@ -371,8 +442,8 @@ func (r classGetResult) Capacity() uint64 {
 
 // classRetainResult describes one class-level retain attempt.
 //
-// It preserves the class descriptor and shard index used for the operation while
-// delegating retain/drop details to shardRetainResult.
+// It preserves the class descriptor, selected shard index, class-level decision,
+// and shard-local outcome for the operation.
 type classRetainResult struct {
 	// Class is the size class that handled the retain attempt.
 	Class SizeClass
@@ -380,40 +451,63 @@ type classRetainResult struct {
 	// ShardIndex is the selected shard inside Class.
 	ShardIndex int
 
+	// ClassDecision is the class-local retain eligibility decision.
+	ClassDecision classRetainDecision
+
 	// Shard is the shard-local retain result.
 	Shard shardRetainResult
+
+	// ReturnedCapacity is cap(buffer) as observed before any class or shard
+	// retention decision.
+	ReturnedCapacity uint64
 }
 
 // Retained reports whether the returned buffer was physically retained.
 func (r classRetainResult) Retained() bool {
-	return r.Shard.Retained
+	return r.ClassDecision.AllowsShardRetain() && r.Shard.Retained
 }
 
 // Dropped reports whether the returned buffer was not physically retained.
 func (r classRetainResult) Dropped() bool {
-	return r.Shard.Dropped()
+	return !r.Retained()
+}
+
+// RejectedByClass reports whether class-local admission rejected retention
+// before shard storage was attempted.
+func (r classRetainResult) RejectedByClass() bool {
+	return !r.ClassDecision.AllowsShardRetain()
 }
 
 // RejectedByCredit reports whether shard credit rejected retention.
 func (r classRetainResult) RejectedByCredit() bool {
-	return r.Shard.RejectedByCredit()
+	return r.ClassDecision.AllowsShardRetain() && r.Shard.RejectedByCredit()
 }
 
 // RejectedByBucket reports whether credit accepted retention but bucket storage
 // rejected the buffer.
 func (r classRetainResult) RejectedByBucket() bool {
-	return r.Shard.RejectedByBucket()
+	return r.ClassDecision.AllowsShardRetain() && r.Shard.RejectedByBucket()
 }
 
 // Capacity returns the returned buffer capacity evaluated by the class.
 func (r classRetainResult) Capacity() uint64 {
-	return r.Shard.Capacity
+	return r.ReturnedCapacity
 }
 
 // CreditDecision returns the shard-credit decision observed by this class-level
-// retain attempt.
+// retain attempt. If class-local admission rejected the buffer before shard
+// credit was evaluated, it returns shardCreditNotEvaluated.
 func (r classRetainResult) CreditDecision() shardCreditDecision {
+	if !r.ClassDecision.AllowsShardRetain() {
+		return shardCreditNotEvaluated
+	}
+
 	return r.Shard.CreditDecision
+}
+
+// ClassRetainDecision returns the class-local retain eligibility decision.
+func (r classRetainResult) ClassRetainDecision() classRetainDecision {
+	return r.ClassDecision
 }
 
 // classStateSnapshot is an observational view of one class runtime state.

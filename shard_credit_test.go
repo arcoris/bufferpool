@@ -1227,6 +1227,12 @@ func TestShardCreditDecisionString(t *testing.T) {
 			wantAllows: false,
 		},
 		{
+			name:       "not evaluated",
+			decision:   shardCreditNotEvaluated,
+			wantString: "not_evaluated",
+			wantAllows: false,
+		},
+		{
 			name:       "unknown",
 			decision:   shardCreditDecision(255),
 			wantString: "unknown",

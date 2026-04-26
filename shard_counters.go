@@ -29,10 +29,11 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 //
 //   - shard code owns call ordering;
 //   - bucket code owns synchronized retained-buffer storage;
-//   - admission code owns retain/drop decisions;
-//   - trim planning code owns victim and target selection;
+//   - class_admission.go owns minimal class-local retain eligibility checks;
+//   - admission code owns policy/drop-reason mapping;
+//   - trim planning owns victim and target selection;
 //   - workload-window code computes recent deltas;
-//   - EWMA/workload-scoring code consumes deltas;
+//   - workload scoring code consumes deltas;
 //   - metrics code owns public aggregation and export;
 //   - shardCounters only records facts that already happened.
 //
@@ -90,7 +91,7 @@ type shardCounters struct {
 	// allocations counts new backing-buffer allocations associated with this
 	// shard.
 	//
-	// Allocation is separate from miss because future paths may allocate for
+	// Allocation is separate from miss because owner paths may allocate for
 	// reasons other than a direct retained-storage miss.
 	allocations atomicx.Uint64Counter
 
@@ -177,7 +178,7 @@ func (c *shardCounters) recordMiss() {
 // recordAllocation records a newly allocated backing-buffer capacity.
 //
 // Allocation is tracked separately from miss because not every miss necessarily
-// allocates in the same place, and future paths may allocate for reasons other
+// allocates in the same place, and owner paths may allocate for reasons other
 // than a bucket miss.
 func (c *shardCounters) recordAllocation(capacity uint64) {
 	c.allocations.Inc()
@@ -210,7 +211,7 @@ func (c *shardCounters) recordRetain(capacity uint64) {
 //
 // Drop reasons are intentionally not represented here. Admission, pressure,
 // ownership, full-bucket, class, and policy-specific reasons belong to
-// higher-level accounting or future reason-specific counters.
+// higher-level accounting or reason-specific counters.
 func (c *shardCounters) recordDrop(capacity uint64) {
 	c.drops.Inc()
 	c.droppedBytes.Add(capacity)
@@ -261,8 +262,9 @@ func (c *shardCounters) recordClear(result bucketTrimResult) {
 // The snapshot is not globally atomic across all fields. Individual fields are
 // loaded atomically, but concurrent updates may make different fields represent
 // slightly different instants. This is acceptable for metrics, workload windows,
-// pressure heuristics, and controller sampling. Strongly consistent accounting,
-// if needed, must be performed by the owner under its own synchronization.
+// pressure heuristics, and controller sampling. Strongly consistent
+// accounting, if needed, must be performed by the owner under its own
+// synchronization.
 func (c *shardCounters) snapshot() shardCountersSnapshot {
 	return shardCountersSnapshot{
 		Gets:           c.gets.Load(),
@@ -300,9 +302,8 @@ func (c *shardCounters) snapshot() shardCountersSnapshot {
 // shardCountersSnapshot is an immutable point-in-time view of one shard's
 // counters.
 //
-// The type is internal. Public metrics should be modeled separately in
-// metrics.go or metrics_snapshot.go so internal accounting can evolve without
-// freezing the public API.
+// The type is internal. Public metrics should be modeled separately so internal
+// accounting can evolve without freezing the public API.
 //
 // Lifetime fields are monotonic counters. CurrentRetainedBuffers and
 // CurrentRetainedBytes are gauges.

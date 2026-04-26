@@ -16,6 +16,8 @@
 
 package bufferpool
 
+import "sync"
+
 // shard is a shard-local runtime unit for one size-class owner.
 //
 // A shard is a data-plane contention boundary. It owns one local retained-buffer
@@ -33,7 +35,8 @@ package bufferpool
 //   - bucket_trim.go physically removes retained buffers;
 //   - shard_counters.go records shard-local accounting facts;
 //   - shard_credit.go evaluates local retention credit;
-//   - admission.go maps local decisions to retain/drop outcomes;
+//   - class_admission.go protects class-level capacity compatibility;
+//   - admission code maps local decisions to public drop reasons;
 //   - trim planning decides which shards should be trimmed.
 //
 // Hot-path behavior:
@@ -53,9 +56,15 @@ package bufferpool
 //
 // shard is safe for concurrent operations through its components:
 //
+//   - shard serializes bucket mutation with retained accounting updates;
 //   - bucket serializes physical storage access;
 //   - shardCounters uses atomics;
 //   - shardCredit uses atomics.
+//
+// The shard mutex keeps credit evaluation, bucket mutation, and retained gauges
+// in one strict local sequence for retain/get/trim/clear operations. This
+// prevents concurrent retain calls from admitting more buffers than the observed
+// shard credit allows.
 //
 // The full shard state snapshot is not globally atomic across bucket, counters,
 // and credit. It is suitable for diagnostics, tests, metrics sampling, and
@@ -66,6 +75,10 @@ package bufferpool
 // shard MUST NOT be copied after first use. It contains a bucket with a mutex and
 // multiple atomic values.
 type shard struct {
+	// mu serializes physical retained-storage mutations with retained-counter
+	// updates and shard-credit usage checks.
+	mu sync.Mutex
+
 	// bucket stores retained buffers for this shard.
 	bucket bucket
 
@@ -107,6 +120,9 @@ func newShard(bucketSlotLimit int) shard {
 //   - miss counters are updated;
 //   - no allocation is performed by the shard.
 func (s *shard) tryGet(requestedSize Size) shardGetResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.counters.recordGet(requestedSize.Bytes())
 
 	buffer, ok := s.bucket.tryPop()
@@ -146,9 +162,9 @@ func (s *shard) recordAllocatedBuffer(buffer []byte) {
 // tryRetain attempts to retain a returned buffer in this shard.
 //
 // The method represents the shard-local part of return-path retention. It does
-// not perform all admission checks. Higher layers must still handle lifecycle,
-// ownership, max retained capacity, pressure, supported class, origin-class
-// growth, and public drop-reason mapping.
+// not perform all admission checks. Owner layers must still handle lifecycle,
+// ownership, max retained capacity, pressure, origin-class growth, and public
+// drop-reason mapping.
 //
 // The method performs only shard-local work:
 //
@@ -162,6 +178,9 @@ func (s *shard) recordAllocatedBuffer(buffer []byte) {
 // is preserved in shardRetainResult: CreditDecision may be accept while Retained
 // is false.
 func (s *shard) tryRetain(buffer []byte) shardRetainResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	capacity := shardBufferCapacity(buffer)
 
 	s.counters.recordPut(capacity)
@@ -200,6 +219,9 @@ func (s *shard) tryRetain(buffer []byte) shardRetainResult {
 // counters after the bucket operation completes. Trim planning, victim selection,
 // and pressure policy belong to higher layers.
 func (s *shard) trim(maxBuffers int) bucketTrimResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	result := s.bucket.trim(maxBuffers)
 	s.counters.recordTrim(result)
 
@@ -212,6 +234,9 @@ func (s *shard) trim(maxBuffers int) bucketTrimResult {
 // It physically clears bucket storage and records clear counters. It does not
 // disable credit; credit publication remains a separate control-plane operation.
 func (s *shard) clear() bucketTrimResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	result := s.bucket.clear()
 	s.counters.recordClear(result)
 
@@ -237,6 +262,9 @@ func (s *shard) disableCredit() Generation {
 // It is intended for diagnostics, tests, metrics aggregation, and control-plane
 // sampling.
 func (s *shard) state() shardState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	return shardState{
 		Bucket:   s.bucket.state(),
 		Counters: s.counters.snapshot(),

@@ -399,10 +399,6 @@ func TestSizeComparisonHelpers(t *testing.T) {
 }
 
 // TestSizeClamp verifies inclusive range clamping.
-//
-// Clamp is intentionally tested only with valid ranges. Invalid range validation
-// belongs in the production implementation if the method is later changed to
-// fail fast on minValue > maxValue.
 func TestSizeClamp(t *testing.T) {
 	t.Parallel()
 
@@ -414,6 +410,27 @@ func TestSizeClamp(t *testing.T) {
 		max   Size
 		want  Size
 	}{
+		{
+			name:  "requested inside task range",
+			value: Size(7),
+			min:   Size(1),
+			max:   Size(10),
+			want:  Size(7),
+		},
+		{
+			name:  "requested below task range",
+			value: Size(0),
+			min:   Size(1),
+			max:   Size(10),
+			want:  Size(1),
+		},
+		{
+			name:  "requested above task range",
+			value: Size(99),
+			min:   Size(1),
+			max:   Size(10),
+			want:  Size(10),
+		},
 		{
 			name:  "below range",
 			value: Size(32),
@@ -470,6 +487,15 @@ func TestSizeClamp(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSizeClampPanicsForInvalidRange verifies fail-fast range validation.
+func TestSizeClampPanicsForInvalidRange(t *testing.T) {
+	t.Parallel()
+
+	testutil.MustPanicWithMessage(t, errSizeClampInvalidRange, func() {
+		_ = Size(7).Clamp(10, 5)
+	})
 }
 
 // TestSizeString verifies stable human-readable formatting.
