@@ -27,14 +27,11 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 //
 // Responsibility boundary:
 //
-//   - shard code owns call ordering;
-//   - bucket code owns synchronized retained-buffer storage;
+//   - shard code owns call ordering and synchronization;
+//   - bucket code owns raw retained-buffer storage;
 //   - class_admission.go owns minimal class-local retain eligibility checks;
-//   - admission code owns policy/drop-reason mapping;
-//   - trim planning owns victim and target selection;
-//   - workload-window code computes recent deltas;
-//   - workload scoring code consumes deltas;
-//   - metrics code owns public aggregation and export;
+//   - caller code maps local decisions to any public result vocabulary;
+//   - callers decide trim targets;
 //   - shardCounters only records facts that already happened.
 //
 // The project context uses workload signals such as gets, puts, hits, misses,
@@ -50,9 +47,8 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 // Retained byte accounting uses buffer capacity, not slice length, because the
 // backing array capacity is what keeps memory reachable.
 //
-// In-use bytes and reserved bytes are intentionally not represented here. Those
-// require ownership-aware accounting that can track checked-out buffers. This
-// file only tracks retained storage and shard-local workload outcomes.
+// In-use bytes and reserved bytes are intentionally not represented here. This
+// file only tracks retained storage and shard-local outcomes.
 //
 // Correctness:
 //
@@ -131,8 +127,8 @@ type shardCounters struct {
 
 	// clearOperations counts hard clear operations recorded for shard buckets.
 	//
-	// Clear is tracked separately from trim because close/reset/policy-change
-	// cleanup is not necessarily the same as adaptive pressure trimming.
+	// Clear is tracked separately from trim because full cleanup is not necessarily
+	// the same as ordinary trim operations.
 	clearOperations atomicx.Uint64Counter
 
 	// clearedBuffers counts buffers removed by clear operations.
@@ -209,9 +205,8 @@ func (c *shardCounters) recordRetain(capacity uint64) {
 
 // recordDrop records that a returned buffer was not retained.
 //
-// Drop reasons are intentionally not represented here. Admission, pressure,
-// ownership, full-bucket, class, and policy-specific reasons belong to
-// higher-level accounting or reason-specific counters.
+// Drop reasons are intentionally not represented here. The caller can map local
+// credit and bucket outcomes to any external result vocabulary.
 func (c *shardCounters) recordDrop(capacity uint64) {
 	c.drops.Inc()
 	c.droppedBytes.Add(capacity)
@@ -239,8 +234,8 @@ func (c *shardCounters) recordTrim(result bucketTrimResult) {
 
 // recordClear records a completed bucket-level clear operation.
 //
-// Clear operations are tracked separately from trim operations so close/reset
-// cleanup does not get mixed with adaptive pressure trimming.
+// Clear operations are tracked separately from trim operations so full cleanup
+// does not get mixed with ordinary trim operations.
 func (c *shardCounters) recordClear(result bucketTrimResult) {
 	c.clearOperations.Inc()
 
@@ -261,10 +256,9 @@ func (c *shardCounters) recordClear(result bucketTrimResult) {
 //
 // The snapshot is not globally atomic across all fields. Individual fields are
 // loaded atomically, but concurrent updates may make different fields represent
-// slightly different instants. This is acceptable for metrics, workload windows,
-// pressure heuristics, and controller sampling. Strongly consistent
-// accounting, if needed, must be performed by the owner under its own
-// synchronization.
+// slightly different instants. This is acceptable for diagnostics and sampling.
+// Strongly consistent accounting, if needed, must be performed by the caller
+// under its own synchronization.
 func (c *shardCounters) snapshot() shardCountersSnapshot {
 	return shardCountersSnapshot{
 		Gets:           c.gets.Load(),

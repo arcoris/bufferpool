@@ -249,7 +249,7 @@ func mustFiniteRatioOperand(value float64, nanMessage, infiniteMessage string) f
 //
 // The numerator and denominator arguments are intentionally accepted even though
 // only result is checked. This keeps call sites explicit about the validation
-// sequence and prevents future refactors from accidentally removing operand
+// sequence and prevents later refactors from accidentally removing operand
 // validation as "unused" logic.
 func mustFiniteRatioResult(numerator, denominator, result float64) float64 {
 	_ = numerator

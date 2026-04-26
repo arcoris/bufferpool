@@ -18,6 +18,12 @@ package bufferpool
 
 import "sync"
 
+const (
+	// errShardInvalidAllocationCapacity is used when shard allocation accounting
+	// is asked to record a zero-capacity allocation.
+	errShardInvalidAllocationCapacity = "bufferpool.shard: allocation capacity must be greater than zero"
+)
+
 // shard is a shard-local runtime unit for one size-class owner.
 //
 // A shard is the hot-path synchronization boundary for retained storage. It
@@ -67,9 +73,9 @@ import "sync"
 // prevents concurrent retain calls from admitting more buffers than the observed
 // shard credit allows.
 //
-// The full shard state snapshot is not globally atomic across bucket, counters,
-// and credit. It is suitable for diagnostics, tests, metrics sampling, and
-// control-plane observation.
+// The full shard state snapshot is locally consistent for bucket state and
+// shard current retained counters because shard.state reads them while holding
+// shard.mu. Credit fields are atomic publication state and remain observational.
 //
 // Copying:
 //
@@ -149,6 +155,10 @@ func (s *shard) tryGet(requestedSize Size) shardGetResult {
 // allocation here after it allocates a new backing buffer because a shard reuse
 // attempt missed or because a higher-level path intentionally bypassed reuse.
 func (s *shard) recordAllocation(capacity uint64) {
+	if capacity == 0 {
+		panic(errShardInvalidAllocationCapacity)
+	}
+
 	s.counters.recordAllocation(capacity)
 }
 
@@ -163,9 +173,8 @@ func (s *shard) recordAllocatedBuffer(buffer []byte) {
 // tryRetain attempts to retain a returned buffer in this shard.
 //
 // The method represents the shard-local part of return-path retention. It does
-// not perform all admission checks. Owner layers must still handle lifecycle,
-// ownership, max retained capacity, pressure, origin-class growth, and public
-// drop-reason mapping.
+// not perform all admission checks. Class-level capacity compatibility and
+// class-level lifetime accounting must be handled before or around this method.
 //
 // The method performs only shard-local work:
 //
@@ -217,8 +226,8 @@ func (s *shard) tryRetain(buffer []byte) shardRetainResult {
 // trim removes up to maxBuffers retained buffers from this shard.
 //
 // The physical removal is delegated to bucket.trim. The shard records trim
-// counters after the bucket operation completes. Trim planning, victim selection,
-// and pressure policy belong to higher layers.
+// counters after the bucket operation completes. Callers decide when trimming is
+// needed; shard only performs the selected local storage reduction.
 func (s *shard) trim(maxBuffers int) bucketTrimResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -231,9 +240,8 @@ func (s *shard) trim(maxBuffers int) bucketTrimResult {
 
 // clear removes all retained buffers from this shard.
 //
-// clear is intended for shutdown, hard cleanup, policy invalidation, or tests.
-// It physically clears bucket storage and records clear counters. It does not
-// disable credit; credit publication remains a separate control-plane operation.
+// clear physically clears bucket storage and records clear counters. It does not
+// disable credit; credit publication remains a separate operation.
 func (s *shard) clear() bucketTrimResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -286,6 +294,9 @@ func (s *shard) creditUsage() shardCreditUsage {
 }
 
 // bucketState returns the current local bucket state.
+//
+// The method locks shard.mu before reading the raw bucket. Use state() when a
+// storage-consistent view of bucket, counters, and credit is needed together.
 func (s *shard) bucketState() bucketState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -293,12 +304,15 @@ func (s *shard) bucketState() bucketState {
 	return s.bucket.state()
 }
 
-// countersSnapshot returns the current shard counter snapshot.
+// countersSnapshot returns an atomic sample of shard counters.
+//
+// This method is race-safe but not ordered with raw bucket state. Use state()
+// when tests or diagnostics need bucket storage and current counters to match.
 func (s *shard) countersSnapshot() shardCountersSnapshot {
 	return s.counters.snapshot()
 }
 
-// creditSnapshot returns the current shard credit snapshot.
+// creditSnapshot returns an atomic sample of shard credit.
 func (s *shard) creditSnapshot() shardCreditSnapshot {
 	return s.credit.snapshot()
 }

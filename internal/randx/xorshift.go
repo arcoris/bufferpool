@@ -99,9 +99,9 @@ Limitations
 
 Security boundary
 
-These helpers MUST NOT be used for security-sensitive randomness. If a future
-component requires unpredictable values, use crypto/rand or another primitive
-with an explicit security contract.
+These helpers MUST NOT be used for security-sensitive randomness. Components
+requiring unpredictable values must use crypto/rand or another primitive with an
+explicit security contract.
 */
 
 const (
@@ -181,7 +181,7 @@ func NewXorShift64Star(seed uint64) XorShift64Star {
 //
 // A zero seed is normalized to a fixed non-zero seed because zero is an
 // absorbing state for raw xorshift transitions. Re-seeding is deterministic:
-// using the same seed produces the same future sequence.
+// using the same seed produces the same subsequent sequence.
 func (s *XorShift64Star) Seed(seed uint64) {
 	s.state = normalizeXorShift64StarSeed(seed)
 }

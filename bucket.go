@@ -51,9 +51,8 @@ const maxBucketRetainedBytes = ^uint64(0)
 // bucket is a bounded LIFO storage primitive for reusable byte buffers.
 //
 // bucket is not goroutine-safe. The owning shard must serialize all access.
-// bucket does not decide admission, policy, pressure, ownership, budget, or
-// metrics. It only stores already admitted buffers and maintains local storage
-// accounting.
+// bucket does not decide admission, budget, or owner-side result mapping. It
+// only stores already admitted buffers and maintains local storage accounting.
 //
 // Storage behavior:
 //

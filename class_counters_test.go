@@ -156,6 +156,7 @@ func TestClassCountersRecordTrimAndClear(t *testing.T) {
 		RemovedBuffers: 1,
 		RemovedBytes:   512,
 	})
+	counters.recordClearAmount(0, 0)
 	counters.recordClearAmount(3, 1536)
 
 	snapshot := counters.snapshot()
@@ -169,8 +170,8 @@ func TestClassCountersRecordTrimAndClear(t *testing.T) {
 	if snapshot.TrimmedBytes != 768 {
 		t.Fatalf("TrimmedBytes = %d, want 768", snapshot.TrimmedBytes)
 	}
-	if snapshot.ClearOperations != 3 {
-		t.Fatalf("ClearOperations = %d, want 3", snapshot.ClearOperations)
+	if snapshot.ClearOperations != 4 {
+		t.Fatalf("ClearOperations = %d, want 4", snapshot.ClearOperations)
 	}
 	if snapshot.ClearedBuffers != 4 {
 		t.Fatalf("ClearedBuffers = %d, want 4", snapshot.ClearedBuffers)
@@ -178,8 +179,8 @@ func TestClassCountersRecordTrimAndClear(t *testing.T) {
 	if snapshot.ClearedBytes != 2048 {
 		t.Fatalf("ClearedBytes = %d, want 2048", snapshot.ClearedBytes)
 	}
-	if snapshot.RemovalOperations() != 5 {
-		t.Fatalf("RemovalOperations() = %d, want 5", snapshot.RemovalOperations())
+	if snapshot.RemovalOperations() != 6 {
+		t.Fatalf("RemovalOperations() = %d, want 6", snapshot.RemovalOperations())
 	}
 	if snapshot.RemovedBuffers() != 6 {
 		t.Fatalf("RemovedBuffers() = %d, want 6", snapshot.RemovedBuffers())

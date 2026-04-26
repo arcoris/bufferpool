@@ -52,8 +52,8 @@ const (
 //   - class budget allocation;
 //   - shard credit calculation;
 //   - admission checks;
-//   - ownership growth checks;
-//   - metrics and snapshots that need to report normalized class capacity.
+//   - owner-side capacity checks;
+//   - snapshots that need to report normalized class capacity.
 //
 // The zero value is invalid as an enabled class size. It may appear only as an
 // unset field before validation. Constructors in this file reject zero.
@@ -172,9 +172,8 @@ func (c ClassSize) CanServe(requestedSize Size) bool {
 // If requestedSize is greater than the class size, the result is zero because the
 // class cannot serve the request and there is no valid in-class waste to report.
 //
-// This helper returns bytes, not a ratio. Ratio calculation belongs to workload
-// scoring or metrics code where division-by-zero policy and normalization rules
-// are explicit.
+// This helper returns bytes, not a ratio. Ratio calculation belongs outside this
+// class-size primitive.
 func (c ClassSize) WasteFor(requestedSize Size) Size {
 	classSize := Size(c)
 	if requestedSize >= classSize {

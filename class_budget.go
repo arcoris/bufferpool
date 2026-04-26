@@ -61,9 +61,9 @@ const (
 // classBudget stores the current class-level retained-memory target for one
 // normalized size class.
 //
-// The class budget is a class-local control-plane value. It does not store
-// buffers, does not record workload counters, and does not decide admission
-// outcomes directly. Its job is to translate an assigned byte target into:
+// The class budget is a class-local target value. It does not store buffers,
+// does not record workload counters, and does not decide admission outcomes
+// directly. Its job is to translate an assigned byte target into:
 //
 //   - how many whole buffers of this ClassSize the class may retain;
 //   - how many aligned bytes that whole-buffer target represents;
@@ -94,7 +94,9 @@ const (
 // classBudget is safe for concurrent readers and control-plane updates through
 // atomic fields. Snapshot arithmetic fields are internally consistent because
 // they are derived from one assignedBytes load. Generation is loaded separately
-// and is only an observational publication marker.
+// and is only an observational publication marker. classState publishes the
+// derived shard-credit plan shard by shard, so budget updates are not an atomic
+// class-wide cutover across all shards.
 //
 // Copying:
 //
@@ -179,8 +181,8 @@ func (b *classBudget) disable() Generation {
 // TargetBytes, and RemainderBytes are derived from a single assignedBytes load.
 // Generation is loaded independently and is an observational publication marker;
 // concurrent readers may observe a generation that is slightly older or newer
-// than the assignedBytes value. That is acceptable for diagnostics, controller
-// sampling, and shard-credit planning.
+// than the assignedBytes value. That is acceptable for diagnostics, sampling,
+// and shard-credit planning.
 func (b *classBudget) snapshot() classBudgetSnapshot {
 	if b.classSize.IsZero() {
 		panic(errClassBudgetZeroClassSize)

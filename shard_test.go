@@ -64,7 +64,7 @@ func TestNewShard(t *testing.T) {
 		t.Fatal("Credit.IsEnabled() = true, want false")
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestNewShardPanicsForInvalidBucketSlotLimit verifies that shard construction
@@ -184,7 +184,7 @@ func TestShardTryRetainRejectsWhenCreditDisabled(t *testing.T) {
 		t.Fatalf("DroppedBytes = %d, want 1024", state.Counters.DroppedBytes)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardTryRetainRejectsZeroCapacity verifies candidate-capacity validation.
@@ -225,7 +225,7 @@ func TestShardTryRetainRejectsZeroCapacity(t *testing.T) {
 		t.Fatalf("Drops = %d, want 1", state.Counters.Drops)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardTryRetainStoresBuffer verifies successful shard-local retention.
@@ -294,7 +294,7 @@ func TestShardTryRetainStoresBuffer(t *testing.T) {
 		t.Fatalf("CurrentRetainedBytes = %d, want 1024", state.Counters.CurrentRetainedBytes)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardTryRetainRejectsWhenBucketIsFull verifies physical storage rejection.
@@ -349,7 +349,7 @@ func TestShardTryRetainRejectsWhenBucketIsFull(t *testing.T) {
 		t.Fatalf("CurrentRetainedBuffers = %d, want 1", state.Counters.CurrentRetainedBuffers)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardTryRetainRejectsWhenCreditExhausted verifies credit rejection.
@@ -398,7 +398,7 @@ func TestShardTryRetainRejectsWhenCreditExhausted(t *testing.T) {
 		t.Fatalf("Drops = %d, want 1", state.Counters.Drops)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardTryGetHit verifies successful reuse from retained storage.
@@ -472,7 +472,7 @@ func TestShardTryGetHit(t *testing.T) {
 		t.Fatalf("CurrentRetainedBytes = %d, want 0", state.Counters.CurrentRetainedBytes)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardRecordAllocation verifies allocation accounting.
@@ -495,6 +495,62 @@ func TestShardRecordAllocation(t *testing.T) {
 
 	if counters.AllocatedBytes != 3072 {
 		t.Fatalf("AllocatedBytes = %d, want 3072", counters.AllocatedBytes)
+	}
+}
+
+func TestShardRecordAllocationPanicsForZeroCapacity(t *testing.T) {
+	t.Parallel()
+
+	shard := newShard(1)
+
+	testutil.MustPanicWithMessage(t, errShardInvalidAllocationCapacity, func() {
+		shard.recordAllocation(0)
+	})
+
+	state := shard.state()
+	if !state.Counters.IsZero() {
+		t.Fatalf("Counters after panic = %+v, want zero", state.Counters)
+	}
+
+	assertShardStateRetainedConsistency(t, state)
+}
+
+func TestShardRecordAllocatedBufferPanicsForZeroCapacity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		buffer []byte
+	}{
+		{
+			name:   "nil",
+			buffer: nil,
+		},
+		{
+			name:   "zero capacity",
+			buffer: make([]byte, 0),
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			shard := newShard(1)
+
+			testutil.MustPanicWithMessage(t, errShardInvalidAllocationCapacity, func() {
+				shard.recordAllocatedBuffer(tt.buffer)
+			})
+
+			state := shard.state()
+			if !state.Counters.IsZero() {
+				t.Fatalf("Counters after panic = %+v, want zero", state.Counters)
+			}
+
+			assertShardStateRetainedConsistency(t, state)
+		})
 	}
 }
 
@@ -555,7 +611,7 @@ func TestShardTrim(t *testing.T) {
 		t.Fatalf("CurrentRetainedBytes = %d, want 512", state.Counters.CurrentRetainedBytes)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardTrimZeroLimit verifies zero-limit trim accounting.
@@ -597,7 +653,7 @@ func TestShardTrimZeroLimit(t *testing.T) {
 		t.Fatalf("CurrentRetainedBuffers = %d, want 1", state.Counters.CurrentRetainedBuffers)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardClear verifies clear accounting and physical removal.
@@ -672,7 +728,7 @@ func TestShardClear(t *testing.T) {
 		t.Fatalf("Credit.Generation changed after clear: got %v, want %v", afterCredit.Generation, beforeCredit.Generation)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
 // TestShardUpdateAndDisableCredit verifies credit publication helpers.
@@ -952,7 +1008,7 @@ func TestShardConcurrentGetAndRetain(t *testing.T) {
 		t.Fatalf("CurrentRetainedBuffers after concurrent retain = %d, want %d", afterRetain.Counters.CurrentRetainedBuffers, total)
 	}
 
-	assertShardRetainedConsistency(t, afterRetain)
+	assertShardStateRetainedConsistency(t, afterRetain)
 
 	var getWG sync.WaitGroup
 	getWG.Add(workers)
@@ -990,7 +1046,7 @@ func TestShardConcurrentGetAndRetain(t *testing.T) {
 		t.Fatalf("Bucket.RetainedBuffers after concurrent get = %d, want 0", afterGet.Bucket.RetainedBuffers)
 	}
 
-	assertShardRetainedConsistency(t, afterGet)
+	assertShardStateRetainedConsistency(t, afterGet)
 }
 
 // TestShardConcurrentRetainDoesNotExceedCredit verifies that credit evaluation
@@ -1060,10 +1116,10 @@ func TestShardConcurrentRetainDoesNotExceedCredit(t *testing.T) {
 		t.Fatalf("Drops = %d, want %d", state.Counters.Drops, wantDrops)
 	}
 
-	assertShardRetainedConsistency(t, state)
+	assertShardStateRetainedConsistency(t, state)
 }
 
-func assertShardRetainedConsistency(t *testing.T, state shardState) {
+func assertShardStateRetainedConsistency(t *testing.T, state shardState) {
 	t.Helper()
 
 	if state.Counters.CurrentRetainedBuffers != uint64(state.Bucket.RetainedBuffers) {

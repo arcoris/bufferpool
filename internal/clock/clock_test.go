@@ -137,8 +137,8 @@ func TestSinceUsesCurrentFakeClockValue(t *testing.T) {
 // TestElapsedReturnsDuration verifies ordinary non-negative elapsed-time
 // calculation.
 //
-// Elapsed is the central helper for duration math used by future controller,
-// workload, lease, snapshot, idle-expiry, and trim-cadence code.
+// Elapsed is the central helper for duration math used by controller, workload,
+// lease, snapshot, idle-expiry, and trim-cadence code.
 func TestElapsedReturnsDuration(t *testing.T) {
 	t.Parallel()
 

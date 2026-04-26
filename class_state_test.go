@@ -152,24 +152,24 @@ func TestNewClassStatePanicsForInvalidBucketSlotLimit(t *testing.T) {
 	})
 }
 
-// TestClassStateShardAt verifies shard lookup by index.
-func TestClassStateShardAt(t *testing.T) {
+// TestClassStateMustShardAt verifies low-level shard lookup by index.
+func TestClassStateMustShardAt(t *testing.T) {
 	t.Parallel()
 
 	class := NewSizeClass(ClassID(0), ClassSizeFromSize(KiB))
 	state := newClassState(class, 2, 1)
 
-	if state.shardAt(0) == nil {
-		t.Fatal("shardAt(0) = nil, want shard pointer")
+	if state.mustShardAt(0) == nil {
+		t.Fatal("mustShardAt(0) = nil, want shard pointer")
 	}
 
-	if state.shardAt(1) == nil {
-		t.Fatal("shardAt(1) = nil, want shard pointer")
+	if state.mustShardAt(1) == nil {
+		t.Fatal("mustShardAt(1) = nil, want shard pointer")
 	}
 }
 
-// TestClassStateShardAtPanicsForInvalidIndex verifies shard index validation.
-func TestClassStateShardAtPanicsForInvalidIndex(t *testing.T) {
+// TestClassStateMustShardAtPanicsForInvalidIndex verifies shard index validation.
+func TestClassStateMustShardAtPanicsForInvalidIndex(t *testing.T) {
 	t.Parallel()
 
 	class := NewSizeClass(ClassID(0), ClassSizeFromSize(KiB))
@@ -200,7 +200,7 @@ func TestClassStateShardAtPanicsForInvalidIndex(t *testing.T) {
 			t.Parallel()
 
 			testutil.MustPanicWithMessage(t, errClassStateShardIndexOutOfRange, func() {
-				_ = state.shardAt(tt.shardIndex)
+				_ = state.mustShardAt(tt.shardIndex)
 			})
 		})
 	}
@@ -1029,6 +1029,134 @@ func TestClassStateRecordAllocation(t *testing.T) {
 	if snapshot.Shards[1].Counters.AllocatedBytes != 2048 {
 		t.Fatalf("shard 1 AllocatedBytes = %d, want 2048", snapshot.Shards[1].Counters.AllocatedBytes)
 	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+func TestClassStateRecordAllocationPanicsForZeroCapacity(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	testutil.MustPanicWithMessage(t, errClassStateInvalidAllocationCapacity, func() {
+		state.recordAllocation(0, 0)
+	})
+
+	snapshot := state.state()
+	if !snapshot.Counters.IsZero() {
+		t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
+	}
+	if !snapshot.Shards[0].Counters.IsZero() {
+		t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
+	}
+}
+
+func TestClassStateRecordAllocationPanicsForCapacityBelowClassSize(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	testutil.MustPanicWithMessage(t, errClassStateAllocationBelowClassSize, func() {
+		state.recordAllocation(0, 512)
+	})
+
+	snapshot := state.state()
+	if !snapshot.Counters.IsZero() {
+		t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
+	}
+	if !snapshot.Shards[0].Counters.IsZero() {
+		t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
+	}
+}
+
+func TestClassStateRecordAllocationAcceptsClassSizeCapacity(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	state.recordAllocation(0, uint64(KiB))
+
+	snapshot := state.state()
+	if snapshot.Counters.Allocations != 1 {
+		t.Fatalf("class Allocations = %d, want 1", snapshot.Counters.Allocations)
+	}
+	if snapshot.Counters.AllocatedBytes != uint64(KiB) {
+		t.Fatalf("class AllocatedBytes = %d, want %d", snapshot.Counters.AllocatedBytes, uint64(KiB))
+	}
+	if snapshot.Shards[0].Counters.Allocations != 1 {
+		t.Fatalf("shard Allocations = %d, want 1", snapshot.Shards[0].Counters.Allocations)
+	}
+	if snapshot.Shards[0].Counters.AllocatedBytes != uint64(KiB) {
+		t.Fatalf("shard AllocatedBytes = %d, want %d", snapshot.Shards[0].Counters.AllocatedBytes, uint64(KiB))
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+func TestClassStateRecordAllocatedBufferPanicsForNilBuffer(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	testutil.MustPanicWithMessage(t, errClassStateInvalidAllocationCapacity, func() {
+		state.recordAllocatedBuffer(0, nil)
+	})
+
+	snapshot := state.state()
+	if !snapshot.Counters.IsZero() {
+		t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
+	}
+	if !snapshot.Shards[0].Counters.IsZero() {
+		t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
+	}
+}
+
+func TestClassStateRecordAllocatedBufferPanicsForZeroCapacity(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	testutil.MustPanicWithMessage(t, errClassStateInvalidAllocationCapacity, func() {
+		state.recordAllocatedBuffer(0, make([]byte, 0))
+	})
+
+	snapshot := state.state()
+	if !snapshot.Counters.IsZero() {
+		t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
+	}
+	if !snapshot.Shards[0].Counters.IsZero() {
+		t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
+	}
+}
+
+func TestClassStateRecordAllocatedBufferAcceptsCapacityAboveClassSize(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	state.recordAllocatedBuffer(0, make([]byte, 7, 2*KiB))
+
+	snapshot := state.state()
+	if snapshot.Counters.Allocations != 1 {
+		t.Fatalf("class Allocations = %d, want 1", snapshot.Counters.Allocations)
+	}
+	if snapshot.Counters.AllocatedBytes != uint64(2*KiB) {
+		t.Fatalf("class AllocatedBytes = %d, want %d", snapshot.Counters.AllocatedBytes, uint64(2*KiB))
+	}
+	if snapshot.Shards[0].Counters.Allocations != 1 {
+		t.Fatalf("shard Allocations = %d, want 1", snapshot.Shards[0].Counters.Allocations)
+	}
+	if snapshot.Shards[0].Counters.AllocatedBytes != uint64(2*KiB) {
+		t.Fatalf("shard AllocatedBytes = %d, want %d", snapshot.Shards[0].Counters.AllocatedBytes, uint64(2*KiB))
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
 }
 
 // TestClassStateTrimShard verifies class-level and shard-level trim accounting.
@@ -1278,6 +1406,85 @@ func TestClassStateClearAllZero(t *testing.T) {
 	for index, shard := range snapshot.Shards {
 		if shard.Counters.ClearOperations != 1 {
 			t.Fatalf("shard %d ClearOperations = %d, want 1", index, shard.Counters.ClearOperations)
+		}
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+// TestClassStateClearDerivedRetainedUsageIsZeroWithoutConcurrentMutation
+// verifies class-level current retained usage after a non-concurrent clear.
+func TestClassStateClearDerivedRetainedUsageIsZeroWithoutConcurrentMutation(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 2, 4)
+	state.updateBudget(4 * KiB)
+
+	for shardIndex := 0; shardIndex < 2; shardIndex++ {
+		result := state.tryRetain(shardIndex, make([]byte, 0, 1024))
+		if !result.Retained() {
+			t.Fatalf("tryRetain(shard=%d) Retained() = false, decision=%s", shardIndex, result.CreditDecision())
+		}
+	}
+
+	_ = state.clear()
+
+	snapshot := state.state()
+	if snapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("CurrentRetainedBuffers = %d, want 0", snapshot.CurrentRetainedBuffers)
+	}
+	if snapshot.CurrentRetainedBytes != 0 {
+		t.Fatalf("CurrentRetainedBytes = %d, want 0", snapshot.CurrentRetainedBytes)
+	}
+	if !snapshot.RetainedUsage().IsZero() {
+		t.Fatalf("RetainedUsage() = %+v, want zero", snapshot.RetainedUsage())
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+// TestClassStateClearDoesNotDisableBudgetOrShardCredit verifies that physical
+// cleanup and credit publication remain separate operations.
+func TestClassStateClearDoesNotDisableBudgetOrShardCredit(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 2, 4)
+	generation := state.updateBudget(4 * KiB)
+
+	for shardIndex := 0; shardIndex < 2; shardIndex++ {
+		result := state.tryRetain(shardIndex, make([]byte, 0, 1024))
+		if !result.Retained() {
+			t.Fatalf("tryRetain(shard=%d) Retained() = false, decision=%s", shardIndex, result.CreditDecision())
+		}
+	}
+
+	result := state.clear()
+	if result.RemovedBuffers != 2 {
+		t.Fatalf("RemovedBuffers = %d, want 2", result.RemovedBuffers)
+	}
+	if result.RemovedBytes != 2048 {
+		t.Fatalf("RemovedBytes = %d, want 2048", result.RemovedBytes)
+	}
+
+	snapshot := state.state()
+	if snapshot.Budget.Generation != generation {
+		t.Fatalf("Budget.Generation = %v, want %v", snapshot.Budget.Generation, generation)
+	}
+	if !snapshot.Budget.IsEffective() {
+		t.Fatalf("Budget = %+v, want effective", snapshot.Budget)
+	}
+
+	for index, shard := range snapshot.Shards {
+		if !shard.Credit.IsEnabled() {
+			t.Fatalf("shard %d Credit.IsEnabled() = false, want true", index)
+		}
+		if shard.Credit.TargetBuffers != 2 {
+			t.Fatalf("shard %d Credit.TargetBuffers = %d, want 2", index, shard.Credit.TargetBuffers)
+		}
+		if shard.Credit.TargetBytes != uint64(2*KiB) {
+			t.Fatalf("shard %d Credit.TargetBytes = %d, want %d", index, shard.Credit.TargetBytes, uint64(2*KiB))
 		}
 	}
 
@@ -1540,6 +1747,161 @@ func TestClassStorageReductionResult(t *testing.T) {
 	}
 }
 
+// TestStaticRuntimeCoreIntegration exercises the current internal static runtime
+// path without relying on any public pool layer.
+func TestStaticRuntimeCoreIntegration(t *testing.T) {
+	t.Parallel()
+
+	table := newClassTable([]ClassSize{
+		ClassSizeFromBytes(512),
+		ClassSizeFromSize(KiB),
+		ClassSizeFromSize(2 * KiB),
+	})
+
+	requestClass, ok := table.classForRequest(SizeFromInt(700))
+	if !ok {
+		t.Fatal("classForRequest(700 B) ok = false, want true")
+	}
+	if requestClass.Size() != ClassSizeFromSize(KiB) {
+		t.Fatalf("classForRequest(700 B) = %s, want 1 KiB class", requestClass)
+	}
+
+	capacityClass, ok := table.classForCapacity(SizeFromInt(700))
+	if !ok {
+		t.Fatal("classForCapacity(700 B) ok = false, want true")
+	}
+	if capacityClass.Size() != ClassSizeFromBytes(512) {
+		t.Fatalf("classForCapacity(700 B) = %s, want 512 B class", capacityClass)
+	}
+
+	capacityState := newClassState(capacityClass, 1, 2)
+	capacityState.updateBudget(SizeFromBytes(1024))
+	capacityRetain := capacityState.tryRetain(0, make([]byte, 0, 700))
+	if !capacityRetain.Retained() {
+		t.Fatalf("512 B retain Retained() = false, decision=%s", capacityRetain.CreditDecision())
+	}
+	assertClassStateRetainedConsistency(t, capacityState.state())
+
+	state := newClassState(requestClass, 1, 3)
+	state.updateBudget(2 * KiB)
+
+	retain := state.tryRetain(0, make([]byte, 7, 1024))
+	if !retain.Retained() {
+		t.Fatalf("initial retain Retained() = false, decision=%s", retain.CreditDecision())
+	}
+
+	get := state.tryGet(0, SizeFromInt(700))
+	if !get.Hit() {
+		t.Fatal("tryGet(700 B) Hit() = false, want true")
+	}
+	if get.Capacity() != 1024 {
+		t.Fatalf("tryGet(700 B) Capacity() = %d, want 1024", get.Capacity())
+	}
+
+	miss := state.tryGet(0, SizeFromInt(700))
+	if !miss.Miss() {
+		t.Fatal("second tryGet(700 B) Miss() = false, want true")
+	}
+
+	state.recordAllocation(0, uint64(KiB))
+
+	classReject := state.tryRetain(0, make([]byte, 0, 700))
+	if !classReject.RejectedByClass() {
+		t.Fatal("700 B retain into 1 KiB class RejectedByClass() = false, want true")
+	}
+
+	firstCreditBuffer := state.tryRetain(0, make([]byte, 0, 1024))
+	if !firstCreditBuffer.Retained() {
+		t.Fatalf("first credit buffer Retained() = false, decision=%s", firstCreditBuffer.CreditDecision())
+	}
+
+	secondCreditBuffer := state.tryRetain(0, make([]byte, 0, 1024))
+	if !secondCreditBuffer.Retained() {
+		t.Fatalf("second credit buffer Retained() = false, decision=%s", secondCreditBuffer.CreditDecision())
+	}
+
+	creditReject := state.tryRetain(0, make([]byte, 0, 1024))
+	if !creditReject.RejectedByCredit() {
+		t.Fatalf("credit reject RejectedByCredit() = false, decision=%s", creditReject.CreditDecision())
+	}
+
+	trim := state.trimShard(0, 1)
+	if trim.RemovedBuffers != 1 {
+		t.Fatalf("trim RemovedBuffers = %d, want 1", trim.RemovedBuffers)
+	}
+	if trim.RemovedBytes != 1024 {
+		t.Fatalf("trim RemovedBytes = %d, want 1024", trim.RemovedBytes)
+	}
+
+	clear := state.clear()
+	if clear.RemovedBuffers != 1 {
+		t.Fatalf("clear RemovedBuffers = %d, want 1", clear.RemovedBuffers)
+	}
+	if clear.RemovedBytes != 1024 {
+		t.Fatalf("clear RemovedBytes = %d, want 1024", clear.RemovedBytes)
+	}
+
+	bucketFullState := newClassState(requestClass, 1, 1)
+	bucketFullState.updateBudget(2 * KiB)
+	if result := bucketFullState.tryRetain(0, make([]byte, 0, 1024)); !result.Retained() {
+		t.Fatalf("bucket setup retain Retained() = false, decision=%s", result.CreditDecision())
+	}
+	bucketReject := bucketFullState.tryRetain(0, make([]byte, 0, 1024))
+	if !bucketReject.RejectedByBucket() {
+		t.Fatalf("bucket reject RejectedByBucket() = false, decision=%s", bucketReject.CreditDecision())
+	}
+	assertClassStateRetainedConsistency(t, bucketFullState.state())
+
+	overBudgetState := newClassState(requestClass, 1, 1)
+	overBudgetState.updateBudget(KiB)
+	if result := overBudgetState.tryRetain(0, make([]byte, 0, 1024)); !result.Retained() {
+		t.Fatalf("over-budget setup retain Retained() = false, decision=%s", result.CreditDecision())
+	}
+	overBudgetState.disableBudget()
+	overBudgetSnapshot := overBudgetState.state()
+	if !overBudgetSnapshot.IsOverBudget() {
+		t.Fatal("IsOverBudget() after disabling budget with retained usage = false, want true")
+	}
+	assertClassStateRetainedConsistency(t, overBudgetSnapshot)
+
+	snapshot := state.state()
+	if snapshot.Counters.Gets != 2 {
+		t.Fatalf("class Gets = %d, want 2", snapshot.Counters.Gets)
+	}
+	if snapshot.Counters.Hits != 1 {
+		t.Fatalf("class Hits = %d, want 1", snapshot.Counters.Hits)
+	}
+	if snapshot.Counters.Misses != 1 {
+		t.Fatalf("class Misses = %d, want 1", snapshot.Counters.Misses)
+	}
+	if snapshot.Counters.Allocations != 1 {
+		t.Fatalf("class Allocations = %d, want 1", snapshot.Counters.Allocations)
+	}
+	if snapshot.Counters.Puts != 5 {
+		t.Fatalf("class Puts = %d, want 5", snapshot.Counters.Puts)
+	}
+	if snapshot.Counters.Retains != 3 {
+		t.Fatalf("class Retains = %d, want 3", snapshot.Counters.Retains)
+	}
+	if snapshot.Counters.Drops != 2 {
+		t.Fatalf("class Drops = %d, want 2", snapshot.Counters.Drops)
+	}
+	if snapshot.Counters.TrimOperations != 1 {
+		t.Fatalf("class TrimOperations = %d, want 1", snapshot.Counters.TrimOperations)
+	}
+	if snapshot.Counters.ClearOperations != 1 {
+		t.Fatalf("class ClearOperations = %d, want 1", snapshot.Counters.ClearOperations)
+	}
+	if snapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("CurrentRetainedBuffers = %d, want 0", snapshot.CurrentRetainedBuffers)
+	}
+	if snapshot.CurrentRetainedBytes != 0 {
+		t.Fatalf("CurrentRetainedBytes = %d, want 0", snapshot.CurrentRetainedBytes)
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
 // TestClassStateConcurrentRetainAndGet verifies class-state routing under
 // concurrent retain/get operations across shards.
 //
@@ -1744,6 +2106,8 @@ func assertClassStateRetainedConsistency(t *testing.T, snapshot classStateSnapsh
 	var bucketBytes uint64
 
 	for index, shard := range snapshot.Shards {
+		assertShardStateRetainedConsistency(t, shard)
+
 		shardBucketBuffers := uint64(shard.Bucket.RetainedBuffers)
 		if shard.Counters.CurrentRetainedBuffers != shardBucketBuffers {
 			t.Fatalf("shard %d counter retained buffers = %d, bucket retained buffers = %d",

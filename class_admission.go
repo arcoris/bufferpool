@@ -21,8 +21,8 @@ package bufferpool
 //
 // This is the minimal static-core admission layer. It only protects the
 // size-class invariant that retained buffers inside a class must be capable of
-// serving that class. Policy, ownership, pressure, and public drop-reason mapping
-// belong to owner layers.
+// serving that class. Additional owner-side checks and public result mapping
+// belong outside this helper.
 type classRetainDecision uint8
 
 const (

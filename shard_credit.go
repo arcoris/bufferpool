@@ -53,8 +53,8 @@ const (
 //   - class_budget.go derives per-shard credit limits from class targets;
 //   - shard_credit.go stores and evaluates one shard-local credit limit;
 //   - admission code maps credit decisions to public drop reasons;
-//   - bucket.go physically stores retained buffers;
-//   - bucket_trim.go physically removes retained buffers;
+//   - bucket.go physically stores and removes retained buffers;
+//   - bucket_trim.go describes storage-reduction results;
 //   - shard_counters.go records retained and removed accounting;
 //   - trim planning corrects over-target retained memory on the cold path.
 //
@@ -91,8 +91,8 @@ const (
 type shardCredit struct {
 	// generation is advanced after every applied credit update.
 	//
-	// It gives snapshots a cheap publication marker for tests, diagnostics,
-	// controller sampling and policy snapshot correlation.
+	// It gives snapshots a cheap publication marker for tests, diagnostics, and
+	// credit publication correlation.
 	generation AtomicGeneration
 
 	// targetBuffers is the current local retained-buffer credit.

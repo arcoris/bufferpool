@@ -161,7 +161,7 @@ func TestNewSizeClass(t *testing.T) {
 //
 // An enabled SizeClass must have positive normalized capacity. Zero-capacity
 // classes cannot serve requests and would corrupt budget, shard-credit,
-// admission, and ownership calculations.
+// admission, and owner-side accounting calculations.
 func TestNewSizeClassPanicsForZeroSize(t *testing.T) {
 	t.Parallel()
 
@@ -381,8 +381,8 @@ func TestSizeClassCanServe(t *testing.T) {
 
 // TestSizeClassWasteFor verifies byte-level internal fragmentation calculation.
 //
-// WasteFor returns bytes, not a ratio. Ratio calculation belongs to workload
-// scoring or metrics code.
+// WasteFor returns bytes, not a ratio. Ratio calculation belongs outside the
+// size-class descriptor.
 func TestSizeClassWasteFor(t *testing.T) {
 	t.Parallel()
 

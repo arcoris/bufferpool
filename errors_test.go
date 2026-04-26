@@ -378,7 +378,7 @@ func TestClassifiedErrorDefaultFallback(t *testing.T) {
 // TestNilClassifiedErrorMethods verifies nil receiver behavior.
 //
 // These methods are defensive because classifiedError is unexported, but keeping
-// nil receiver behavior explicit makes future refactors safer.
+// nil receiver behavior explicit makes later refactors safer.
 func TestNilClassifiedErrorMethods(t *testing.T) {
 	t.Parallel()
 

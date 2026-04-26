@@ -297,7 +297,7 @@ func TestMixUintDispatchesByPlatformWidth(t *testing.T) {
 //
 //	index = MixUint64(value) & (bound - 1)
 //
-// The test fixes that relationship explicitly so future refactors cannot change
+// The test fixes that relationship explicitly so later refactors cannot change
 // the index semantics accidentally.
 func TestPowerOfTwoIndexUint64MatchesMaskedMixedValue(t *testing.T) {
 	t.Parallel()

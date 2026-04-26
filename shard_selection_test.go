@@ -17,6 +17,8 @@
 package bufferpool
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"arcoris.dev/bufferpool/internal/testutil"
@@ -113,6 +115,80 @@ func TestRoundRobinShardSelectorReturnsValidIndexes(t *testing.T) {
 	}
 }
 
+func TestRoundRobinShardSelectorSequence(t *testing.T) {
+	t.Parallel()
+
+	selector := &roundRobinShardSelector{}
+	want := []int{0, 1, 2, 0, 1, 2}
+
+	for index, wantIndex := range want {
+		if got := selector.SelectShard(3); got != wantIndex {
+			t.Fatalf("selection %d = %d, want %d", index, got, wantIndex)
+		}
+	}
+}
+
+func TestRoundRobinShardSelectorShardCountOne(t *testing.T) {
+	t.Parallel()
+
+	selector := &roundRobinShardSelector{}
+
+	for i := 0; i < 16; i++ {
+		if got := selector.SelectShard(1); got != 0 {
+			t.Fatalf("SelectShard(1) = %d, want 0", got)
+		}
+	}
+}
+
+func TestRoundRobinShardSelectorHandlesCounterWrap(t *testing.T) {
+	t.Parallel()
+
+	selector := &roundRobinShardSelector{}
+	selector.next.Store(^uint64(0) - 1)
+
+	for i := 0; i < 4; i++ {
+		index := selector.SelectShard(5)
+		if index < 0 || index >= 5 {
+			t.Fatalf("SelectShard(5) after wrap = %d, want index in [0, 5)", index)
+		}
+	}
+}
+
+func TestRoundRobinShardSelectorConcurrentSelection(t *testing.T) {
+	t.Parallel()
+
+	const workers = 16
+	const iterations = 128
+
+	selector := &roundRobinShardSelector{}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var invalid atomic.Bool
+
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wg.Done()
+
+			<-start
+
+			for iteration := 0; iteration < iterations; iteration++ {
+				index := selector.SelectShard(8)
+				if index < 0 || index >= 8 {
+					invalid.Store(true)
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if invalid.Load() {
+		t.Fatal("concurrent SelectShard returned index outside [0, 8)")
+	}
+}
+
 type invalidShardSelector struct{}
 
 func (invalidShardSelector) SelectShard(int) int {
@@ -125,6 +201,11 @@ func TestSelectShardIndexValidatesSelector(t *testing.T) {
 
 	testutil.MustPanicWithMessage(t, errShardSelectorNil, func() {
 		_ = selectShardIndex(nil, 1)
+	})
+
+	testutil.MustPanicWithMessage(t, errShardSelectorNil, func() {
+		var selector *roundRobinShardSelector
+		_ = selector.SelectShard(1)
 	})
 
 	testutil.MustPanicWithMessage(t, errShardSelectorInvalidIndex, func() {

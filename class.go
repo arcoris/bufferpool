@@ -24,7 +24,7 @@ const (
 	//
 	// A size class represents reusable buffer capacity. A zero-capacity class
 	// cannot serve positive requests and would corrupt class-budget, shard-credit,
-	// admission, and ownership calculations.
+	// admission, and owner-side accounting calculations.
 	errSizeClassZeroSize = "bufferpool.SizeClass: class size must be greater than zero"
 )
 
@@ -40,7 +40,7 @@ const (
 //   - class counters;
 //   - class budgets;
 //   - shard arrays per class;
-//   - ownership origin-class records;
+//   - owner-side origin-class records;
 //   - class metrics and snapshots.
 //
 // ClassID values are assigned by class-table construction. Code outside
@@ -71,8 +71,8 @@ func (id ClassID) String() string {
 // ClassSize selected by a class table.
 //
 // It does not own runtime state. It does not contain counters, buckets, shards,
-// budget targets, workload score, retention policy, or admission state. Those
-// belong to higher layers:
+// budget targets, workload scoring, or admission state. Those belong outside the
+// immutable descriptor:
 //
 //   - class_table.go owns ordered lookup and validation;
 //   - class_state.go owns class runtime state;
@@ -168,8 +168,8 @@ func (c SizeClass) CanServe(requestedSize Size) bool {
 // WasteFor returns the internal fragmentation introduced when requestedSize is
 // served by this class.
 //
-// The result is expressed in bytes. Ratio calculations belong to workload
-// scoring or metrics code.
+// The result is expressed in bytes. Ratio calculations belong outside this
+// descriptor.
 func (c SizeClass) WasteFor(requestedSize Size) Size {
 	return c.size.WasteFor(requestedSize)
 }

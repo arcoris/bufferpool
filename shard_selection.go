@@ -62,6 +62,8 @@ type roundRobinShardSelector struct {
 }
 
 // SelectShard returns the next striped shard index in [0, shardCount).
+//
+// The uint64 sequence may wrap; modulo selection still returns a valid index.
 func (s *roundRobinShardSelector) SelectShard(shardCount int) int {
 	if s == nil {
 		panic(errShardSelectorNil)

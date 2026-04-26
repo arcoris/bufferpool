@@ -80,7 +80,7 @@ const (
 //   - class_budget.go owns class-level target bytes;
 //   - shard_credit.go owns per-shard local credit;
 //   - class_admission.go owns minimal class-local retain eligibility checks;
-//   - ownership code verifies origin class and returned-capacity growth;
+//   - owner-side code verifies origin class and returned-capacity growth;
 //   - bucket.go stores already admitted buffers.
 //
 // The class table does not perform memory admission. A successful lookup means
@@ -229,7 +229,7 @@ func (t classTable) classByID(id ClassID) (SizeClass, bool) {
 
 // classForExactSize returns the class whose ClassSize exactly equals size.
 //
-// Exact lookup is useful for validation, ownership records, and tests. Ordinary
+// Exact lookup is useful for validation, owner-side records, and tests. Ordinary
 // request normalization should use classForRequest.
 func (t classTable) classForExactSize(size ClassSize) (SizeClass, bool) {
 	if len(t.classes) == 0 || size.IsZero() {
@@ -280,14 +280,13 @@ func (t classTable) classForRequest(requestedSize Size) (SizeClass, bool) {
 // capacity.
 //
 // This is a floor lookup. It is intended for classifying returned buffer
-// capacities when no stricter ownership-origin class is available.
+// capacities when no stricter owner-side origin class is available.
 //
 // If capacity is smaller than the smallest configured class, the method returns
 // false.
 //
-// This method does not enforce max retained buffer capacity. Admission must still
-// check max retained capacity, pressure, ownership growth, and shard credit
-// before retaining a returned buffer.
+// This method does not enforce retention limits. Admission must still check
+// class compatibility and shard credit before retaining a returned buffer.
 func (t classTable) classForCapacity(capacity Size) (SizeClass, bool) {
 	if len(t.classes) == 0 || capacity.IsZero() {
 		return SizeClass{}, false

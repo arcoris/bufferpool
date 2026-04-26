@@ -399,8 +399,8 @@ func TestShardCountersUnderflowPanics(t *testing.T) {
 
 // TestShardCountersSnapshotPredicates verifies snapshot helper methods.
 //
-// These helpers are used by future workload-window, scoring, pressure, and
-// metrics aggregation code to avoid duplicating derived counter expressions.
+// These helpers avoid duplicating derived counter expressions at sampling call
+// sites.
 func TestShardCountersSnapshotPredicates(t *testing.T) {
 	t.Parallel()
 

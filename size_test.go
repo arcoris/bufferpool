@@ -73,7 +73,7 @@ func TestSizeUnitConstants(t *testing.T) {
 // TestSizeUnitOrdering verifies that binary units are strictly increasing.
 //
 // This protects accidental changes to unit definitions that would corrupt
-// option validation, diagnostics, and future class-table construction.
+// option validation, diagnostics, and class-table construction.
 func TestSizeUnitOrdering(t *testing.T) {
 	t.Parallel()
 
@@ -356,7 +356,7 @@ func TestSizePredicates(t *testing.T) {
 
 // TestSizeComparisonHelpers verifies semantic comparison methods.
 //
-// These helpers keep future option, policy, and class-table validation readable
+// These helpers keep option and class-table validation readable
 // without repeating raw operators at call sites.
 func TestSizeComparisonHelpers(t *testing.T) {
 	t.Parallel()
@@ -584,7 +584,7 @@ func TestSizeString(t *testing.T) {
 // TestSizeDoesNotExposeDefaultClassProfile documents the intended boundary.
 //
 // size.go should not define default size-class profiles. Default class profiles
-// belong in class_table.go, profiles.go, or policy_defaults.go. This test is a
+// belong in class_table.go or profile code. This test is a
 // compile-time boundary test by omission: it validates only generic size units
 // and helpers, not Size64B, Size1KiB, or DefaultClassSizes.
 func TestSizeDoesNotExposeDefaultClassProfile(t *testing.T) {
@@ -592,7 +592,7 @@ func TestSizeDoesNotExposeDefaultClassProfile(t *testing.T) {
 
 	// The assertion is intentionally minimal. It keeps this test file focused on
 	// generic Size behavior and documents that class-profile tests must live with
-	// the future class-table/profile implementation.
+	// class-table/profile code.
 	if Byte == 0 || KiB == 0 || MiB == 0 || GiB == 0 {
 		t.Fatal("generic size units must be non-zero")
 	}

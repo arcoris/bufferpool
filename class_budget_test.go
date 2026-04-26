@@ -27,7 +27,7 @@ import (
 //
 // A new class budget has immutable ClassSize and no assigned/effective target.
 // The zero effective target is valid: credit is published later by the owning
-// class/controller layer.
+// owning class layer.
 func TestNewClassBudget(t *testing.T) {
 	t.Parallel()
 
@@ -414,7 +414,7 @@ func TestClassBudgetUpdatePanicsForZeroOwnerClassSize(t *testing.T) {
 // TestClassBudgetDisable verifies disabling the effective class budget.
 //
 // Disabling the class budget does not physically remove retained buffers. It only
-// publishes a zero target for future shard-credit planning.
+// publishes a zero target for shard-credit planning.
 func TestClassBudgetDisable(t *testing.T) {
 	t.Parallel()
 

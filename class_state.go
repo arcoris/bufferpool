@@ -42,6 +42,14 @@ const (
 	// classState is called after class-table request routing. A larger request
 	// means the caller selected the wrong class.
 	errClassStateRequestExceedsClassSize = "bufferpool.classState: requested size exceeds class size"
+
+	// errClassStateInvalidAllocationCapacity is used when allocation accounting
+	// is asked to record a zero-capacity backing buffer.
+	errClassStateInvalidAllocationCapacity = "bufferpool.classState: allocation capacity must be greater than zero"
+
+	// errClassStateAllocationBelowClassSize is used when allocation accounting is
+	// routed to a class that the allocated backing capacity cannot serve.
+	errClassStateAllocationBelowClassSize = "bufferpool.classState: allocation capacity must be greater than or equal to class size"
 )
 
 // classState owns runtime state for one normalized size class.
@@ -65,15 +73,15 @@ const (
 //   - shard.go executes shard-local storage operations;
 //   - class_counters.go records class-scope workload facts;
 //   - class_budget.go computes whole-buffer class targets and shard credit;
-//   - owner layers own lifecycle, ownership, policy, and coordination.
+//   - callers own lifecycle, owner-side accounting, and coordination.
 //
 // classState deliberately does not contain class-table lookup logic. It is
 // constructed after a SizeClass is already known.
 //
 // classState also does not allocate buffers. Allocation remains an owner-level
 // responsibility because the owner knows the requested size, selected class size,
-// ownership mode, and lifecycle/admission state. classState only records
-// allocation facts when the owner reports them.
+// owner-side accounting mode, and lifecycle/admission state. classState only
+// records allocation facts when the caller reports them.
 //
 // Concurrency:
 //
@@ -156,10 +164,13 @@ func (s *classState) shardCount() int {
 	return len(s.shards)
 }
 
-// shardAt returns a pointer to the class-owned shard at shardIndex.
+// mustShardAt returns a class-owned shard for internal classState operations.
 //
-// shardIndex MUST be in the range [0, shardCount).
-func (s *classState) shardAt(shardIndex int) *shard {
+// Ordinary get/retain paths MUST go through classState so class admission and
+// class lifetime counters are preserved. Tests that need retained-storage state
+// should prefer classState.state() unless direct shard access is explicitly
+// testing shard-local behavior.
+func (s *classState) mustShardAt(shardIndex int) *shard {
 	if shardIndex < 0 || shardIndex >= len(s.shards) {
 		panic(errClassStateShardIndexOutOfRange)
 	}
@@ -172,6 +183,8 @@ func (s *classState) shardAt(shardIndex int) *shard {
 //
 // The method also derives the per-shard credit plan and applies the resulting
 // shardCreditLimit values to all class-owned shards.
+// Publication is shard-by-shard, not an atomic class-wide cutover. Hot-path
+// retain uses the local shard credit it observes.
 //
 // The returned generation is the class-budget generation, not a shard-credit
 // generation.
@@ -186,6 +199,7 @@ func (s *classState) updateBudget(assignedBytes Size) Generation {
 //
 // The limit must belong to this class size. This method is useful when a higher
 // layer computes classBudgetLimit values before applying them to class states.
+// Publication is shard-by-shard, not an atomic class-wide cutover.
 func (s *classState) updateBudgetLimit(limit classBudgetLimit) Generation {
 	generation := s.budget.update(limit)
 	s.applyShardCreditPlan(s.budget.shardCreditPlan(len(s.shards)))
@@ -233,7 +247,7 @@ func (s *classState) tryGet(shardIndex int, requestedSize Size) classGetResult {
 		panic(errClassStateRequestExceedsClassSize)
 	}
 
-	shardResult := s.shardAt(shardIndex).tryGet(requestedSize)
+	shardResult := s.mustShardAt(shardIndex).tryGet(requestedSize)
 	s.counters.recordGetResult(requestedSize, shardResult)
 
 	return classGetResult{
@@ -254,7 +268,10 @@ func (s *classState) tryGetSelected(selector shardSelector, requestedSize Size) 
 // The class does not allocate buffers itself. The owner should call this after a
 // miss or bypass path allocates a new backing buffer for this class.
 func (s *classState) recordAllocation(shardIndex int, capacity uint64) {
-	s.shardAt(shardIndex).recordAllocation(capacity)
+	selectedShard := s.mustShardAt(shardIndex)
+	s.validateAllocationCapacity(capacity)
+
+	selectedShard.recordAllocation(capacity)
 	s.counters.recordAllocation(capacity)
 }
 
@@ -272,10 +289,10 @@ func (s *classState) recordAllocatedBuffer(shardIndex int, buffer []byte) {
 //   - shard.tryRetain records shard counters only after class acceptance;
 //   - classState records class counters from the observed class/shard result.
 //
-// Owner layers must still perform lifecycle, ownership, max-retained-capacity,
-// policy, and public drop-reason mapping checks before or around this method.
+// Callers must perform any lifecycle, owner-side accounting, or additional
+// retention-limit checks before or around this method.
 func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult {
-	selectedShard := s.shardAt(shardIndex)
+	selectedShard := s.mustShardAt(shardIndex)
 	capacity := uint64(cap(buffer))
 	classDecision := evaluateClassRetain(s.class, buffer)
 	if !classDecision.AllowsShardRetain() {
@@ -313,7 +330,7 @@ func (s *classState) tryRetainSelected(selector shardSelector, buffer []byte) cl
 // The shard records shard-scope trim counters. classState records class-scope
 // trim counters from the observed physical removal result.
 func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult {
-	result := s.shardAt(shardIndex).trim(maxBuffers)
+	result := s.mustShardAt(shardIndex).trim(maxBuffers)
 	s.counters.recordTrim(result)
 
 	return result
@@ -324,7 +341,7 @@ func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult 
 // The shard records shard-scope clear counters. classState records class-scope
 // clear counters from the observed physical removal result.
 func (s *classState) clearShard(shardIndex int) bucketTrimResult {
-	result := s.shardAt(shardIndex).clear()
+	result := s.mustShardAt(shardIndex).clear()
 	s.counters.recordClear(result)
 
 	return result
@@ -354,6 +371,16 @@ func (s *classState) clear() classStorageReductionResult {
 // selectShard chooses and validates a shard index for this class state.
 func (s *classState) selectShard(selector shardSelector) int {
 	return selectShardIndex(selector, len(s.shards))
+}
+
+func (s *classState) validateAllocationCapacity(capacity uint64) {
+	if capacity == 0 {
+		panic(errClassStateInvalidAllocationCapacity)
+	}
+
+	if capacity < s.class.Bytes() {
+		panic(errClassStateAllocationBelowClassSize)
+	}
 }
 
 // state returns an observational snapshot of this class runtime state.

@@ -23,8 +23,8 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 //
 // A class counter group records class-scope facts after a request has already
 // been normalized to a size class. It intentionally mirrors the shard counter
-// vocabulary so workload windows, scoring, metrics aggregation, and diagnostics
-// can use the same signal names at different scopes.
+// vocabulary so diagnostics and later aggregation code can use the same signal
+// names at different scopes.
 //
 // Responsibility boundary:
 //
@@ -35,8 +35,7 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 //   - class_counters.go records class-scope aggregate facts;
 //   - class_budget.go owns class-level target bytes;
 //   - class_admission.go owns minimal class-local retain eligibility checks;
-//   - admission code owns policy/drop-reason mapping;
-//   - metrics code owns public aggregation and export.
+//   - caller code maps local decisions to any public result vocabulary.
 //
 // The class counter group does not decide whether a buffer should be retained,
 // which shard should be selected, or whether trim should happen. It only records
@@ -122,8 +121,8 @@ type classCounters struct {
 
 	// clearOperations counts hard clear operations recorded for this class.
 	//
-	// Clear is tracked separately from trim because close/reset/policy-change
-	// cleanup is not necessarily the same as ordinary trim operations.
+	// Clear is tracked separately from trim because full cleanup is not necessarily
+	// the same as ordinary trim operations.
 	clearOperations atomicx.Uint64Counter
 
 	// clearedBuffers counts buffers removed by clear operations in this class.
@@ -236,9 +235,8 @@ func (c *classCounters) recordRetain(capacity uint64) {
 
 // recordDrop records that a returned buffer was not retained.
 //
-// Drop reasons are intentionally not represented here. Admission, pressure,
-// ownership, full-bucket, class, and policy-specific reasons belong to
-// higher-level accounting or reason-specific counters.
+// Drop reasons are intentionally not represented here. The caller can map local
+// class, credit, and bucket outcomes to any external result vocabulary.
 func (c *classCounters) recordDrop(capacity uint64) {
 	c.drops.Inc()
 	c.droppedBytes.Add(capacity)
@@ -296,9 +294,9 @@ func (c *classCounters) recordClearAmount(removedBuffers int, removedBytes uint6
 //
 // The snapshot is not globally atomic across all fields. Individual fields are
 // loaded atomically, but concurrent updates may make different fields represent
-// slightly different instants. This is acceptable for metrics, workload windows,
-// pressure heuristics, and sampling. Strongly consistent accounting, if needed,
-// must be performed by the owner under its own synchronization.
+// slightly different instants. This is acceptable for diagnostics and sampling.
+// Strongly consistent accounting, if needed, must be performed by the caller
+// under its own synchronization.
 func (c *classCounters) snapshot() classCountersSnapshot {
 	return classCountersSnapshot{
 		Gets:           c.gets.Load(),

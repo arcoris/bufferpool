@@ -478,8 +478,8 @@ func TestClassSizeCanServe(t *testing.T) {
 
 // TestClassSizeWasteFor verifies byte-level internal-fragmentation calculation.
 //
-// WasteFor returns bytes, not a ratio. Ratio calculation belongs to workload
-// scoring or metrics code.
+// WasteFor returns bytes, not a ratio. Ratio calculation belongs outside the
+// class-size primitive.
 func TestClassSizeWasteFor(t *testing.T) {
 	t.Parallel()
 

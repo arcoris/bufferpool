@@ -77,8 +77,8 @@ func TestXorShift64StarSeedNormalizesZero(t *testing.T) {
 // TestXorShift64StarSeedPreservesNonZero verifies that Seed keeps explicit
 // non-zero state unchanged.
 //
-// This is important because using the same seed must reproduce the same future
-// sequence exactly.
+// This is important because using the same seed must reproduce the same
+// subsequent sequence exactly.
 func TestXorShift64StarSeedPreservesNonZero(t *testing.T) {
 	t.Parallel()
 
@@ -218,7 +218,7 @@ func TestXorShift64StarSeedRestartsSequence(t *testing.T) {
 // post-transition state, not the multiplied output.
 //
 // xorshift* generators usually multiply only the output. The stored state should
-// remain the raw xorshift transition state so future steps follow the intended
+// remain the raw xorshift transition state so subsequent steps follow the intended
 // sequence.
 func TestXorShift64StarStateTracksRawTransition(t *testing.T) {
 	t.Parallel()

@@ -108,9 +108,9 @@ Limitations
 Security boundary
 
 These helpers MUST NOT be used for security-sensitive randomness. They are
-internal distribution utilities for bufferpool runtime mechanics. If a future
-component needs unpredictable randomness or adversarially resistant hashing, it
-must use a different primitive with an explicit security contract.
+internal distribution utilities for bufferpool runtime mechanics. Components
+needing unpredictable randomness or adversarially resistant hashing must use a
+different primitive with an explicit security contract.
 */
 
 const (
