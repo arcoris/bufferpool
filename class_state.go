@@ -167,7 +167,8 @@ func (s *classState) shardCount() int {
 // mustShardAt returns a class-owned shard for internal classState operations.
 //
 // Ordinary get/retain paths MUST go through classState so class admission and
-// class lifetime counters are preserved. Tests that need retained-storage state
+// class lifetime counters are preserved. Ordinary class-level get/retain paths
+// MUST NOT call shard methods directly. Tests that need retained-storage state
 // should prefer classState.state() unless direct shard access is explicitly
 // testing shard-local behavior.
 func (s *classState) mustShardAt(shardIndex int) *shard {

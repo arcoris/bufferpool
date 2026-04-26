@@ -1096,41 +1096,55 @@ func TestClassStateRecordAllocationAcceptsClassSizeCapacity(t *testing.T) {
 	assertClassStateRetainedConsistency(t, snapshot)
 }
 
-func TestClassStateRecordAllocatedBufferPanicsForNilBuffer(t *testing.T) {
+func TestClassStateRecordAllocatedBufferPanicsForInvalidCapacity(t *testing.T) {
 	t.Parallel()
 
+	tests := []struct {
+		name        string
+		buffer      []byte
+		wantMessage string
+	}{
+		{
+			name:        "nil",
+			buffer:      nil,
+			wantMessage: errClassStateInvalidAllocationCapacity,
+		},
+		{
+			name:        "zero capacity",
+			buffer:      make([]byte, 0),
+			wantMessage: errClassStateInvalidAllocationCapacity,
+		},
+		{
+			name:        "below class size",
+			buffer:      make([]byte, 0, 512),
+			wantMessage: errClassStateAllocationBelowClassSize,
+		},
+	}
+
 	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
-	state := newClassState(class, 1, 4)
 
-	testutil.MustPanicWithMessage(t, errClassStateInvalidAllocationCapacity, func() {
-		state.recordAllocatedBuffer(0, nil)
-	})
+	for _, tt := range tests {
+		tt := tt
 
-	snapshot := state.state()
-	if !snapshot.Counters.IsZero() {
-		t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
-	}
-	if !snapshot.Shards[0].Counters.IsZero() {
-		t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
-	}
-}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestClassStateRecordAllocatedBufferPanicsForZeroCapacity(t *testing.T) {
-	t.Parallel()
+			state := newClassState(class, 1, 4)
 
-	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
-	state := newClassState(class, 1, 4)
+			testutil.MustPanicWithMessage(t, tt.wantMessage, func() {
+				state.recordAllocatedBuffer(0, tt.buffer)
+			})
 
-	testutil.MustPanicWithMessage(t, errClassStateInvalidAllocationCapacity, func() {
-		state.recordAllocatedBuffer(0, make([]byte, 0))
-	})
+			snapshot := state.state()
+			if !snapshot.Counters.IsZero() {
+				t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
+			}
+			if !snapshot.Shards[0].Counters.IsZero() {
+				t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
+			}
 
-	snapshot := state.state()
-	if !snapshot.Counters.IsZero() {
-		t.Fatalf("class counters after panic = %+v, want zero", snapshot.Counters)
-	}
-	if !snapshot.Shards[0].Counters.IsZero() {
-		t.Fatalf("shard counters after panic = %+v, want zero", snapshot.Shards[0].Counters)
+			assertClassStateRetainedConsistency(t, snapshot)
+		})
 	}
 }
 
@@ -1213,9 +1227,9 @@ func TestClassStateTrimShard(t *testing.T) {
 	assertClassStateRetainedConsistency(t, snapshot)
 }
 
-// TestClassStateClearShard verifies class-level and shard-level clear accounting
-// for one selected shard.
-func TestClassStateClearShard(t *testing.T) {
+// TestClassStateClearShardRecordsOneClassOperation verifies class-level and
+// shard-level clear accounting for one selected shard.
+func TestClassStateClearShardRecordsOneClassOperation(t *testing.T) {
 	t.Parallel()
 
 	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
@@ -1272,11 +1286,47 @@ func TestClassStateClearShard(t *testing.T) {
 	assertClassStateRetainedConsistency(t, snapshot)
 }
 
-// TestClassStateClearAll verifies aggregate clear across all class-owned shards.
+// TestClassStateClearRecordsOneClassOperation verifies that one class-wide clear
+// call records exactly one class-level clear operation.
+func TestClassStateClearRecordsOneClassOperation(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 4, 4)
+	state.updateBudget(4 * KiB)
+
+	for _, shardIndex := range []int{0, 2} {
+		result := state.tryRetain(shardIndex, make([]byte, 0, 1024))
+		if !result.Retained() {
+			t.Fatalf("tryRetain(shard=%d) Retained() = false, decision=%s", shardIndex, result.CreditDecision())
+		}
+	}
+
+	result := state.clear()
+	if result.RemovedBuffers != 2 {
+		t.Fatalf("RemovedBuffers = %d, want 2", result.RemovedBuffers)
+	}
+
+	snapshot := state.state()
+	if snapshot.Counters.ClearOperations != 1 {
+		t.Fatalf("class ClearOperations = %d, want 1", snapshot.Counters.ClearOperations)
+	}
+	if snapshot.Counters.ClearedBuffers != 2 {
+		t.Fatalf("class ClearedBuffers = %d, want 2", snapshot.Counters.ClearedBuffers)
+	}
+	if snapshot.Counters.ClearedBytes != 2048 {
+		t.Fatalf("class ClearedBytes = %d, want 2048", snapshot.Counters.ClearedBytes)
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+// TestClassStateClearAggregatesRemovedStorage verifies aggregate clear across
+// all class-owned shards.
 //
 // clear is one class-level operation while each shard still records its local
 // bucket clear operation.
-func TestClassStateClearAll(t *testing.T) {
+func TestClassStateClearAggregatesRemovedStorage(t *testing.T) {
 	t.Parallel()
 
 	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
@@ -1376,8 +1426,9 @@ func TestClassStateClearAll(t *testing.T) {
 	assertClassStateRetainedConsistency(t, afterSecond)
 }
 
-// TestClassStateClearAllZero verifies zero aggregate clear behavior.
-func TestClassStateClearAllZero(t *testing.T) {
+// TestClassStateClearIsSafeWhenAlreadyEmpty verifies zero aggregate clear
+// behavior.
+func TestClassStateClearIsSafeWhenAlreadyEmpty(t *testing.T) {
 	t.Parallel()
 
 	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
@@ -1789,14 +1840,22 @@ func TestStaticRuntimeCoreIntegration(t *testing.T) {
 	if !retain.Retained() {
 		t.Fatalf("initial retain Retained() = false, decision=%s", retain.CreditDecision())
 	}
+	assertClassStateRetainedConsistency(t, state.state())
 
 	get := state.tryGet(0, SizeFromInt(700))
 	if !get.Hit() {
 		t.Fatal("tryGet(700 B) Hit() = false, want true")
 	}
+	if len(get.Buffer()) != 0 {
+		t.Fatalf("len(Buffer()) = %d, want 0", len(get.Buffer()))
+	}
+	if cap(get.Buffer()) < requestClass.Int() {
+		t.Fatalf("cap(Buffer()) = %d, want at least %d", cap(get.Buffer()), requestClass.Int())
+	}
 	if get.Capacity() != 1024 {
 		t.Fatalf("tryGet(700 B) Capacity() = %d, want 1024", get.Capacity())
 	}
+	assertClassStateRetainedConsistency(t, state.state())
 
 	miss := state.tryGet(0, SizeFromInt(700))
 	if !miss.Miss() {
@@ -1804,10 +1863,25 @@ func TestStaticRuntimeCoreIntegration(t *testing.T) {
 	}
 
 	state.recordAllocation(0, uint64(KiB))
+	afterAllocation := state.state()
+	if afterAllocation.Counters.Allocations != 1 {
+		t.Fatalf("class Allocations after recordAllocation = %d, want 1", afterAllocation.Counters.Allocations)
+	}
+	if afterAllocation.Shards[0].Counters.Allocations != 1 {
+		t.Fatalf("shard Allocations after recordAllocation = %d, want 1", afterAllocation.Shards[0].Counters.Allocations)
+	}
 
+	beforeClassReject := state.state()
 	classReject := state.tryRetain(0, make([]byte, 0, 700))
 	if !classReject.RejectedByClass() {
 		t.Fatal("700 B retain into 1 KiB class RejectedByClass() = false, want true")
+	}
+	afterClassReject := state.state()
+	if afterClassReject.Shards[0].Counters != beforeClassReject.Shards[0].Counters {
+		t.Fatalf("class reject changed shard counters: before=%+v after=%+v", beforeClassReject.Shards[0].Counters, afterClassReject.Shards[0].Counters)
+	}
+	if afterClassReject.Shards[0].Bucket != beforeClassReject.Shards[0].Bucket {
+		t.Fatalf("class reject changed bucket state: before=%+v after=%+v", beforeClassReject.Shards[0].Bucket, afterClassReject.Shards[0].Bucket)
 	}
 
 	firstCreditBuffer := state.tryRetain(0, make([]byte, 0, 1024))
@@ -1824,6 +1898,7 @@ func TestStaticRuntimeCoreIntegration(t *testing.T) {
 	if !creditReject.RejectedByCredit() {
 		t.Fatalf("credit reject RejectedByCredit() = false, decision=%s", creditReject.CreditDecision())
 	}
+	assertClassStateRetainedConsistency(t, state.state())
 
 	trim := state.trimShard(0, 1)
 	if trim.RemovedBuffers != 1 {
@@ -1832,6 +1907,7 @@ func TestStaticRuntimeCoreIntegration(t *testing.T) {
 	if trim.RemovedBytes != 1024 {
 		t.Fatalf("trim RemovedBytes = %d, want 1024", trim.RemovedBytes)
 	}
+	assertClassStateRetainedConsistency(t, state.state())
 
 	clear := state.clear()
 	if clear.RemovedBuffers != 1 {
@@ -1840,6 +1916,28 @@ func TestStaticRuntimeCoreIntegration(t *testing.T) {
 	if clear.RemovedBytes != 1024 {
 		t.Fatalf("clear RemovedBytes = %d, want 1024", clear.RemovedBytes)
 	}
+	assertClassStateRetainedConsistency(t, state.state())
+
+	clearState := newClassState(requestClass, 2, 2)
+	clearState.updateBudget(4 * KiB)
+	for shardIndex := 0; shardIndex < 2; shardIndex++ {
+		result := clearState.tryRetain(shardIndex, make([]byte, 0, 1024))
+		if !result.Retained() {
+			t.Fatalf("clear setup retain shard=%d Retained() = false, decision=%s", shardIndex, result.CreditDecision())
+		}
+	}
+	clearAcrossShards := clearState.clear()
+	if clearAcrossShards.RemovedBuffers != 2 {
+		t.Fatalf("multi-shard clear RemovedBuffers = %d, want 2", clearAcrossShards.RemovedBuffers)
+	}
+	if clearAcrossShards.RemovedBytes != 2048 {
+		t.Fatalf("multi-shard clear RemovedBytes = %d, want 2048", clearAcrossShards.RemovedBytes)
+	}
+	clearSnapshot := clearState.state()
+	if clearSnapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("multi-shard clear CurrentRetainedBuffers = %d, want 0", clearSnapshot.CurrentRetainedBuffers)
+	}
+	assertClassStateRetainedConsistency(t, clearSnapshot)
 
 	bucketFullState := newClassState(requestClass, 1, 1)
 	bucketFullState.updateBudget(2 * KiB)
@@ -1859,6 +1957,9 @@ func TestStaticRuntimeCoreIntegration(t *testing.T) {
 	}
 	overBudgetState.disableBudget()
 	overBudgetSnapshot := overBudgetState.state()
+	if overBudgetSnapshot.CurrentRetainedBuffers != 1 {
+		t.Fatalf("CurrentRetainedBuffers after disableBudget = %d, want 1", overBudgetSnapshot.CurrentRetainedBuffers)
+	}
 	if !overBudgetSnapshot.IsOverBudget() {
 		t.Fatal("IsOverBudget() after disabling budget with retained usage = false, want true")
 	}
