@@ -42,20 +42,18 @@ import "arcoris.dev/bufferpool/internal/atomicx"
 // which shard should be selected, or whether trim should happen. It only records
 // outcomes that the class owner has already observed.
 //
-// Counter categories:
+// Counter category:
 //
-//   - monotonic lifetime counters record cumulative events and byte totals;
-//   - current retained gauges record retained buffers and retained bytes now.
+//   - monotonic lifetime counters record cumulative events and byte totals.
 //
 // Retained byte accounting uses buffer capacity, not slice length, because the
 // backing array capacity is what keeps memory reachable.
 //
 // Correctness:
 //
-// recordHit, recordTrim, and recordClear subtract from retained gauges. If class
-// code records removal that was not previously recorded as retained, the
-// underlying gauges panic on underflow. That is deliberate: class-level retained
-// accounting corruption must fail fast in tests and development.
+// classCounters does not own current retained storage state. shardCounters are
+// authoritative for shard-local current retained gauges, and classState derives
+// class-level current retained usage by summing shard snapshots.
 //
 // Concurrency:
 //
@@ -125,7 +123,7 @@ type classCounters struct {
 	// clearOperations counts hard clear operations recorded for this class.
 	//
 	// Clear is tracked separately from trim because close/reset/policy-change
-	// cleanup is not necessarily the same as adaptive pressure trimming.
+	// cleanup is not necessarily the same as ordinary trim operations.
 	clearOperations atomicx.Uint64Counter
 
 	// clearedBuffers counts buffers removed by clear operations in this class.
@@ -133,14 +131,6 @@ type classCounters struct {
 
 	// clearedBytes sums capacities removed by clear operations in this class.
 	clearedBytes atomicx.Uint64Counter
-
-	// currentRetainedBuffers is the current number of buffers retained by this
-	// class.
-	currentRetainedBuffers atomicx.Uint64Gauge
-
-	// currentRetainedBytes is the current retained backing capacity in bytes for
-	// this class.
-	currentRetainedBytes atomicx.Uint64Gauge
 }
 
 // recordGet records a buffer request normalized to this class.
@@ -170,14 +160,10 @@ func (c *classCounters) recordGetResult(requestedSize Size, result shardGetResul
 
 // recordHit records that a get was satisfied from retained storage.
 //
-// capacity is the capacity of the retained buffer removed for reuse. Removing a
-// retained buffer decreases current retained gauges.
+// capacity is the capacity of the retained buffer removed for reuse.
 func (c *classCounters) recordHit(capacity uint64) {
 	c.hits.Inc()
 	c.hitBytes.Add(capacity)
-
-	c.currentRetainedBuffers.Dec()
-	c.currentRetainedBytes.Sub(capacity)
 }
 
 // recordMiss records that a get did not find retained storage in this class.
@@ -242,14 +228,10 @@ func (c *classCounters) recordRejectedPut(capacity uint64) {
 
 // recordRetain records that a returned buffer was successfully retained.
 //
-// capacity is the retained backing capacity. Retaining increases current
-// retained gauges and lifetime retain counters.
+// capacity is the retained backing capacity.
 func (c *classCounters) recordRetain(capacity uint64) {
 	c.retains.Inc()
 	c.retainedBytes.Add(capacity)
-
-	c.currentRetainedBuffers.Inc()
-	c.currentRetainedBytes.Add(capacity)
 }
 
 // recordDrop records that a returned buffer was not retained.
@@ -264,8 +246,7 @@ func (c *classCounters) recordDrop(capacity uint64) {
 
 // recordTrim records a completed class-level trim operation.
 //
-// The operation count is incremented even when result removed no buffers. Current
-// retained gauges are decremented only by the actually removed amount.
+// The operation count is incremented even when result removed no buffers.
 func (c *classCounters) recordTrim(result bucketTrimResult) {
 	c.trimOperations.Inc()
 
@@ -277,15 +258,12 @@ func (c *classCounters) recordTrim(result bucketTrimResult) {
 
 	c.trimmedBuffers.Add(removedBuffers)
 	c.trimmedBytes.Add(result.RemovedBytes)
-
-	c.currentRetainedBuffers.Sub(removedBuffers)
-	c.currentRetainedBytes.Sub(result.RemovedBytes)
 }
 
 // recordClear records a completed class-level clear operation.
 //
 // Clear operations are tracked separately from trim operations so close/reset
-// cleanup does not get mixed with adaptive pressure trimming.
+// cleanup does not get mixed with trim operations.
 func (c *classCounters) recordClear(result bucketTrimResult) {
 	c.clearOperations.Inc()
 
@@ -297,9 +275,6 @@ func (c *classCounters) recordClear(result bucketTrimResult) {
 
 	c.clearedBuffers.Add(removedBuffers)
 	c.clearedBytes.Add(result.RemovedBytes)
-
-	c.currentRetainedBuffers.Sub(removedBuffers)
-	c.currentRetainedBytes.Sub(result.RemovedBytes)
 }
 
 // recordClearAmount records a class-level clear operation from an aggregate
@@ -315,9 +290,6 @@ func (c *classCounters) recordClearAmount(removedBuffers int, removedBytes uint6
 
 	c.clearedBuffers.Add(removedBufferCount)
 	c.clearedBytes.Add(removedBytes)
-
-	c.currentRetainedBuffers.Sub(removedBufferCount)
-	c.currentRetainedBytes.Sub(removedBytes)
 }
 
 // snapshot returns an immutable point-in-time view of class counters.
@@ -325,9 +297,8 @@ func (c *classCounters) recordClearAmount(removedBuffers int, removedBytes uint6
 // The snapshot is not globally atomic across all fields. Individual fields are
 // loaded atomically, but concurrent updates may make different fields represent
 // slightly different instants. This is acceptable for metrics, workload windows,
-// pressure heuristics, and controller sampling. Strongly consistent
-// accounting, if needed, must be performed by the owner under its own
-// synchronization.
+// pressure heuristics, and sampling. Strongly consistent accounting, if needed,
+// must be performed by the owner under its own synchronization.
 func (c *classCounters) snapshot() classCountersSnapshot {
 	return classCountersSnapshot{
 		Gets:           c.gets.Load(),
@@ -356,9 +327,6 @@ func (c *classCounters) snapshot() classCountersSnapshot {
 		ClearOperations: c.clearOperations.Load(),
 		ClearedBuffers:  c.clearedBuffers.Load(),
 		ClearedBytes:    c.clearedBytes.Load(),
-
-		CurrentRetainedBuffers: c.currentRetainedBuffers.Load(),
-		CurrentRetainedBytes:   c.currentRetainedBytes.Load(),
 	}
 }
 
@@ -368,8 +336,8 @@ func (c *classCounters) snapshot() classCountersSnapshot {
 // The type is internal. Public metrics should be modeled separately so internal
 // accounting can evolve without freezing the public API.
 //
-// Lifetime fields are monotonic counters. CurrentRetainedBuffers and
-// CurrentRetainedBytes are gauges.
+// All fields are lifetime counters. Current retained usage is derived by
+// classState from shard snapshots.
 type classCountersSnapshot struct {
 	// Gets is the total number of buffer requests normalized to this class.
 	Gets uint64
@@ -427,18 +395,9 @@ type classCountersSnapshot struct {
 
 	// ClearedBytes is the cumulative capacity removed by clear operations.
 	ClearedBytes uint64
-
-	// CurrentRetainedBuffers is the current number of buffers retained by this
-	// class.
-	CurrentRetainedBuffers uint64
-
-	// CurrentRetainedBytes is the current retained backing capacity in bytes for
-	// this class.
-	CurrentRetainedBytes uint64
 }
 
-// IsZero reports whether the snapshot contains no observed activity and no
-// current retained storage.
+// IsZero reports whether the snapshot contains no observed activity.
 func (s classCountersSnapshot) IsZero() bool {
 	return s.Gets == 0 &&
 		s.RequestedBytes == 0 &&
@@ -458,9 +417,7 @@ func (s classCountersSnapshot) IsZero() bool {
 		s.TrimmedBytes == 0 &&
 		s.ClearOperations == 0 &&
 		s.ClearedBuffers == 0 &&
-		s.ClearedBytes == 0 &&
-		s.CurrentRetainedBuffers == 0 &&
-		s.CurrentRetainedBytes == 0
+		s.ClearedBytes == 0
 }
 
 // ReuseAttempts returns the number of reuse decisions observed by this snapshot.
@@ -500,9 +457,7 @@ func (s classCountersSnapshot) RemovedBytes() uint64 {
 
 // deltaSince returns a wrap-aware monotonic delta from previous to s.
 //
-// Lifetime counters are converted to deltas. Current retained gauges are copied
-// from the newer snapshot because gauges are not lifetime counters and should not
-// be interpreted as deltas.
+// Lifetime counters are converted to deltas.
 func (s classCountersSnapshot) deltaSince(previous classCountersSnapshot) classCountersDelta {
 	return classCountersDelta{
 		Gets:           classCounterDelta(previous.Gets, s.Gets),
@@ -531,17 +486,13 @@ func (s classCountersSnapshot) deltaSince(previous classCountersSnapshot) classC
 		ClearOperations: classCounterDelta(previous.ClearOperations, s.ClearOperations),
 		ClearedBuffers:  classCounterDelta(previous.ClearedBuffers, s.ClearedBuffers),
 		ClearedBytes:    classCounterDelta(previous.ClearedBytes, s.ClearedBytes),
-
-		CurrentRetainedBuffers: s.CurrentRetainedBuffers,
-		CurrentRetainedBytes:   s.CurrentRetainedBytes,
 	}
 }
 
 // classCountersDelta describes activity observed between two class counter
 // snapshots.
 //
-// All event fields are deltas over monotonic lifetime counters. Current retained
-// fields represent the current gauge values from the newer snapshot.
+// All fields are deltas over monotonic lifetime counters.
 type classCountersDelta struct {
 	Gets           uint64
 	RequestedBytes uint64
@@ -569,13 +520,9 @@ type classCountersDelta struct {
 	ClearOperations uint64
 	ClearedBuffers  uint64
 	ClearedBytes    uint64
-
-	CurrentRetainedBuffers uint64
-	CurrentRetainedBytes   uint64
 }
 
-// IsZero reports whether the delta contains no observed activity and no current
-// retained storage.
+// IsZero reports whether the delta contains no observed activity.
 func (d classCountersDelta) IsZero() bool {
 	return d.Gets == 0 &&
 		d.RequestedBytes == 0 &&
@@ -595,9 +542,7 @@ func (d classCountersDelta) IsZero() bool {
 		d.TrimmedBytes == 0 &&
 		d.ClearOperations == 0 &&
 		d.ClearedBuffers == 0 &&
-		d.ClearedBytes == 0 &&
-		d.CurrentRetainedBuffers == 0 &&
-		d.CurrentRetainedBytes == 0
+		d.ClearedBytes == 0
 }
 
 // ReuseAttempts returns the number of reuse decisions observed in this delta.

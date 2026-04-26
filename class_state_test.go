@@ -70,6 +70,14 @@ func TestNewClassState(t *testing.T) {
 		t.Fatalf("snapshot.Counters = %+v, want zero counters", snapshot.Counters)
 	}
 
+	if snapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("snapshot.CurrentRetainedBuffers = %d, want 0", snapshot.CurrentRetainedBuffers)
+	}
+
+	if snapshot.CurrentRetainedBytes != 0 {
+		t.Fatalf("snapshot.CurrentRetainedBytes = %d, want 0", snapshot.CurrentRetainedBytes)
+	}
+
 	if snapshot.ShardCount() != 2 {
 		t.Fatalf("snapshot.ShardCount() = %d, want 2", snapshot.ShardCount())
 	}
@@ -139,7 +147,7 @@ func TestNewClassStatePanicsForInvalidBucketSlotLimit(t *testing.T) {
 
 	class := NewSizeClass(ClassID(0), ClassSizeFromSize(KiB))
 
-	testutil.MustPanicWithMessage(t, errBucketSegmentInvalidSlotLimit, func() {
+	testutil.MustPanicWithMessage(t, errBucketInvalidSlotLimit, func() {
 		_ = newClassState(class, 1, 0)
 	})
 }
@@ -318,8 +326,8 @@ func TestClassStateDisableBudget(t *testing.T) {
 	}
 
 	beforeDisable := state.state()
-	if beforeDisable.Counters.CurrentRetainedBuffers != 1 {
-		t.Fatalf("CurrentRetainedBuffers before disable = %d, want 1", beforeDisable.Counters.CurrentRetainedBuffers)
+	if beforeDisable.CurrentRetainedBuffers != 1 {
+		t.Fatalf("CurrentRetainedBuffers before disable = %d, want 1", beforeDisable.CurrentRetainedBuffers)
 	}
 
 	assertClassStateRetainedConsistency(t, beforeDisable)
@@ -335,12 +343,12 @@ func TestClassStateDisableBudget(t *testing.T) {
 		t.Fatalf("Budget after disable = %+v, want zero", afterDisable.Budget)
 	}
 
-	if afterDisable.Counters.CurrentRetainedBuffers != 1 {
-		t.Fatalf("CurrentRetainedBuffers after disable = %d, want 1", afterDisable.Counters.CurrentRetainedBuffers)
+	if afterDisable.CurrentRetainedBuffers != 1 {
+		t.Fatalf("CurrentRetainedBuffers after disable = %d, want 1", afterDisable.CurrentRetainedBuffers)
 	}
 
-	if afterDisable.Counters.CurrentRetainedBytes != 1024 {
-		t.Fatalf("CurrentRetainedBytes after disable = %d, want 1024", afterDisable.Counters.CurrentRetainedBytes)
+	if afterDisable.CurrentRetainedBytes != 1024 {
+		t.Fatalf("CurrentRetainedBytes after disable = %d, want 1024", afterDisable.CurrentRetainedBytes)
 	}
 
 	for index, shard := range afterDisable.Shards {
@@ -515,8 +523,8 @@ func TestClassStateTryRetainAndTryGetHit(t *testing.T) {
 		t.Fatalf("class Retains after retain = %d, want 1", afterRetain.Counters.Retains)
 	}
 
-	if afterRetain.Counters.CurrentRetainedBuffers != 1 {
-		t.Fatalf("class CurrentRetainedBuffers after retain = %d, want 1", afterRetain.Counters.CurrentRetainedBuffers)
+	if afterRetain.CurrentRetainedBuffers != 1 {
+		t.Fatalf("class CurrentRetainedBuffers after retain = %d, want 1", afterRetain.CurrentRetainedBuffers)
 	}
 
 	if afterRetain.Shards[0].Counters.Retains != 1 {
@@ -565,12 +573,12 @@ func TestClassStateTryRetainAndTryGetHit(t *testing.T) {
 		t.Fatalf("class HitBytes after get = %d, want 1024", afterGet.Counters.HitBytes)
 	}
 
-	if afterGet.Counters.CurrentRetainedBuffers != 0 {
-		t.Fatalf("class CurrentRetainedBuffers after get = %d, want 0", afterGet.Counters.CurrentRetainedBuffers)
+	if afterGet.CurrentRetainedBuffers != 0 {
+		t.Fatalf("class CurrentRetainedBuffers after get = %d, want 0", afterGet.CurrentRetainedBuffers)
 	}
 
-	if afterGet.Counters.CurrentRetainedBytes != 0 {
-		t.Fatalf("class CurrentRetainedBytes after get = %d, want 0", afterGet.Counters.CurrentRetainedBytes)
+	if afterGet.CurrentRetainedBytes != 0 {
+		t.Fatalf("class CurrentRetainedBytes after get = %d, want 0", afterGet.CurrentRetainedBytes)
 	}
 
 	if afterGet.Shards[0].Counters.Hits != 1 {
@@ -886,8 +894,8 @@ func TestClassStateTryRetainRejectedByBucket(t *testing.T) {
 		t.Fatalf("class DroppedBytes = %d, want 1024", snapshot.Counters.DroppedBytes)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != 1 {
-		t.Fatalf("class CurrentRetainedBuffers = %d, want 1", snapshot.Counters.CurrentRetainedBuffers)
+	if snapshot.CurrentRetainedBuffers != 1 {
+		t.Fatalf("class CurrentRetainedBuffers = %d, want 1", snapshot.CurrentRetainedBuffers)
 	}
 
 	if snapshot.Shards[0].Counters.Puts != 2 {
@@ -898,8 +906,8 @@ func TestClassStateTryRetainRejectedByBucket(t *testing.T) {
 		t.Fatalf("shard ReturnedBytes = %d, want 2048", snapshot.Shards[0].Counters.ReturnedBytes)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != 1024 {
-		t.Fatalf("class CurrentRetainedBytes = %d, want 1024", snapshot.Counters.CurrentRetainedBytes)
+	if snapshot.CurrentRetainedBytes != 1024 {
+		t.Fatalf("class CurrentRetainedBytes = %d, want 1024", snapshot.CurrentRetainedBytes)
 	}
 
 	if snapshot.Shards[0].Counters.Retains != 1 {
@@ -1062,12 +1070,12 @@ func TestClassStateTrimShard(t *testing.T) {
 		t.Fatalf("class TrimmedBytes = %d, want 6144", snapshot.Counters.TrimmedBytes)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != 1 {
-		t.Fatalf("class CurrentRetainedBuffers = %d, want 1", snapshot.Counters.CurrentRetainedBuffers)
+	if snapshot.CurrentRetainedBuffers != 1 {
+		t.Fatalf("class CurrentRetainedBuffers = %d, want 1", snapshot.CurrentRetainedBuffers)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != 1024 {
-		t.Fatalf("class CurrentRetainedBytes = %d, want 1024", snapshot.Counters.CurrentRetainedBytes)
+	if snapshot.CurrentRetainedBytes != 1024 {
+		t.Fatalf("class CurrentRetainedBytes = %d, want 1024", snapshot.CurrentRetainedBytes)
 	}
 
 	if snapshot.Shards[0].Counters.TrimOperations != 1 {
@@ -1117,12 +1125,12 @@ func TestClassStateClearShard(t *testing.T) {
 		t.Fatalf("class ClearedBytes = %d, want 3072", snapshot.Counters.ClearedBytes)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != 0 {
-		t.Fatalf("class CurrentRetainedBuffers = %d, want 0", snapshot.Counters.CurrentRetainedBuffers)
+	if snapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("class CurrentRetainedBuffers = %d, want 0", snapshot.CurrentRetainedBuffers)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != 0 {
-		t.Fatalf("class CurrentRetainedBytes = %d, want 0", snapshot.Counters.CurrentRetainedBytes)
+	if snapshot.CurrentRetainedBytes != 0 {
+		t.Fatalf("class CurrentRetainedBytes = %d, want 0", snapshot.CurrentRetainedBytes)
 	}
 
 	if snapshot.Shards[0].Counters.ClearOperations != 1 {
@@ -1193,12 +1201,12 @@ func TestClassStateClearAll(t *testing.T) {
 		t.Fatalf("class ClearedBytes = %d, want 10240", snapshot.Counters.ClearedBytes)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != 0 {
-		t.Fatalf("class CurrentRetainedBuffers = %d, want 0", snapshot.Counters.CurrentRetainedBuffers)
+	if snapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("class CurrentRetainedBuffers = %d, want 0", snapshot.CurrentRetainedBuffers)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != 0 {
-		t.Fatalf("class CurrentRetainedBytes = %d, want 0", snapshot.Counters.CurrentRetainedBytes)
+	if snapshot.CurrentRetainedBytes != 0 {
+		t.Fatalf("class CurrentRetainedBytes = %d, want 0", snapshot.CurrentRetainedBytes)
 	}
 
 	for index, shard := range snapshot.Shards {
@@ -1315,12 +1323,12 @@ func TestClassStateConcurrentRetainDoesNotExceedShardCredit(t *testing.T) {
 		t.Fatalf("retained attempts = %d, want <= 1", retainedCount)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers > 1 {
-		t.Fatalf("class CurrentRetainedBuffers = %d, want <= 1", snapshot.Counters.CurrentRetainedBuffers)
+	if snapshot.CurrentRetainedBuffers > 1 {
+		t.Fatalf("class CurrentRetainedBuffers = %d, want <= 1", snapshot.CurrentRetainedBuffers)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes > uint64(KiB) {
-		t.Fatalf("class CurrentRetainedBytes = %d, want <= %d", snapshot.Counters.CurrentRetainedBytes, uint64(KiB))
+	if snapshot.CurrentRetainedBytes > uint64(KiB) {
+		t.Fatalf("class CurrentRetainedBytes = %d, want <= %d", snapshot.CurrentRetainedBytes, uint64(KiB))
 	}
 
 	if snapshot.Shards[0].Counters.CurrentRetainedBuffers > 1 {
@@ -1377,15 +1385,13 @@ func TestClassStateSnapshotReturnsShardCopy(t *testing.T) {
 }
 
 // TestClassStateSnapshotRetainedUsage verifies retained usage derivation from
-// class counter snapshot.
+// shard current retained state.
 func TestClassStateSnapshotRetainedUsage(t *testing.T) {
 	t.Parallel()
 
 	snapshot := classStateSnapshot{
-		Counters: classCountersSnapshot{
-			CurrentRetainedBuffers: 3,
-			CurrentRetainedBytes:   4096,
-		},
+		CurrentRetainedBuffers: 3,
+		CurrentRetainedBytes:   4096,
 	}
 
 	usage := snapshot.RetainedUsage()
@@ -1416,7 +1422,6 @@ func TestClassStateSnapshotIsOverBudget(t *testing.T) {
 				Budget: classBudgetSnapshot{
 					ClassSize: ClassSizeFromSize(KiB),
 				},
-				Counters: classCountersSnapshot{},
 			},
 			want: false,
 		},
@@ -1426,10 +1431,8 @@ func TestClassStateSnapshotIsOverBudget(t *testing.T) {
 				Budget: classBudgetSnapshot{
 					ClassSize: ClassSizeFromSize(KiB),
 				},
-				Counters: classCountersSnapshot{
-					CurrentRetainedBuffers: 1,
-					CurrentRetainedBytes:   1024,
-				},
+				CurrentRetainedBuffers: 1,
+				CurrentRetainedBytes:   1024,
 			},
 			want: true,
 		},
@@ -1441,10 +1444,8 @@ func TestClassStateSnapshotIsOverBudget(t *testing.T) {
 					AssignedBytes:  uint64(2 * KiB),
 					RemainderBytes: uint64(2 * KiB),
 				},
-				Counters: classCountersSnapshot{
-					CurrentRetainedBuffers: 1,
-					CurrentRetainedBytes:   1024,
-				},
+				CurrentRetainedBuffers: 1,
+				CurrentRetainedBytes:   1024,
 			},
 			want: true,
 		},
@@ -1458,10 +1459,8 @@ func TestClassStateSnapshotIsOverBudget(t *testing.T) {
 					TargetBytes:    uint64(4 * KiB),
 					RemainderBytes: 0,
 				},
-				Counters: classCountersSnapshot{
-					CurrentRetainedBuffers: 2,
-					CurrentRetainedBytes:   2048,
-				},
+				CurrentRetainedBuffers: 2,
+				CurrentRetainedBytes:   2048,
 			},
 			want: false,
 		},
@@ -1474,10 +1473,8 @@ func TestClassStateSnapshotIsOverBudget(t *testing.T) {
 					TargetBuffers: 4,
 					TargetBytes:   uint64(4 * KiB),
 				},
-				Counters: classCountersSnapshot{
-					CurrentRetainedBuffers: 5,
-					CurrentRetainedBytes:   2048,
-				},
+				CurrentRetainedBuffers: 5,
+				CurrentRetainedBytes:   2048,
 			},
 			want: true,
 		},
@@ -1490,10 +1487,8 @@ func TestClassStateSnapshotIsOverBudget(t *testing.T) {
 					TargetBuffers: 4,
 					TargetBytes:   uint64(4 * KiB),
 				},
-				Counters: classCountersSnapshot{
-					CurrentRetainedBuffers: 2,
-					CurrentRetainedBytes:   uint64(8 * KiB),
-				},
+				CurrentRetainedBuffers: 2,
+				CurrentRetainedBytes:   uint64(8 * KiB),
 			},
 			want: true,
 		},
@@ -1545,8 +1540,8 @@ func TestClassStorageReductionResult(t *testing.T) {
 	}
 }
 
-// TestClassStateConcurrentRetainAndGet verifies class-state synchronization under
-// concurrent retain/get operations.
+// TestClassStateConcurrentRetainAndGet verifies class-state routing under
+// concurrent retain/get operations across shards.
 //
 // The budget and bucket slot limit are intentionally large enough to avoid
 // credit and bucket contention. The test checks that class-level and shard-level
@@ -1590,9 +1585,11 @@ func TestClassStateConcurrentRetainAndGet(t *testing.T) {
 		t.Fatalf("class Retains after retain = %d, want %d", afterRetain.Counters.Retains, total)
 	}
 
-	if afterRetain.Counters.CurrentRetainedBuffers != uint64(total) {
-		t.Fatalf("class CurrentRetainedBuffers after retain = %d, want %d", afterRetain.Counters.CurrentRetainedBuffers, total)
+	if afterRetain.CurrentRetainedBuffers != uint64(total) {
+		t.Fatalf("class CurrentRetainedBuffers after retain = %d, want %d", afterRetain.CurrentRetainedBuffers, total)
 	}
+
+	assertClassStateRetainedConsistency(t, afterRetain)
 
 	var getWG sync.WaitGroup
 	getWG.Add(workers)
@@ -1625,12 +1622,12 @@ func TestClassStateConcurrentRetainAndGet(t *testing.T) {
 		t.Fatalf("class Hits after get = %d, want %d", afterGet.Counters.Hits, total)
 	}
 
-	if afterGet.Counters.CurrentRetainedBuffers != 0 {
-		t.Fatalf("class CurrentRetainedBuffers after get = %d, want 0", afterGet.Counters.CurrentRetainedBuffers)
+	if afterGet.CurrentRetainedBuffers != 0 {
+		t.Fatalf("class CurrentRetainedBuffers after get = %d, want 0", afterGet.CurrentRetainedBuffers)
 	}
 
-	if afterGet.Counters.CurrentRetainedBytes != 0 {
-		t.Fatalf("class CurrentRetainedBytes after get = %d, want 0", afterGet.Counters.CurrentRetainedBytes)
+	if afterGet.CurrentRetainedBytes != 0 {
+		t.Fatalf("class CurrentRetainedBytes after get = %d, want 0", afterGet.CurrentRetainedBytes)
 	}
 
 	var shardHits uint64
@@ -1645,6 +1642,8 @@ func TestClassStateConcurrentRetainAndGet(t *testing.T) {
 	if shardHits != uint64(total) {
 		t.Fatalf("sum shard Hits = %d, want %d", shardHits, total)
 	}
+
+	assertClassStateRetainedConsistency(t, afterGet)
 }
 
 func assertClassStateClassRejectedRetain(
@@ -1708,12 +1707,12 @@ func assertClassStateClassRejectedRetain(
 		t.Fatalf("class DroppedBytes = %d, want %d", snapshot.Counters.DroppedBytes, wantCapacity)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != 0 {
-		t.Fatalf("class CurrentRetainedBuffers = %d, want 0", snapshot.Counters.CurrentRetainedBuffers)
+	if snapshot.CurrentRetainedBuffers != 0 {
+		t.Fatalf("class CurrentRetainedBuffers = %d, want 0", snapshot.CurrentRetainedBuffers)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != 0 {
-		t.Fatalf("class CurrentRetainedBytes = %d, want 0", snapshot.Counters.CurrentRetainedBytes)
+	if snapshot.CurrentRetainedBytes != 0 {
+		t.Fatalf("class CurrentRetainedBytes = %d, want 0", snapshot.CurrentRetainedBytes)
 	}
 
 	if len(snapshot.Shards) != 1 {
@@ -1768,30 +1767,30 @@ func assertClassStateRetainedConsistency(t *testing.T, snapshot classStateSnapsh
 		bucketBytes += shard.Bucket.RetainedBytes
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != shardCounterBuffers {
+	if snapshot.CurrentRetainedBuffers != shardCounterBuffers {
 		t.Fatalf("class retained buffers = %d, sum shard counter retained buffers = %d",
-			snapshot.Counters.CurrentRetainedBuffers,
+			snapshot.CurrentRetainedBuffers,
 			shardCounterBuffers,
 		)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != shardCounterBytes {
+	if snapshot.CurrentRetainedBytes != shardCounterBytes {
 		t.Fatalf("class retained bytes = %d, sum shard counter retained bytes = %d",
-			snapshot.Counters.CurrentRetainedBytes,
+			snapshot.CurrentRetainedBytes,
 			shardCounterBytes,
 		)
 	}
 
-	if snapshot.Counters.CurrentRetainedBuffers != bucketBuffers {
+	if snapshot.CurrentRetainedBuffers != bucketBuffers {
 		t.Fatalf("class retained buffers = %d, sum bucket retained buffers = %d",
-			snapshot.Counters.CurrentRetainedBuffers,
+			snapshot.CurrentRetainedBuffers,
 			bucketBuffers,
 		)
 	}
 
-	if snapshot.Counters.CurrentRetainedBytes != bucketBytes {
+	if snapshot.CurrentRetainedBytes != bucketBytes {
 		t.Fatalf("class retained bytes = %d, sum bucket retained bytes = %d",
-			snapshot.Counters.CurrentRetainedBytes,
+			snapshot.CurrentRetainedBytes,
 			bucketBytes,
 		)
 	}

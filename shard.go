@@ -20,10 +20,11 @@ import "sync"
 
 // shard is a shard-local runtime unit for one size-class owner.
 //
-// A shard is a data-plane contention boundary. It owns one local retained-buffer
-// bucket, shard-local counters, and one shard-local credit gate. The class layer
-// decides which shard belongs to which SizeClass. This type deliberately does
-// not store ClassID, ClassSize, SizeClass, or class-table references.
+// A shard is the hot-path synchronization boundary for retained storage. It
+// owns one local raw bucket, shard-local counters, and one shard-local credit
+// gate. The class layer decides which shard belongs to which SizeClass. This
+// type deliberately does not store ClassID, ClassSize, SizeClass, or class-table
+// references.
 //
 // Responsibility boundary:
 //
@@ -32,7 +33,7 @@ import "sync"
 //   - class runtime code owns the set of shards for a class;
 //   - shard.go owns one shard-local bucket, counters, and credit gate;
 //   - bucket.go stores already admitted retained buffers;
-//   - bucket_trim.go physically removes retained buffers;
+//   - bucket_trim.go describes trim and clear results;
 //   - shard_counters.go records shard-local accounting facts;
 //   - shard_credit.go evaluates local retention credit;
 //   - class_admission.go protects class-level capacity compatibility;
@@ -54,10 +55,10 @@ import "sync"
 //
 // Concurrency:
 //
-// shard is safe for concurrent operations through its components:
+// shard is safe for concurrent operations through its mutex:
 //
-//   - shard serializes bucket mutation with retained accounting updates;
-//   - bucket serializes physical storage access;
+//   - shard.mu serializes raw bucket mutation;
+//   - shard.mu serializes credit evaluation with current retained accounting;
 //   - shardCounters uses atomics;
 //   - shardCredit uses atomics.
 //
@@ -72,8 +73,8 @@ import "sync"
 //
 // Copying:
 //
-// shard MUST NOT be copied after first use. It contains a bucket with a mutex and
-// multiple atomic values.
+// shard MUST NOT be copied after first use. It contains a mutex, a raw bucket,
+// and multiple atomic values.
 type shard struct {
 	// mu serializes physical retained-storage mutations with retained-counter
 	// updates and shard-credit usage checks.
@@ -125,7 +126,7 @@ func (s *shard) tryGet(requestedSize Size) shardGetResult {
 
 	s.counters.recordGet(requestedSize.Bytes())
 
-	buffer, ok := s.bucket.tryPop()
+	buffer, ok := s.bucket.pop()
 	if !ok {
 		s.counters.recordMiss()
 
@@ -195,7 +196,7 @@ func (s *shard) tryRetain(buffer []byte) shardRetainResult {
 		}
 	}
 
-	if !s.bucket.tryPush(buffer) {
+	if !s.bucket.push(buffer) {
 		s.counters.recordDrop(capacity)
 
 		return shardRetainResult{
@@ -274,11 +275,9 @@ func (s *shard) state() shardState {
 
 // creditUsage returns retained usage for shard credit evaluation.
 //
-// The values come from shard retained gauges rather than from bucket.state() so
-// the hot path avoids an extra bucket lock before attempting retention. Counters
-// are expected to mirror successful bucket retains, hits, trims, and clears.
-// Mismatches are accounting bugs and are generally caught by gauge underflow
-// checks during removal paths.
+// The values come from shard retained gauges rather than from bucket.state().
+// shard.mu keeps those gauges in the same local sequence as credit checks and
+// bucket mutation.
 func (s *shard) creditUsage() shardCreditUsage {
 	return shardCreditUsage{
 		RetainedBuffers: s.counters.currentRetainedBuffers.Load(),
@@ -288,6 +287,9 @@ func (s *shard) creditUsage() shardCreditUsage {
 
 // bucketState returns the current local bucket state.
 func (s *shard) bucketState() bucketState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	return s.bucket.state()
 }
 
@@ -386,8 +388,7 @@ func (s shardState) IsOverCredit() bool {
 // shardBufferCapacity returns the retained-memory capacity represented by
 // buffer.
 //
-// It is local to shard.go so shard code does not depend on bucket_segment.go
-// helper names. Bucket storage still performs its own validation and accounting.
+// Bucket storage still performs its own validation and accounting.
 func shardBufferCapacity(buffer []byte) uint64 {
 	return uint64(cap(buffer))
 }

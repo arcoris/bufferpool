@@ -16,8 +16,6 @@
 
 package bufferpool
 
-import "sync"
-
 const (
 	// errClassStateInvalidClass is used when class runtime state is constructed
 	// for an invalid size-class descriptor.
@@ -81,25 +79,20 @@ const (
 //
 // classState is safe for concurrent operations through its components:
 //
-//   - classState serializes retained-storage operations with class retained
-//     accounting;
-//   - shard serializes physical bucket access with retained accounting;
-//   - classCounters uses atomics;
+//   - ordinary get/retain operations are synchronized at shard level;
+//   - classCounters records lifetime/window facts with atomics;
 //   - classBudget uses atomics;
 //   - shardCredit uses atomics.
 //
 // A full classState snapshot is observational and not globally atomic across
-// class budget, class counters, and all shards.
+// class budget, class counters, and all shards. Current retained usage is
+// derived from shard snapshots.
 //
 // Copying:
 //
 // classState MUST NOT be copied after first use because it contains shards,
 // buckets, mutexes, and atomic values.
 type classState struct {
-	// mu serializes class retained-storage operations with class retained-counter
-	// updates.
-	mu sync.Mutex
-
 	// class is the immutable descriptor for this runtime state.
 	class SizeClass
 
@@ -240,9 +233,6 @@ func (s *classState) tryGet(shardIndex int, requestedSize Size) classGetResult {
 		panic(errClassStateRequestExceedsClassSize)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	shardResult := s.shardAt(shardIndex).tryGet(requestedSize)
 	s.counters.recordGetResult(requestedSize, shardResult)
 
@@ -285,9 +275,6 @@ func (s *classState) recordAllocatedBuffer(shardIndex int, buffer []byte) {
 // Owner layers must still perform lifecycle, ownership, max-retained-capacity,
 // policy, and public drop-reason mapping checks before or around this method.
 func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	selectedShard := s.shardAt(shardIndex)
 	capacity := uint64(cap(buffer))
 	classDecision := evaluateClassRetain(s.class, buffer)
@@ -326,9 +313,6 @@ func (s *classState) tryRetainSelected(selector shardSelector, buffer []byte) cl
 // The shard records shard-scope trim counters. classState records class-scope
 // trim counters from the observed physical removal result.
 func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	result := s.shardAt(shardIndex).trim(maxBuffers)
 	s.counters.recordTrim(result)
 
@@ -340,22 +324,21 @@ func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult 
 // The shard records shard-scope clear counters. classState records class-scope
 // clear counters from the observed physical removal result.
 func (s *classState) clearShard(shardIndex int) bucketTrimResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	result := s.shardAt(shardIndex).clear()
 	s.counters.recordClear(result)
 
 	return result
 }
 
-// clear removes all retained buffers from all shards owned by this class.
+// clear removes retained buffers from all shards owned by this class.
 //
-// The returned result is the aggregate physical removal across all shards.
+// clear is an internal class-wide storage reduction helper, not a transactional
+// global barrier. It clears shards one by one, synchronized by each shard. A
+// caller that needs strong shutdown semantics must stop new get/retain
+// operations at the owner lifecycle level before calling clear.
+//
+// The returned result is the aggregate physical removal observed by this call.
 func (s *classState) clear() classStorageReductionResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	var total classStorageReductionResult
 
 	for index := range s.shards {
@@ -376,22 +359,28 @@ func (s *classState) selectShard(selector shardSelector) int {
 // state returns an observational snapshot of this class runtime state.
 //
 // The returned state is not globally atomic across budget, counters, and shards.
-// It is intended for tests, diagnostics, metrics aggregation, and controller
-// sampling.
+// Current retained usage is derived from shard snapshots. Without concurrent
+// mutation this derived state is exactly consistent; with concurrent mutation it
+// is race-safe but may observe different shards at different instants.
 func (s *classState) state() classStateSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	shards := make([]shardState, len(s.shards))
+	var currentRetainedBuffers uint64
+	var currentRetainedBytes uint64
+
 	for index := range s.shards {
-		shards[index] = s.shards[index].state()
+		shardState := s.shards[index].state()
+		shards[index] = shardState
+		currentRetainedBuffers += shardState.Counters.CurrentRetainedBuffers
+		currentRetainedBytes += shardState.Counters.CurrentRetainedBytes
 	}
 
 	return classStateSnapshot{
-		Class:    s.class,
-		Budget:   s.budget.snapshot(),
-		Counters: s.counters.snapshot(),
-		Shards:   shards,
+		Class:                  s.class,
+		Budget:                 s.budget.snapshot(),
+		Counters:               s.counters.snapshot(),
+		Shards:                 shards,
+		CurrentRetainedBuffers: currentRetainedBuffers,
+		CurrentRetainedBytes:   currentRetainedBytes,
 	}
 }
 
@@ -526,6 +515,14 @@ type classStateSnapshot struct {
 
 	// Shards are observational snapshots of class-owned shards.
 	Shards []shardState
+
+	// CurrentRetainedBuffers is derived by summing shard current retained
+	// counters in this snapshot.
+	CurrentRetainedBuffers uint64
+
+	// CurrentRetainedBytes is derived by summing shard current retained byte
+	// counters in this snapshot.
+	CurrentRetainedBytes uint64
 }
 
 // ShardCount returns the number of shard snapshots.
@@ -533,11 +530,11 @@ func (s classStateSnapshot) ShardCount() int {
 	return len(s.Shards)
 }
 
-// RetainedUsage returns retained usage derived from the class counter snapshot.
+// RetainedUsage returns retained usage derived from shard snapshots.
 func (s classStateSnapshot) RetainedUsage() shardCreditUsage {
 	return shardCreditUsage{
-		RetainedBuffers: s.Counters.CurrentRetainedBuffers,
-		RetainedBytes:   s.Counters.CurrentRetainedBytes,
+		RetainedBuffers: s.CurrentRetainedBuffers,
+		RetainedBytes:   s.CurrentRetainedBytes,
 	}
 }
 

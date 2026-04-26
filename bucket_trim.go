@@ -16,72 +16,12 @@
 
 package bufferpool
 
-// trim removes up to maxBuffers retained buffers from the bucket.
-//
-// trim is a local storage-reduction operation. It does not decide why trimming
-// is needed, which bucket should be trimmed, or how much memory the whole pool
-// should release. Those decisions belong to policy, pressure, controller, and
-// trim-planning code.
-//
-// Responsibility boundary:
-//
-//   - trim planner decides the victim and requested reduction;
-//   - bucket.trim serializes access to this bucket;
-//   - bucketSegment executes LIFO removal and retained-byte accounting;
-//   - shard/class/pool counters record higher-level trim effects.
-//
-// maxBuffers follows bucketSegment semantics:
-//
-//   - maxBuffers == 0 is a valid no-op;
-//   - maxBuffers > 0 removes up to that many buffers;
-//   - maxBuffers < 0 is an internal trim-planning bug and panics in the segment.
-//
-// The returned result includes both the removed amount and the bucket state after
-// the operation. This lets callers update higher-level accounting without
-// immediately taking another locked state sample.
-func (b *bucket) trim(maxBuffers int) bucketTrimResult {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	removed := b.segment.trim(maxBuffers)
-
-	return newBucketTrimResult(removed, b.stateLocked())
-}
-
-// clear removes every retained buffer from the bucket.
-//
-// clear is intended for hard cleanup paths:
-//
-//   - pool or shard shutdown;
-//   - policy changes that invalidate retained storage;
-//   - hard pressure cleanup;
-//   - tests;
-//   - bucket reinitialization paths.
-//
-// clear is idempotent. Clearing an already empty bucket returns a zero removal
-// result and the current empty bucket state.
-//
-// Like trim, clear does not publish metrics, update shard-level counters, or
-// decide cleanup policy. It only executes local synchronized storage reduction.
-func (b *bucket) clear() bucketTrimResult {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	removed := b.segment.clear()
-
-	return newBucketTrimResult(removed, b.stateLocked())
-}
-
 // newBucketTrimResult combines removed-capacity accounting with post-operation
 // bucket state.
-//
-// The caller should pass a state captured under the same bucket lock as the
-// storage reduction. Keeping this assembly in one helper prevents trim and clear
-// from drifting if bucketState gains fields later.
-func newBucketTrimResult(removed bucketSegmentTrimResult, state bucketState) bucketTrimResult {
+func newBucketTrimResult(removedBuffers int, removedBytes uint64, state bucketState) bucketTrimResult {
 	return bucketTrimResult{
-		RemovedBuffers:  removed.Buffers,
-		RemovedBytes:    removed.Bytes,
+		RemovedBuffers:  removedBuffers,
+		RemovedBytes:    removedBytes,
 		RetainedBuffers: state.RetainedBuffers,
 		RetainedBytes:   state.RetainedBytes,
 		SlotLimit:       state.SlotLimit,
@@ -91,20 +31,9 @@ func newBucketTrimResult(removed bucketSegmentTrimResult, state bucketState) buc
 
 // bucketTrimResult describes a completed bucket-level storage reduction.
 //
-// This type intentionally differs from bucketSegmentTrimResult even though the
-// removed fields are similar. bucketSegmentTrimResult is a leaf storage result.
-// bucketTrimResult is the synchronized bucket-level result that callers above
-// bucket care about.
-//
-// The result contains:
-//
-//   - how much this operation removed;
-//   - what the bucket retained after the operation;
-//   - how much local storage capacity remains available.
-//
-// This shape avoids leaking segment-level details into shard, class, pool, or
-// controller code. If bucket later owns more than one segment, bucketTrimResult
-// can remain stable while the implementation aggregates segment results.
+// The result contains both the removed amount and the bucket state after trim or
+// clear. Callers can update higher-level accounting without taking another
+// bucket state sample.
 type bucketTrimResult struct {
 	// RemovedBuffers is the number of buffers removed by this operation.
 	RemovedBuffers int
@@ -129,9 +58,6 @@ type bucketTrimResult struct {
 }
 
 // RemovedState returns only the removed-buffer portion of the trim result.
-//
-// This helper is useful when higher-level aggregation only needs to accumulate
-// released capacity and does not need the post-operation bucket state.
 func (r bucketTrimResult) RemovedState() bucketTrimRemovedState {
 	return bucketTrimRemovedState{
 		Buffers: r.RemovedBuffers,
@@ -140,10 +66,6 @@ func (r bucketTrimResult) RemovedState() bucketTrimRemovedState {
 }
 
 // BucketState returns the bucket state after the trim operation.
-//
-// The returned state has the same shape as bucket.state(), but it is derived from
-// the already completed trim/clear operation and therefore does not require
-// taking another bucket lock.
 func (r bucketTrimResult) BucketState() bucketState {
 	return bucketState{
 		RetainedBuffers: r.RetainedBuffers,
@@ -171,9 +93,6 @@ func (r bucketTrimResult) HasAvailableSlots() bool {
 }
 
 // bucketTrimRemovedState is the removed portion of a bucket trim result.
-//
-// This small value is useful for aggregation code that should not depend on the
-// full post-operation bucket state.
 type bucketTrimRemovedState struct {
 	// Buffers is the number of removed buffers.
 	Buffers int
