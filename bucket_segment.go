@@ -22,9 +22,35 @@ const (
 	//
 	// A segment with no storage capacity is not useful as a retained-buffer
 	// container. Higher-level bucket construction must decide whether a disabled
-	// bucket should be omitted entirely rather than represented as a zero-sized
-	// segment.
+	// bucket should be omitted entirely rather than represented as an explicitly
+	// constructed zero-sized segment.
 	errBucketSegmentInvalidSlotLimit = "bufferpool.bucketSegment: slot limit must be greater than zero"
+
+	// errBucketSegmentInvalidCount is used when the segment count is outside the
+	// valid slot range.
+	//
+	// count must always satisfy:
+	//
+	//	0 <= count <= len(slots)
+	//
+	// Violating this invariant means the segment state is corrupted. Normal push,
+	// pop, trim, and clear operations never create such a state.
+	errBucketSegmentInvalidCount = "bufferpool.bucketSegment: count must be within slot bounds"
+
+	// errBucketSegmentNonEmptyFreeSlot is used when a slot outside the occupied
+	// range is not empty.
+	//
+	// Only slots in [0, count) are occupied. A non-nil slot at count would be
+	// overwritten by push and could silently hide retained storage corruption.
+	// The segment rejects that state instead of masking it.
+	errBucketSegmentNonEmptyFreeSlot = "bufferpool.bucketSegment: free slot must be empty"
+
+	// errBucketSegmentEmptyOccupiedSlot is used when an occupied slot does not
+	// contain positive reusable capacity.
+	//
+	// push never creates such a slot. Seeing one during pop or trim indicates an
+	// internal mutation bug, copied segment state, or manual test corruption.
+	errBucketSegmentEmptyOccupiedSlot = "bufferpool.bucketSegment: occupied slot must contain positive capacity"
 
 	// errBucketSegmentNegativeTrimLimit is used when trim is requested with a
 	// negative buffer limit.
@@ -46,16 +72,16 @@ const (
 	// This indicates internal segment corruption: the segment is trying to remove
 	// more retained capacity than it has recorded.
 	errBucketSegmentRetainedBytesUnderflow = "bufferpool.bucketSegment: retained bytes underflow"
-
-	// errBucketSegmentEmptyOccupiedSlot is used when an occupied slot does not
-	// contain positive reusable capacity.
-	//
-	// push never creates such a slot. Seeing one during pop or trim indicates an
-	// internal mutation bug, copied segment state, or manual test corruption.
-	errBucketSegmentEmptyOccupiedSlot = "bufferpool.bucketSegment: occupied slot must contain positive capacity"
 )
 
-const maxBucketSegmentRetainedBytes = ^uint64(0)
+const (
+	// maxBucketSegmentRetainedBytes is the largest retained-byte value that can
+	// be represented by the segment's uint64 accounting.
+	//
+	// It is intentionally local to this file so overflow checks read in terms of
+	// segment accounting rather than unrelated numeric limits.
+	maxBucketSegmentRetainedBytes = ^uint64(0)
+)
 
 // bucketSegment is a bounded LIFO storage segment for reusable byte buffers.
 //
@@ -73,13 +99,14 @@ const maxBucketSegmentRetainedBytes = ^uint64(0)
 //   - push stores buffer[:0];
 //   - pop returns the most recently pushed buffer;
 //   - trim removes buffers from the same LIFO end;
+//   - clear removes all retained buffers;
 //   - every removed slot is cleared to nil so the backing array can be collected
 //     when no longer referenced elsewhere.
 //
 // LIFO is intentional. Recently returned buffers are more likely to be warm in
 // CPU caches and usually represent the most recent capacity shape for that
 // bucket. The segment does not attempt fairness; fairness and adaptive retention
-// are bucket/shard/controller responsibilities.
+// are bucket, shard, and controller responsibilities.
 //
 // Concurrency:
 //
@@ -96,9 +123,9 @@ const maxBucketSegmentRetainedBytes = ^uint64(0)
 // Zero value:
 //
 // The zero value is an empty disabled segment. Inspection, pop, trim, and clear
-// are safe. push rejects because the segment has no slots. Enabled segments
-// should still be created through newBucketSegment so the intended slot limit is
-// explicit.
+// are safe. push rejects because the segment has no storage slots. Enabled
+// segments should still be created through newBucketSegment so the intended slot
+// limit is explicit.
 type bucketSegment struct {
 	// slots stores retained buffers in stack order.
 	//
@@ -107,17 +134,25 @@ type bucketSegment struct {
 	slots [][]byte
 
 	// count is the number of occupied slots.
+	//
+	// The invariant is:
+	//
+	//	0 <= count <= len(slots)
 	count int
 
 	// retainedBytes is the sum of cap(buffer) for all occupied slots.
+	//
+	// Accounting uses capacity, not length, because retained memory is determined
+	// by the backing array capacity. Stored buffers have len == 0 but still hold
+	// their backing arrays.
 	retainedBytes uint64
 }
 
-// newBucketSegment returns an empty segment with slotLimit storage slots.
+// newBucketSegment returns an empty enabled segment with slotLimit storage slots.
 //
 // slotLimit MUST be greater than zero. If a higher-level policy wants to disable
-// retention for a bucket, it should avoid constructing the bucket or route all
-// candidates to discard logic instead of creating a zero-sized segment.
+// retention for a bucket, it should avoid constructing the bucket, leave the
+// segment as its zero disabled value, or route all candidates to discard logic.
 func newBucketSegment(slotLimit int) bucketSegment {
 	if slotLimit <= 0 {
 		panic(errBucketSegmentInvalidSlotLimit)
@@ -129,35 +164,46 @@ func newBucketSegment(slotLimit int) bucketSegment {
 }
 
 // slotLimit returns the maximum number of buffers this segment can retain.
+//
+// The zero-value disabled segment has slot limit 0.
 func (s *bucketSegment) slotLimit() int {
 	return len(s.slots)
 }
 
 // len returns the number of buffers currently retained by this segment.
 func (s *bucketSegment) len() int {
+	s.mustHaveValidCount()
+
 	return s.count
 }
 
 // availableSlots returns the number of free slots left in this segment.
+//
+// The zero-value disabled segment has 0 available slots.
 func (s *bucketSegment) availableSlots() int {
+	s.mustHaveValidCount()
+
 	return len(s.slots) - s.count
 }
 
 // isEmpty reports whether the segment contains no retained buffers.
 func (s *bucketSegment) isEmpty() bool {
+	s.mustHaveValidCount()
+
 	return s.count == 0
 }
 
 // isFull reports whether the segment cannot accept another retained buffer.
+//
+// A zero-value disabled segment is considered full because it has no storage
+// slots and therefore cannot retain a buffer.
 func (s *bucketSegment) isFull() bool {
+	s.mustHaveValidCount()
+
 	return s.count == len(s.slots)
 }
 
 // retained returns the sum of retained buffer capacities in bytes.
-//
-// The value is based on cap(buffer), not len(buffer), because retained memory is
-// determined by backing-array capacity. Buffers are stored with len == 0, but
-// their backing capacity still consumes memory.
 func (s *bucketSegment) retained() uint64 {
 	return s.retainedBytes
 }
@@ -175,14 +221,21 @@ func (s *bucketSegment) retained() uint64 {
 // push does not copy buffer contents and does not clear the underlying array.
 // Sanitization, if required by a future security policy, belongs to an explicit
 // higher-level wipe/sanitize path.
+//
+// The method validates segment state before mutating it. If accounting overflow
+// or slot corruption is detected, push panics without changing count or slots.
 func (s *bucketSegment) push(buffer []byte) bool {
-	if s.isFull() {
+	s.mustHaveValidCount()
+
+	if s.count == len(s.slots) {
 		return false
 	}
 
 	if !bucketSegmentCanRetain(buffer) {
 		return false
 	}
+
+	s.mustHaveFreeSlot(s.count)
 
 	capacity := bucketSegmentBufferCapacity(buffer)
 	s.addRetained(capacity)
@@ -200,18 +253,20 @@ func (s *bucketSegment) push(buffer []byte) bool {
 //
 // The vacated slot is cleared to nil to avoid retaining a backing array after it
 // has left the segment.
+//
+// The method validates occupied-slot state and retained-byte accounting before
+// mutating slot/count state. If corruption is detected, the segment is left in
+// its pre-pop structural state.
 func (s *bucketSegment) pop() ([]byte, bool) {
-	if s.isEmpty() {
+	s.mustHaveValidCount()
+
+	if s.count == 0 {
 		return nil, false
 	}
 
 	index := s.count - 1
-	buffer := s.slots[index]
+	buffer := s.mustHaveOccupiedSlot(index)
 	capacity := bucketSegmentBufferCapacity(buffer)
-
-	if capacity == 0 {
-		panic(errBucketSegmentEmptyOccupiedSlot)
-	}
 
 	s.removeRetained(capacity)
 
@@ -235,19 +290,21 @@ func (s *bucketSegment) trim(maxBuffers int) bucketSegmentTrimResult {
 		panic(errBucketSegmentNegativeTrimLimit)
 	}
 
-	var result bucketSegmentTrimResult
+	s.mustHaveValidCount()
+
 	limit := maxBuffers
 	if limit > s.count {
 		limit = s.count
 	}
+
+	var result bucketSegmentTrimResult
 
 	for result.Buffers < limit {
 		// limit is bounded by count, so pop cannot report an empty segment while
 		// the segment state is internally consistent.
 		buffer, _ := s.pop()
 
-		result.Buffers++
-		result.Bytes += uint64(cap(buffer))
+		result.add(buffer)
 	}
 
 	return result
@@ -259,12 +316,14 @@ func (s *bucketSegment) trim(maxBuffers int) bucketSegmentTrimResult {
 // clear is useful for close paths, hard trims, test cleanup, and policy changes
 // that invalidate all retained buffers in a bucket.
 func (s *bucketSegment) clear() bucketSegmentTrimResult {
+	s.mustHaveValidCount()
+
 	return s.trim(s.count)
 }
 
 // addRetained records newly retained capacity.
 //
-// The caller must pass capacity > 0. Overflow is treated as an internal
+// The caller MUST pass capacity > 0. Overflow is treated as an internal
 // accounting violation because retained byte counters must never wrap.
 func (s *bucketSegment) addRetained(capacity uint64) {
 	if s.retainedBytes > maxBucketSegmentRetainedBytes-capacity {
@@ -276,9 +335,9 @@ func (s *bucketSegment) addRetained(capacity uint64) {
 
 // removeRetained records removed retained capacity.
 //
-// The caller must pass capacity > 0. Underflow is treated as internal
-// corruption and is checked before slot state is mutated, so a failing pop does
-// not partially remove the buffer from the segment.
+// The caller MUST pass capacity > 0. Underflow is treated as internal corruption
+// and is checked before slot state is mutated, so a failing pop does not
+// partially remove the buffer from the segment.
 func (s *bucketSegment) removeRetained(capacity uint64) {
 	if s.retainedBytes < capacity {
 		panic(errBucketSegmentRetainedBytesUnderflow)
@@ -287,13 +346,49 @@ func (s *bucketSegment) removeRetained(capacity uint64) {
 	s.retainedBytes -= capacity
 }
 
+// mustHaveValidCount verifies the core slot-range invariant.
+//
+// The segment uses count as the boundary between occupied and free slots. If
+// count leaves [0, len(slots)], every storage operation becomes unsafe because
+// occupied and free ranges can no longer be interpreted correctly.
+func (s *bucketSegment) mustHaveValidCount() {
+	if s.count < 0 || s.count > len(s.slots) {
+		panic(errBucketSegmentInvalidCount)
+	}
+}
+
+// mustHaveFreeSlot verifies that index is a free slot ready to be written.
+//
+// push uses this guard before writing to slots[count]. Overwriting a non-nil
+// free slot would hide a stale backing-array reference and corrupt retained
+// storage invariants.
+func (s *bucketSegment) mustHaveFreeSlot(index int) {
+	if s.slots[index] != nil {
+		panic(errBucketSegmentNonEmptyFreeSlot)
+	}
+}
+
+// mustHaveOccupiedSlot returns the occupied buffer at index.
+//
+// Occupied slots MUST contain buffers with positive capacity. A nil slice or a
+// zero-capacity slice cannot be produced by push and therefore indicates segment
+// corruption.
+func (s *bucketSegment) mustHaveOccupiedSlot(index int) []byte {
+	buffer := s.slots[index]
+	if !bucketSegmentCanRetain(buffer) {
+		panic(errBucketSegmentEmptyOccupiedSlot)
+	}
+
+	return buffer
+}
+
 // bucketSegmentCanRetain reports whether buffer has reusable backing capacity.
 //
 // Nil and zero-capacity slices are not useful retained storage entries. They do
 // not contribute reusable capacity and would make retained-byte accounting
 // ambiguous.
 func bucketSegmentCanRetain(buffer []byte) bool {
-	return cap(buffer) > 0
+	return bucketSegmentBufferCapacity(buffer) > 0
 }
 
 // bucketSegmentBufferCapacity returns the retained-memory cost of buffer.
@@ -312,6 +407,12 @@ type bucketSegmentTrimResult struct {
 
 	// Bytes is the sum of cap(buffer) for all removed buffers.
 	Bytes uint64
+}
+
+// add records one removed buffer in the trim result.
+func (r *bucketSegmentTrimResult) add(buffer []byte) {
+	r.Buffers++
+	r.Bytes += bucketSegmentBufferCapacity(buffer)
 }
 
 // isZero reports whether the trim result removed nothing.

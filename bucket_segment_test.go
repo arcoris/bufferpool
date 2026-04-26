@@ -284,6 +284,73 @@ func TestBucketSegmentTrimRejectsNegativeLimit(t *testing.T) {
 	})
 }
 
+// TestBucketSegmentInvalidCountPanics verifies the core slot-bound invariant.
+//
+// count is the boundary between occupied and free slots. Once it leaves the
+// valid range, even read-only inspection becomes unsafe because later mutations
+// would no longer know which slots are allowed to contain retained buffers.
+func TestBucketSegmentInvalidCountPanics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		segment bucketSegment
+	}{
+		{
+			name: "negative count",
+			segment: bucketSegment{
+				slots: make([][]byte, 1),
+				count: -1,
+			},
+		},
+		{
+			name: "count beyond slot limit",
+			segment: bucketSegment{
+				slots: make([][]byte, 1),
+				count: 2,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			testutil.MustPanicWithMessage(t, errBucketSegmentInvalidCount, func() {
+				_ = tt.segment.len()
+			})
+		})
+	}
+}
+
+// TestBucketSegmentPushRejectsNonEmptyFreeSlot verifies stale free-slot
+// detection.
+//
+// push writes to slots[count]. If that slot already contains a buffer reference,
+// accepting a new buffer would overwrite evidence of corrupted retained storage.
+func TestBucketSegmentPushRejectsNonEmptyFreeSlot(t *testing.T) {
+	t.Parallel()
+
+	stale := make([]byte, 0, 8)
+	segment := bucketSegment{
+		slots:         [][]byte{stale},
+		retainedBytes: 0,
+	}
+
+	testutil.MustPanicWithMessage(t, errBucketSegmentNonEmptyFreeSlot, func() {
+		_ = segment.push(make([]byte, 0, 16))
+	})
+
+	assertBucketSegmentState(t, &segment, bucketSegmentState{
+		slotLimit:      1,
+		availableSlots: 1,
+		isEmpty:        true,
+	})
+	assertSameBucketSegmentBackingArray(t, segment.slots[0], stale)
+}
+
 // TestBucketSegmentClearRemovesEverything verifies clear as a full cleanup
 // primitive for close, hard trim, and test cleanup paths.
 func TestBucketSegmentClearRemovesEverything(t *testing.T) {
@@ -365,21 +432,42 @@ func TestBucketSegmentRetainedBytesUnderflowPanics(t *testing.T) {
 func TestBucketSegmentEmptyOccupiedSlotPanics(t *testing.T) {
 	t.Parallel()
 
-	segment := bucketSegment{
-		slots: [][]byte{make([]byte, 0)},
-		count: 1,
+	tests := []struct {
+		name string
+		slot []byte
+	}{
+		{
+			name: "nil occupied slot",
+		},
+		{
+			name: "zero-capacity occupied slot",
+			slot: make([]byte, 0),
+		},
 	}
 
-	testutil.MustPanicWithMessage(t, errBucketSegmentEmptyOccupiedSlot, func() {
-		_, _ = segment.pop()
-	})
+	for _, tt := range tests {
+		tt := tt
 
-	if got := segment.len(); got != 1 {
-		t.Fatalf("len() after empty-slot panic = %d, want 1", got)
-	}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if segment.slots[0] == nil {
-		t.Fatal("slot was cleared despite empty-slot panic")
+			segment := bucketSegment{
+				slots: [][]byte{tt.slot},
+				count: 1,
+			}
+
+			testutil.MustPanicWithMessage(t, errBucketSegmentEmptyOccupiedSlot, func() {
+				_, _ = segment.pop()
+			})
+
+			if got := segment.len(); got != 1 {
+				t.Fatalf("len() after empty-slot panic = %d, want 1", got)
+			}
+
+			if !sameBucketSegmentSliceShape(segment.slots[0], tt.slot) {
+				t.Fatal("slot changed despite empty-slot panic")
+			}
+		})
 	}
 }
 
@@ -477,6 +565,19 @@ func TestBucketSegmentTrimResultIsZero(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBucketSegmentTrimResultAdd verifies local trim-result aggregation.
+func TestBucketSegmentTrimResultAdd(t *testing.T) {
+	t.Parallel()
+
+	var result bucketSegmentTrimResult
+
+	result.add(make([]byte, 0, 8))
+	assertBucketSegmentTrimResult(t, result, 1, 8)
+
+	result.add(make([]byte, 4, 16))
+	assertBucketSegmentTrimResult(t, result, 2, 24)
 }
 
 type bucketSegmentState struct {
@@ -579,4 +680,12 @@ func sameBucketSegmentBackingArray(left, right []byte) bool {
 	rightBacking := right[:cap(right)]
 
 	return &leftBacking[0] == &rightBacking[0]
+}
+
+func sameBucketSegmentSliceShape(left, right []byte) bool {
+	if (left == nil) != (right == nil) {
+		return false
+	}
+
+	return len(left) == len(right) && cap(left) == cap(right)
 }
