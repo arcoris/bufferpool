@@ -43,8 +43,8 @@ const (
 //   - shard_counters.go records shard-local accounting facts;
 //   - shard_credit.go evaluates local retention credit;
 //   - class_admission.go protects class-level capacity compatibility;
-//   - admission code maps local decisions to public drop reasons;
-//   - trim planning decides which shards should be trimmed.
+//   - caller code maps local decisions to any public result vocabulary;
+//   - callers decide which shards should be trimmed.
 //
 // Hot-path behavior:
 //

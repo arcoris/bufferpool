@@ -52,11 +52,11 @@ const (
 //   - budget allocation computes higher-level budget distribution;
 //   - class_budget.go derives per-shard credit limits from class targets;
 //   - shard_credit.go stores and evaluates one shard-local credit limit;
-//   - admission code maps credit decisions to public drop reasons;
+//   - caller code maps credit decisions to any public result vocabulary;
 //   - bucket.go physically stores and removes retained buffers;
 //   - bucket_trim.go describes storage-reduction results;
 //   - shard_counters.go records retained and removed accounting;
-//   - trim planning corrects over-target retained memory on the cold path.
+//   - callers decide when to correct over-target retained memory.
 //
 // shardCredit deliberately does not know ClassSize, ClassID, SizeClass,
 // classTable, pool budget, partition budget, pressure policy, or trim victims.

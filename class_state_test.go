@@ -1096,6 +1096,31 @@ func TestClassStateRecordAllocationAcceptsClassSizeCapacity(t *testing.T) {
 	assertClassStateRetainedConsistency(t, snapshot)
 }
 
+func TestClassStateRecordAllocationAcceptsCapacityAboveClassSize(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 1, 4)
+
+	state.recordAllocation(0, uint64(2*KiB))
+
+	snapshot := state.state()
+	if snapshot.Counters.Allocations != 1 {
+		t.Fatalf("class Allocations = %d, want 1", snapshot.Counters.Allocations)
+	}
+	if snapshot.Counters.AllocatedBytes != uint64(2*KiB) {
+		t.Fatalf("class AllocatedBytes = %d, want %d", snapshot.Counters.AllocatedBytes, uint64(2*KiB))
+	}
+	if snapshot.Shards[0].Counters.Allocations != 1 {
+		t.Fatalf("shard Allocations = %d, want 1", snapshot.Shards[0].Counters.Allocations)
+	}
+	if snapshot.Shards[0].Counters.AllocatedBytes != uint64(2*KiB) {
+		t.Fatalf("shard AllocatedBytes = %d, want %d", snapshot.Shards[0].Counters.AllocatedBytes, uint64(2*KiB))
+	}
+
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
 func TestClassStateRecordAllocatedBufferPanicsForInvalidCapacity(t *testing.T) {
 	t.Parallel()
 
@@ -1173,8 +1198,9 @@ func TestClassStateRecordAllocatedBufferAcceptsCapacityAboveClassSize(t *testing
 	assertClassStateRetainedConsistency(t, snapshot)
 }
 
-// TestClassStateTrimShard verifies class-level and shard-level trim accounting.
-func TestClassStateTrimShard(t *testing.T) {
+// TestClassStateTrimShardRecordsOneClassTrimOperation verifies class-level and
+// shard-level trim accounting.
+func TestClassStateTrimShardRecordsOneClassTrimOperation(t *testing.T) {
 	t.Parallel()
 
 	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
