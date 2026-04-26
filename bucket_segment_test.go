@@ -567,6 +567,22 @@ func TestBucketSegmentTrimResultIsZero(t *testing.T) {
 	}
 }
 
+// TestBucketSegmentRetainedPanicsForInvalidCount verifies that retained byte
+// inspection also checks the segment count invariant.
+func TestBucketSegmentRetainedPanicsForInvalidCount(t *testing.T) {
+	t.Parallel()
+
+	segment := bucketSegment{
+		slots:         make([][]byte, 1),
+		count:         2,
+		retainedBytes: 8,
+	}
+
+	testutil.MustPanicWithMessage(t, errBucketSegmentInvalidCount, func() {
+		_ = segment.retained()
+	})
+}
+
 // TestBucketSegmentTrimResultAdd verifies local trim-result aggregation.
 func TestBucketSegmentTrimResultAdd(t *testing.T) {
 	t.Parallel()

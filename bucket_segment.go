@@ -203,8 +203,19 @@ func (s *bucketSegment) isFull() bool {
 	return s.count == len(s.slots)
 }
 
-// retained returns the sum of retained buffer capacities in bytes.
+// retained returns the current retained backing capacity in bytes.
+//
+// The value is the sum of cap(buffer) for all occupied segment slots. It uses
+// capacity rather than length because retained memory is determined by the
+// backing arrays kept reachable by stored slices.
+//
+// The method validates the segment count invariant before reading the counter.
+// A corrupted count means the occupied/free slot boundary is no longer reliable,
+// so even inspection should fail fast instead of returning accounting data from
+// an invalid segment state.
 func (s *bucketSegment) retained() uint64 {
+	s.mustHaveValidCount()
+
 	return s.retainedBytes
 }
 
