@@ -219,96 +219,6 @@ func TestNewClassTableFromSizesPanicsForInvalidInput(t *testing.T) {
 	})
 }
 
-// TestDefaultClassSizeProfile verifies the default power-of-two profile.
-//
-// Default class-profile data belongs in class_table.go, not size.go. These
-// values are a concrete class-table profile, not generic byte-size constants.
-func TestDefaultClassSizeProfile(t *testing.T) {
-	t.Parallel()
-
-	profile := defaultClassSizeProfile()
-
-	if len(profile) != defaultClassCount {
-		t.Fatalf("len(defaultClassSizeProfile()) = %d, want %d", len(profile), defaultClassCount)
-	}
-
-	if profile[0] != ClassSize(64*Byte) {
-		t.Fatalf("first default class size = %s, want 64 B", profile[0])
-	}
-
-	if profile[len(profile)-1] != ClassSize(32*MiB) {
-		t.Fatalf("last default class size = %s, want 32 MiB", profile[len(profile)-1])
-	}
-
-	for index, size := range profile {
-		want := ClassSize(Size(1) << uint(defaultMinClassShift+index))
-
-		if size != want {
-			t.Fatalf("default class size at index %d = %s, want %s", index, size, want)
-		}
-
-		if !size.IsPowerOfTwo() {
-			t.Fatalf("default class size at index %d = %s is not power of two", index, size)
-		}
-
-		if index > 0 && !profile[index-1].Less(size) {
-			t.Fatalf("default profile is not strictly increasing at index %d: %s then %s", index, profile[index-1], size)
-		}
-	}
-}
-
-// TestDefaultClassSizeProfileReturnsCopy verifies that callers cannot mutate the
-// package default profile.
-func TestDefaultClassSizeProfileReturnsCopy(t *testing.T) {
-	t.Parallel()
-
-	first := defaultClassSizeProfile()
-	first[0] = ClassSizeFromSize(8 * KiB)
-
-	second := defaultClassSizeProfile()
-
-	if second[0] != ClassSize(64*Byte) {
-		t.Fatalf("default profile was mutated through returned slice: got %s, want 64 B", second[0])
-	}
-}
-
-// TestDefaultClassTable verifies construction of the package default class table.
-func TestDefaultClassTable(t *testing.T) {
-	t.Parallel()
-
-	table := defaultClassTable()
-
-	if table.len() != defaultClassCount {
-		t.Fatalf("defaultClassTable().len() = %d, want %d", table.len(), defaultClassCount)
-	}
-
-	first, ok := table.first()
-	if !ok {
-		t.Fatal("default table first() ok = false, want true")
-	}
-
-	if first.ID() != ClassID(0) {
-		t.Fatalf("default first ID() = %s, want class#0", first.ID())
-	}
-
-	if first.Size() != ClassSize(64*Byte) {
-		t.Fatalf("default first Size() = %s, want 64 B", first.Size())
-	}
-
-	last, ok := table.last()
-	if !ok {
-		t.Fatal("default table last() ok = false, want true")
-	}
-
-	if last.ID() != ClassID(defaultClassCount-1) {
-		t.Fatalf("default last ID() = %s, want class#%d", last.ID(), defaultClassCount-1)
-	}
-
-	if last.Size() != ClassSize(32*MiB) {
-		t.Fatalf("default last Size() = %s, want 32 MiB", last.Size())
-	}
-}
-
 // TestZeroValueClassTable verifies disabled zero-value behavior.
 //
 // The zero-value table contains no classes. All lookup methods should return
@@ -909,7 +819,7 @@ func TestClassTableSupports(t *testing.T) {
 // TestClassTableAllowsNonPowerOfTwoProfile verifies that classTable does not
 // require power-of-two class sizes.
 //
-// Power-of-two is a default profile property, not a universal class-table
+// Power-of-two sizing is a profile property, not a universal class-table
 // invariant.
 func TestClassTableAllowsNonPowerOfTwoProfile(t *testing.T) {
 	t.Parallel()

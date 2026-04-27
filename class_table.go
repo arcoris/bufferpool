@@ -53,17 +53,6 @@ const (
 	// maxClassTableClasses is the maximum number of classes representable by
 	// ClassID.
 	maxClassTableClasses = int(^uint16(0)) + 1
-
-	// defaultMinClassShift is the exponent for the smallest class in the default
-	// power-of-two class profile.
-	defaultMinClassShift = 6
-
-	// defaultMaxClassShift is the exponent for the largest class in the default
-	// power-of-two class profile.
-	defaultMaxClassShift = 25
-
-	// defaultClassCount is the number of classes in the default profile.
-	defaultClassCount = defaultMaxClassShift - defaultMinClassShift + 1
 )
 
 // classTable is an immutable-ordered table of size classes.
@@ -74,7 +63,8 @@ const (
 //
 // Responsibility boundary:
 //
-//   - class_table.go owns ordered class descriptors and lookup;
+//   - class_table.go owns ordered class descriptors and lookup mechanics;
+//   - default and named class-size profiles are policy responsibilities;
 //   - class.go owns ClassID and SizeClass descriptor semantics;
 //   - class_size.go owns ClassSize semantics;
 //   - class_budget.go owns class-level target bytes;
@@ -139,32 +129,6 @@ func newClassTableFromSizes(sizes []Size) classTable {
 	}
 
 	return newClassTable(classSizes)
-}
-
-// defaultClassTable returns the package default power-of-two class table.
-//
-// The default profile is intentionally defined here instead of size.go because
-// these are not generic byte-size constants. They are a concrete size-class
-// profile used by class-table construction.
-func defaultClassTable() classTable {
-	return newClassTable(defaultClassSizeProfile())
-}
-
-// defaultClassSizeProfile returns a copy of the default power-of-two class-size
-// profile.
-//
-// The profile ranges from 64 B through 32 MiB:
-//
-//	64 B, 128 B, 256 B, 512 B,
-//	1 KiB, 2 KiB, ...,
-//	32 MiB.
-//
-// The returned slice is a copy and may be modified by callers before building a
-// custom class table.
-func defaultClassSizeProfile() []ClassSize {
-	profile := make([]ClassSize, len(defaultClassSizes))
-	copy(profile, defaultClassSizes[:])
-	return profile
 }
 
 // len returns the number of classes in the table.
@@ -338,34 +302,4 @@ func validateClassSizes(sizes []ClassSize) {
 
 		previous = size
 	}
-}
-
-// defaultClassSizes is the default power-of-two class-size profile.
-//
-// It is intentionally stored in class_table.go rather than size.go. These values
-// are not generic size constants; together they define one concrete class-table
-// profile.
-var defaultClassSizes = [defaultClassCount]ClassSize{
-	ClassSize(64 * Byte),
-	ClassSize(128 * Byte),
-	ClassSize(256 * Byte),
-	ClassSize(512 * Byte),
-
-	ClassSize(1 * KiB),
-	ClassSize(2 * KiB),
-	ClassSize(4 * KiB),
-	ClassSize(8 * KiB),
-	ClassSize(16 * KiB),
-	ClassSize(32 * KiB),
-	ClassSize(64 * KiB),
-	ClassSize(128 * KiB),
-	ClassSize(256 * KiB),
-	ClassSize(512 * KiB),
-
-	ClassSize(1 * MiB),
-	ClassSize(2 * MiB),
-	ClassSize(4 * MiB),
-	ClassSize(8 * MiB),
-	ClassSize(16 * MiB),
-	ClassSize(32 * MiB),
 }
