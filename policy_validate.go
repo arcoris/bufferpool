@@ -37,6 +37,10 @@ import (
 //
 // Pressure, trim, and ownership sections may be disabled, but if they are
 // configured they must be internally consistent.
+//
+// This top-level function is a package helper for call sites that prefer a
+// function over the Policy.Validate method. It intentionally delegates to the
+// method so the validation rules have one implementation.
 func ValidatePolicy(policy Policy) error {
 	return policy.Validate()
 }
@@ -52,6 +56,11 @@ func ValidatePolicy(policy Policy) error {
 // The returned error is classified as ErrInvalidPolicy and may contain multiple
 // validation failures. Callers should use errors.Is(err, ErrInvalidPolicy) for
 // classification instead of matching error strings.
+//
+// Cross-section checks run only after the sections they depend on have passed.
+// This keeps diagnostics focused: for example, class/retention consistency is
+// not evaluated when either the class profile or retention section is already
+// malformed.
 func (p Policy) Validate() error {
 	var errs []error
 
@@ -96,6 +105,10 @@ func (p Policy) Validate() error {
 // RetentionPolicy is required for a complete Policy. Zero retention policy means
 // no retained-memory bounds, no request limit, and no class/shard targets, which
 // is not enough to construct a bounded runtime owner.
+//
+// This method validates section-local numeric relationships only. It does not
+// compare limits against configured class sizes or shard storage shape; those
+// checks are cross-section policy rules handled by Policy.Validate.
 func (r RetentionPolicy) Validate() error {
 	var errs []error
 
@@ -197,6 +210,10 @@ func (r RetentionPolicy) Validate() error {
 // classTable. Table construction remains owned by class_table.go, while policy
 // validation ensures that the configured profile is suitable before an owner
 // attempts to build runtime state from it.
+//
+// The profile must already be normalized to ClassSize values. Public option
+// parsing may accept looser input forms, but this layer validates the internal
+// policy representation.
 func (c ClassPolicy) Validate() error {
 	var errs []error
 
@@ -238,6 +255,10 @@ func (c ClassPolicy) Validate() error {
 // ShardPolicy controls hot-path lock striping and physical retained-storage
 // shape. It does not decide byte budgets; byte and buffer credit are projected
 // later from RetentionPolicy through class budgets into shard credits.
+//
+// Fallback counts are validated relative to ShardsPerClass because probing more
+// fallback shards than exist would either duplicate work or hide a caller-side
+// configuration bug.
 func (s ShardPolicy) Validate() error {
 	var errs []error
 
@@ -297,6 +318,9 @@ func (s ShardPolicy) Validate() error {
 // runtime handles returned buffers that cannot or should not be retained. The
 // policy layer validates configured actions only; concrete drop counters and
 // public error reporting belong to later runtime/admission code.
+//
+// Every admission action must be explicit. An unset action would leave a return
+// path condition without a deterministic outcome.
 func (a AdmissionPolicy) Validate() error {
 	var errs []error
 
@@ -332,6 +356,10 @@ func (a AdmissionPolicy) Validate() error {
 // If pressure behavior is configured, it must be enabled and all standard
 // pressure levels must have explicit behavior so runtime pressure publication
 // cannot reach an undefined level.
+//
+// Per-level validation is delegated to PressureLevelPolicy.Validate, then this
+// method checks ordering between levels. Ordering is a parent-level rule because
+// it compares multiple pressure levels.
 func (p PressurePolicy) Validate() error {
 	var errs []error
 
@@ -373,6 +401,15 @@ func (p PressurePolicy) Validate() error {
 }
 
 // Validate validates one pressure-level behavior.
+//
+// A zero PressureLevelPolicy is accepted here because this method validates a
+// single value in isolation. PressurePolicy.Validate decides when a level is
+// required. This separation keeps optional pressure configuration and required
+// enabled-pressure configuration from sharing hidden state.
+//
+// Retention scale is bounded to 100% at this layer. Trim scale may exceed 100%,
+// but when a level is configured it must be non-zero so pressure cannot publish
+// a level that disables trim work accidentally.
 func (p PressureLevelPolicy) Validate() error {
 	var errs []error
 
@@ -410,6 +447,10 @@ func (p PressureLevelPolicy) Validate() error {
 // A zero TrimPolicy is valid and means trim is not configured. If any trim field
 // is configured, trim must be explicitly enabled and cycle bounds must be
 // positive.
+//
+// This method validates policy shape only. It does not schedule trim work and it
+// does not inspect retained storage. Runtime owners apply these bounds when they
+// later implement trim cycles.
 func (t TrimPolicy) Validate() error {
 	var errs []error
 
@@ -465,6 +506,11 @@ func (t TrimPolicy) Validate() error {
 //
 // A zero OwnershipPolicy is valid and means ownership behavior is not configured.
 // OwnershipModeNone is also valid and explicitly disables ownership tracking.
+//
+// Tracking flags and double-release detection require an ownership mode that can
+// actually record checked-out buffers. Accounting and strict modes also require
+// an explicit returned-capacity growth limit because return validation depends on
+// that bound.
 func (o OwnershipPolicy) Validate() error {
 	var errs []error
 
@@ -513,6 +559,13 @@ func (o OwnershipPolicy) Validate() error {
 	return multierr.Combine(errs...)
 }
 
+// validatePolicyClassRetentionConsistency validates retention limits that depend
+// on the configured class profile.
+//
+// RetentionPolicy can prove that its numeric fields are internally ordered, and
+// ClassPolicy can prove that class sizes are ordered. Only the combined policy
+// can prove that the largest class is serviceable under request, buffer,
+// class-budget, and shard-budget limits.
 func validatePolicyClassRetentionConsistency(retention RetentionPolicy, classes ClassPolicy) error {
 	var errs []error
 
@@ -566,6 +619,12 @@ func validatePolicyClassRetentionConsistency(retention RetentionPolicy, classes 
 	return multierr.Combine(errs...)
 }
 
+// validatePolicyShardRetentionConsistency validates retained-buffer count limits
+// against physical shard storage.
+//
+// Byte limits are checked elsewhere. This helper focuses on count limits because
+// bucket slots are the physical upper bound for retained buffer count. It also
+// guards the multiplication used to compute total per-class physical slots.
 func validatePolicyShardRetentionConsistency(retention RetentionPolicy, classes ClassPolicy, shards ShardPolicy) error {
 	var errs []error
 
@@ -602,6 +661,12 @@ func validatePolicyShardRetentionConsistency(retention RetentionPolicy, classes 
 	return multierr.Combine(errs...)
 }
 
+// validatePolicyPressureRetentionConsistency validates pressure capacity
+// overrides against normal retention limits.
+//
+// Pressure level policies may shrink capacity targets, but they must not expand
+// beyond the normal max retained buffer capacity. Expansion under pressure would
+// contradict the retained-memory safety model.
 func validatePolicyPressureRetentionConsistency(retention RetentionPolicy, pressure PressurePolicy) error {
 	var errs []error
 
@@ -627,6 +692,11 @@ func validatePolicyPressureRetentionConsistency(retention RetentionPolicy, press
 	return multierr.Combine(errs...)
 }
 
+// validatePressureLevelRetentionConsistency validates one named pressure level
+// against normal retained-buffer capacity limits.
+//
+// name is included in diagnostics so callers can identify which pressure level
+// owns a failing override without relying on error order.
 func validatePressureLevelRetentionConsistency(name string, retention RetentionPolicy, level PressureLevelPolicy) error {
 	var errs []error
 
@@ -655,6 +725,11 @@ func validatePressureLevelRetentionConsistency(name string, retention RetentionP
 	return multierr.Combine(errs...)
 }
 
+// validatePressureLevelOrdering validates monotonic pressure behavior.
+//
+// Retention scale must become more conservative as pressure increases. Trim
+// scale must become at least as aggressive as pressure increases. The individual
+// level validator cannot check this because it sees only one level at a time.
 func validatePressureLevelOrdering(policy PressurePolicy) error {
 	var errs []error
 
@@ -693,6 +768,11 @@ func validatePressureLevelOrdering(policy PressurePolicy) error {
 	return multierr.Combine(errs...)
 }
 
+// validateAdmissionAction validates one configured admission failure action.
+//
+// AdmissionPolicy has several named failure conditions with the same value
+// rules. Keeping the common check here avoids allowing one condition to accept
+// unset or unknown values while others reject them.
 func validateAdmissionAction(name string, action AdmissionAction) error {
 	if !isKnownAdmissionAction(action) {
 		return policyValidationError("bufferpool.AdmissionPolicy: unknown " + name + " action " + policyUint8String(uint8(action)))
@@ -705,6 +785,12 @@ func validateAdmissionAction(name string, action AdmissionAction) error {
 	return nil
 }
 
+// isKnownShardSelectionMode reports whether mode is one of the defined selector
+// constants.
+//
+// Known-but-unset values are still known. Callers that require an explicit mode
+// check for ShardSelectionModeUnset separately so diagnostics can distinguish
+// unknown enum values from omitted configuration.
 func isKnownShardSelectionMode(mode ShardSelectionMode) bool {
 	switch mode {
 	case ShardSelectionModeUnset,
@@ -717,6 +803,10 @@ func isKnownShardSelectionMode(mode ShardSelectionMode) bool {
 	}
 }
 
+// isKnownZeroSizeRequestPolicy reports whether policy is a defined zero-size
+// request behavior.
+//
+// The unset value is known but not valid for a complete AdmissionPolicy.
 func isKnownZeroSizeRequestPolicy(policy ZeroSizeRequestPolicy) bool {
 	switch policy {
 	case ZeroSizeRequestUnset,
@@ -729,6 +819,10 @@ func isKnownZeroSizeRequestPolicy(policy ZeroSizeRequestPolicy) bool {
 	}
 }
 
+// isKnownReturnedBufferPolicy reports whether policy is a defined return-path
+// posture.
+//
+// The unset value is known but not valid for a complete AdmissionPolicy.
 func isKnownReturnedBufferPolicy(policy ReturnedBufferPolicy) bool {
 	switch policy {
 	case ReturnedBufferPolicyUnset,
@@ -740,6 +834,10 @@ func isKnownReturnedBufferPolicy(policy ReturnedBufferPolicy) bool {
 	}
 }
 
+// isKnownAdmissionAction reports whether action is a defined admission action.
+//
+// The unset value is known so callers can emit a precise "must be set" error
+// instead of treating omitted configuration as an unknown enum.
 func isKnownAdmissionAction(action AdmissionAction) bool {
 	switch action {
 	case AdmissionActionUnset,
@@ -752,6 +850,10 @@ func isKnownAdmissionAction(action AdmissionAction) bool {
 	}
 }
 
+// isKnownOwnershipMode reports whether mode is a defined ownership mode.
+//
+// The unset value is known but is only valid when the entire OwnershipPolicy is
+// otherwise zero.
 func isKnownOwnershipMode(mode OwnershipMode) bool {
 	switch mode {
 	case OwnershipModeUnset,
@@ -764,6 +866,11 @@ func isKnownOwnershipMode(mode OwnershipMode) bool {
 	}
 }
 
+// policyUint64Product multiplies two non-negative int policy values as uint64.
+//
+// It returns false for negative inputs or uint64 overflow. This keeps
+// cross-section validation from accepting shard and bucket counts whose product
+// cannot be represented as a retained-buffer limit.
 func policyUint64Product(left, right int) (uint64, bool) {
 	if left < 0 || right < 0 {
 		return 0, false
@@ -779,6 +886,11 @@ func policyUint64Product(left, right int) (uint64, bool) {
 	return unsignedLeft * unsignedRight, true
 }
 
+// appendPolicyError appends err when it is non-nil.
+//
+// The helper keeps validation methods readable: rule checks can append optional
+// section or cross-section errors without repeating nil checks at every call
+// site.
 func appendPolicyError(errs []error, err error) []error {
 	if err == nil {
 		return errs
@@ -787,14 +899,28 @@ func appendPolicyError(errs []error, err error) []error {
 	return append(errs, err)
 }
 
+// appendPolicyValidationError creates and appends one ErrInvalidPolicy failure.
+//
+// message must already be fully formatted. policy_validate.go intentionally uses
+// explicit string construction so policy rules do not depend on fmt formatting.
 func appendPolicyValidationError(errs []error, message string) []error {
 	return append(errs, policyValidationError(message))
 }
 
+// policyValidationError creates a classified policy validation failure.
+//
+// The returned error may be combined with other failures, but each individual
+// failure remains independently classified as ErrInvalidPolicy for errors.Is.
 func policyValidationError(message string) error {
 	return newError(ErrInvalidPolicy, message)
 }
 
+// prefixPolicyValidationError adds section context while preserving the original
+// validation error as the cause.
+//
+// This is used when a nested policy section is invalid but the parent section
+// needs to name which child failed, such as a medium/high/critical pressure
+// level. The wrapper is also classified as ErrInvalidPolicy.
 func prefixPolicyValidationError(prefix string, err error) error {
 	if err == nil {
 		return nil
@@ -803,14 +929,21 @@ func prefixPolicyValidationError(prefix string, err error) error {
 	return wrapError(ErrInvalidPolicy, err, prefix+": "+err.Error())
 }
 
+// policyUint8String formats small enum values without importing fmt.
 func policyUint8String(value uint8) string {
 	return strconv.FormatUint(uint64(value), 10)
 }
 
+// policyUint64String formats retained-buffer count values without importing fmt.
 func policyUint64String(value uint64) string {
 	return strconv.FormatUint(value, 10)
 }
 
+// policyRatioString formats PolicyRatio values in their fixed-point integer
+// representation.
+//
+// Validation diagnostics use the stored basis-point value because PolicyRatio is
+// defined as an integer policy type, not a floating-point percentage.
 func policyRatioString(value PolicyRatio) string {
 	return strconv.FormatUint(uint64(value), 10)
 }
