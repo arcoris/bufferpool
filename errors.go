@@ -116,6 +116,36 @@ var (
 	// Callers may use errors.Is(err, ErrUnsupportedClass) to detect this condition.
 	ErrUnsupportedClass = errors.New("bufferpool: unsupported size class")
 
+	// ErrRetentionRejected reports that a returned buffer was classified but not
+	// accepted into retained storage.
+	//
+	// This is a retention/admission outcome, not necessarily an invalid caller
+	// buffer. More specific retention errors such as ErrRetentionCreditExhausted
+	// and ErrRetentionStorageFull should be preferred when the rejecting layer is
+	// known.
+	//
+	// Callers may use errors.Is(err, ErrRetentionRejected) to detect this condition.
+	ErrRetentionRejected = errors.New("bufferpool: retention rejected")
+
+	// ErrRetentionCreditExhausted reports that shard-local retained-buffer credit
+	// is exhausted.
+	//
+	// The returned buffer may be valid and class-compatible, but the selected
+	// shard has no remaining byte or buffer credit under the current policy
+	// snapshot.
+	//
+	// Callers may use errors.Is(err, ErrRetentionCreditExhausted) to detect this condition.
+	ErrRetentionCreditExhausted = errors.New("bufferpool: retention credit exhausted")
+
+	// ErrRetentionStorageFull reports that physical retained-buffer storage is
+	// full after credit accepted the returned buffer.
+	//
+	// This is a storage-capacity outcome, distinct from invalid buffer input or
+	// unsupported class routing.
+	//
+	// Callers may use errors.Is(err, ErrRetentionStorageFull) to detect this condition.
+	ErrRetentionStorageFull = errors.New("bufferpool: retention storage full")
+
 	// ErrOwnershipViolation reports that a buffer ownership invariant was
 	// violated.
 	//
