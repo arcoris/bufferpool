@@ -89,6 +89,34 @@ func TestPoolMetricsIncludesOwnerSideDrops(t *testing.T) {
 	}
 }
 
+// TestPoolMetricsAndSnapshotAgree verifies Metrics uses the same aggregate
+// counter semantics as Snapshot without allocating the public snapshot shape.
+func TestPoolMetricsAndSnapshotAgree(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+
+	buffer, err := pool.Get(512)
+	if err != nil {
+		t.Fatalf("Get() returned error: %v", err)
+	}
+	if err := pool.Put(buffer); err != nil {
+		t.Fatalf("Put() returned error: %v", err)
+	}
+
+	snapshot := pool.Snapshot()
+	metrics := pool.Metrics()
+
+	if metrics.Gets != snapshot.Counters.Gets ||
+		metrics.Puts != snapshot.Counters.Puts ||
+		metrics.Retains != snapshot.Counters.Retains ||
+		metrics.CurrentRetainedBuffers != snapshot.CurrentRetainedBuffers ||
+		metrics.CurrentRetainedBytes != snapshot.CurrentRetainedBytes {
+		t.Fatalf("metrics and snapshot disagree: metrics=%#v snapshot=%#v", metrics, snapshot.Counters)
+	}
+}
+
 // TestPoolMetricsAfterActivity verifies metrics projection over Get/Put/reuse.
 func TestPoolMetricsAfterActivity(t *testing.T) {
 	t.Parallel()

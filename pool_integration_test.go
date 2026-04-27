@@ -192,6 +192,12 @@ func TestStaticPoolRuntimeIntegration(t *testing.T) {
 	assertPoolSnapshotRetainedConsistency(t, overBudgetSnapshot)
 }
 
+// poolTestIntegrationPolicy returns a compact three-class policy for end-to-end
+// static runtime tests.
+//
+// The policy is intentionally larger than the small unit-test policy: it has
+// multiple classes and two shards per class so routing, budget publication,
+// shard selection, trim, and clear behavior can be exercised together.
 func poolTestIntegrationPolicy() Policy {
 	policy := poolTestSmallSingleShardPolicy()
 	policy.Retention.SoftRetainedBytes = 6 * KiB
@@ -215,6 +221,12 @@ func poolTestIntegrationPolicy() Policy {
 	return policy
 }
 
+// poolTestCreditExhaustionPolicy returns a policy where credit is smaller than
+// physical bucket capacity.
+//
+// This lets tests prove that shard credit rejects retention before the bucket
+// fills, and that the rejection is counted as a lower-layer drop rather than an
+// owner-side drop reason.
 func poolTestCreditExhaustionPolicy() Policy {
 	policy := poolTestSmallSingleShardPolicy()
 	policy.Shards.BucketSlotsPerShard = 2
@@ -224,6 +236,11 @@ func poolTestCreditExhaustionPolicy() Policy {
 	return policy
 }
 
+// poolTestBucketFullPolicy returns a policy where bucket slots are smaller than
+// shard credit.
+//
+// Policy validation normally rejects this shape, so tests use it only with
+// validation disabled to exercise the physical bucket-full path.
 func poolTestBucketFullPolicy() Policy {
 	policy := poolTestSmallSingleShardPolicy()
 	policy.Shards.BucketSlotsPerShard = 1
@@ -233,6 +250,10 @@ func poolTestBucketFullPolicy() Policy {
 	return policy
 }
 
+// mustPoolClassSnapshot returns the snapshot for size or fails the test.
+//
+// Tests use this helper when the class table itself is not under test and a
+// missing class would mean the test fixture is invalid.
 func mustPoolClassSnapshot(t *testing.T, snapshot PoolSnapshot, size ClassSize) PoolClassSnapshot {
 	t.Helper()
 
@@ -246,6 +267,14 @@ func mustPoolClassSnapshot(t *testing.T, snapshot PoolSnapshot, size ClassSize) 
 	return PoolClassSnapshot{}
 }
 
+// assertPoolSnapshotRetainedConsistency verifies derived retained-state
+// invariants in a PoolSnapshot.
+//
+// The helper checks the whole aggregation chain:
+//
+//   - every shard bucket matches shard current retained counters;
+//   - every class retained gauge equals the sum of its shards;
+//   - pool retained gauges and aggregate counters equal the sum of classes.
 func assertPoolSnapshotRetainedConsistency(t *testing.T, snapshot PoolSnapshot) {
 	t.Helper()
 

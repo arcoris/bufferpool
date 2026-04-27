@@ -297,6 +297,36 @@ func TestShardTryRetainStoresBuffer(t *testing.T) {
 	assertShardStateRetainedConsistency(t, state)
 }
 
+// TestShardTryRetainZeroesBeforePublication verifies retained-buffer clearing
+// happens before a buffer enters bucket storage.
+func TestShardTryRetainZeroesBeforePublication(t *testing.T) {
+	t.Parallel()
+
+	shard := newShard(1)
+	shard.updateCredit(newShardCreditLimit(1, 1024))
+
+	buffer := make([]byte, 1024)
+	buffer[0] = 1
+	buffer[1023] = 2
+
+	result := shard.tryRetainWithOptions(buffer[:1], shardRetainOptions{
+		ZeroBeforeRetain: true,
+	})
+	if !result.Retained {
+		t.Fatalf("tryRetainWithOptions Retained = false, decision=%s", result.CreditDecision)
+	}
+
+	reused := shard.tryGet(SizeFromInt(512))
+	if !reused.Hit {
+		t.Fatal("tryGet() missed retained buffer")
+	}
+
+	full := reused.Buffer[:cap(reused.Buffer)]
+	if full[0] != 0 || full[1023] != 0 {
+		t.Fatalf("retained buffer was not zeroed before publication: first=%d last=%d", full[0], full[1023])
+	}
+}
+
 // TestShardTryRetainRejectsWhenBucketIsFull verifies physical storage rejection.
 //
 // Credit can allow retention while bucket storage rejects the candidate because

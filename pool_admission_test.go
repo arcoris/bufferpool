@@ -136,40 +136,16 @@ func TestPoolHandleBufferAdmissionActionZeroesDroppedBuffers(t *testing.T) {
 	}
 }
 
-// TestPoolZeroRetainedBuffer verifies retained-buffer hygiene.
-func TestPoolZeroRetainedBuffer(t *testing.T) {
+// TestZeroBufferCapacity verifies the shared full-capacity clearing primitive.
+func TestZeroBufferCapacity(t *testing.T) {
 	t.Parallel()
 
-	t.Run("disabled", func(t *testing.T) {
-		t.Parallel()
+	buffer := []byte{1, 2, 3}
+	zeroBufferCapacity(buffer[:1])
 
-		pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
-		defer closePoolForTest(t, pool)
-
-		buffer := []byte{1, 2, 3}
-		pool.zeroRetainedBuffer(buffer[:1], pool.Policy())
-
-		if buffer[0] != 1 || buffer[1] != 2 || buffer[2] != 3 {
-			t.Fatalf("zeroRetainedBuffer changed buffer with zeroing disabled: %#v", buffer)
+	for index, value := range buffer {
+		if value != 0 {
+			t.Fatalf("buffer[%d] = %d, want zero", index, value)
 		}
-	})
-
-	t.Run("enabled clears full capacity", func(t *testing.T) {
-		t.Parallel()
-
-		policy := poolTestSingleShardPolicy()
-		policy.Admission.ZeroRetainedBuffers = true
-
-		pool := MustNew(PoolConfig{Policy: policy})
-		defer closePoolForTest(t, pool)
-
-		buffer := []byte{1, 2, 3}
-		pool.zeroRetainedBuffer(buffer[:1], pool.Policy())
-
-		for index, value := range buffer {
-			if value != 0 {
-				t.Fatalf("buffer[%d] = %d, want zero", index, value)
-			}
-		}
-	})
+	}
 }

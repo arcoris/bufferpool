@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -308,6 +309,60 @@ func TestPoolPutZeroingPolicies(t *testing.T) {
 	})
 }
 
+// TestPoolPutZeroRetainedBuffersConcurrentReuseRaceSafe exercises retained
+// zeroing under concurrent Put/Get reuse.
+//
+// The test is intentionally simple for normal runs and meaningful under
+// go test -race: retained zeroing must happen before bucket publication, so a
+// concurrent Get must not race with post-publication clearing.
+func TestPoolPutZeroRetainedBuffersConcurrentReuseRaceSafe(t *testing.T) {
+	policy := poolTestSingleShardPolicy()
+	policy.Admission.ZeroRetainedBuffers = true
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	defer closePoolForTest(t, pool)
+
+	const workers = 8
+	const iterations = 256
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+
+			for iteration := 0; iteration < iterations; iteration++ {
+				buffer := make([]byte, 512)
+				buffer[0] = byte(worker + 1)
+				buffer[511] = byte(iteration + 1)
+
+				if err := pool.Put(buffer[:1]); err != nil {
+					t.Errorf("Put() returned error: %v", err)
+					return
+				}
+
+				reused, err := pool.Get(300)
+				if err != nil {
+					t.Errorf("Get() returned error: %v", err)
+					return
+				}
+
+				full := reused[:cap(reused)]
+				if reused[0] != 0 || full[511] != 0 {
+					t.Errorf("reused buffer was not zeroed before publication")
+					return
+				}
+			}
+		}(worker)
+	}
+
+	close(start)
+	wg.Wait()
+}
+
 // TestPoolPutOwnerSideDropAccounting verifies drops decided before class/shard
 // storage are visible in aggregate snapshots without being mixed into class
 // counters.
@@ -386,6 +441,27 @@ func TestPoolPutOwnerSideDropAccounting(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPoolPutClassMismatchUsesClassMismatchAdmission verifies class-local
+// retain rejection is mapped to ClassMismatch, not UnsupportedClass.
+func TestPoolPutClassMismatchUsesClassMismatchAdmission(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Admission.UnsupportedClass = AdmissionActionDrop
+	policy.Admission.ClassMismatch = AdmissionActionError
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	defer closePoolForTest(t, pool)
+
+	err := pool.handleClassRetainRejection(policy, make([]byte, 0, 512))
+	if err == nil {
+		t.Fatal("handleClassRetainRejection() returned nil error")
+	}
+	if !errors.Is(err, ErrRetentionRejected) {
+		t.Fatalf("class retain rejection error = %v, want ErrRetentionRejected", err)
 	}
 }
 

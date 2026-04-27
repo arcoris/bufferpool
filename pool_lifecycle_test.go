@@ -135,6 +135,17 @@ func TestPoolOperationsAfterClose(t *testing.T) {
 		if !errors.Is(err, ErrClosed) {
 			t.Fatalf("Put() after close error does not match ErrClosed: %v", err)
 		}
+
+		snapshot := pool.Snapshot()
+		if snapshot.Counters.Puts != 1 {
+			t.Fatalf("rejected late Put count = %d, want 1", snapshot.Counters.Puts)
+		}
+		if snapshot.Counters.ReturnedBytes != 256 {
+			t.Fatalf("rejected late returned bytes = %d, want 256", snapshot.Counters.ReturnedBytes)
+		}
+		if snapshot.Counters.Drops != 0 {
+			t.Fatalf("rejected late drops = %d, want 0", snapshot.Counters.Drops)
+		}
 	})
 
 	t.Run("drop returns mode ignores put after close", func(t *testing.T) {
@@ -164,6 +175,12 @@ func TestPoolOperationsAfterClose(t *testing.T) {
 		}
 
 		snapshot := pool.Snapshot()
+		if snapshot.Counters.Puts != 1 {
+			t.Fatalf("late drop puts = %d, want 1", snapshot.Counters.Puts)
+		}
+		if snapshot.Counters.ReturnedBytes != 512 {
+			t.Fatalf("late drop returned bytes = %d, want 512", snapshot.Counters.ReturnedBytes)
+		}
 		if snapshot.Counters.Drops != 1 {
 			t.Fatalf("owner-side drops after late return = %d, want 1", snapshot.Counters.Drops)
 		}

@@ -173,14 +173,17 @@ func TestPoolRuntimeSnapshotPublicationUsesDefensiveCopies(t *testing.T) {
 	defer closePoolForTest(t, pool)
 
 	policy := pool.Policy()
-	policy.Classes.Sizes[0] = ClassSizeFromBytes(384)
+	policy.Admission.ZeroDroppedBuffers = !policy.Admission.ZeroDroppedBuffers
 
 	pool.publishRuntimeSnapshot(newPoolRuntimeSnapshot(InitialGeneration.Next(), policy))
 	policy.Classes.Sizes[0] = ClassSizeFromSize(8 * MiB)
 
 	current := pool.Policy()
-	if current.Classes.Sizes[0] != ClassSizeFromBytes(384) {
+	if current.Classes.Sizes[0] != pool.ClassSizes()[0] {
 		t.Fatalf("published policy was mutated through caller slice: got %s", current.Classes.Sizes[0])
+	}
+	if current.Admission.ZeroDroppedBuffers == pool.Config().Policy.Admission.ZeroDroppedBuffers {
+		t.Fatal("compatible runtime admission change was not published")
 	}
 
 	snapshot := pool.Snapshot()
@@ -292,6 +295,10 @@ type poolTestUsage struct {
 	bytes   uint64
 }
 
+// assertPoolPanic verifies that fn panics with the exact expected value.
+//
+// Pool internals use stable string constants for fail-fast programmer errors.
+// Exact panic checks make those internal contracts explicit in tests.
 func assertPoolPanic(t *testing.T, want any, fn func()) {
 	t.Helper()
 
@@ -309,6 +316,10 @@ func assertPoolPanic(t *testing.T, want any, fn func()) {
 	fn()
 }
 
+// assertPoolPanicMatches verifies that fn panics with a value accepted by match.
+//
+// This is used when the panic is an error wrapper and exact object identity is
+// less important than preserving errors.Is classification.
 func assertPoolPanicMatches(t *testing.T, match func(any) bool, fn func()) {
 	t.Helper()
 

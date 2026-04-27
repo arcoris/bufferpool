@@ -124,6 +124,14 @@ func TestPoolGetZeroSizePolicy(t *testing.T) {
 		if usage := poolTestRetainedUsage(pool); usage.buffers != 0 || usage.bytes != 0 {
 			t.Fatalf("retained usage after empty zero-size request = %+v, want zero", usage)
 		}
+		if active := pool.activeOperations.Load(); active != 0 {
+			t.Fatalf("active operations after empty zero-size request = %d, want 0", active)
+		}
+
+		snapshot := pool.Snapshot()
+		if !snapshot.Counters.IsZero() {
+			t.Fatalf("empty zero-size request touched counters: %#v", snapshot.Counters)
+		}
 	})
 
 	t.Run("smallest class", func(t *testing.T) {
@@ -171,6 +179,52 @@ func TestPoolGetZeroSizePolicy(t *testing.T) {
 			t.Fatalf("Get(0) error does not match ErrInvalidSize: %v", err)
 		}
 	})
+}
+
+// TestPoolGetZeroSizeEmptyPolicyRespectsClose verifies valid zero-size
+// acquisition still enters the lifecycle gate.
+func TestPoolGetZeroSizeEmptyPolicyRespectsClose(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSingleShardPolicy()
+	policy.Admission.ZeroSizeRequests = ZeroSizeRequestEmptyBuffer
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	closePoolForTest(t, pool)
+
+	buffer, err := pool.Get(0)
+	if err == nil {
+		t.Fatal("Get(0) after close returned nil error")
+	}
+	if buffer != nil {
+		t.Fatalf("Get(0) after close returned buffer %#v", buffer)
+	}
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("Get(0) after close error does not match ErrClosed: %v", err)
+	}
+}
+
+// TestPoolGetZeroSizeRejectPrecedesLifecycle documents error precedence for
+// invalid zero-size requests.
+func TestPoolGetZeroSizeRejectPrecedesLifecycle(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSingleShardPolicy()
+	policy.Admission.ZeroSizeRequests = ZeroSizeRequestReject
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	closePoolForTest(t, pool)
+
+	buffer, err := pool.Get(0)
+	if err == nil {
+		t.Fatal("Get(0) after close with reject policy returned nil error")
+	}
+	if buffer != nil {
+		t.Fatalf("Get(0) returned buffer %#v", buffer)
+	}
+	if !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("Get(0) error = %v, want ErrInvalidSize", err)
+	}
 }
 
 // TestPoolGetRejectsInvalidRequests verifies request-side public error classes.

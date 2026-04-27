@@ -70,6 +70,34 @@ func BenchmarkPoolGetPutParallel(b *testing.B) {
 	})
 }
 
+// BenchmarkPoolGetPutParallelZeroRetained measures the cost of clearing
+// retained buffers before bucket publication under parallel load.
+func BenchmarkPoolGetPutParallelZeroRetained(b *testing.B) {
+	policy := poolBenchmarkPolicy(32, ShardSelectionModeRandom)
+	policy.Admission.ZeroRetainedBuffers = true
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	b.Cleanup(func() {
+		_ = pool.Close()
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			buffer, err := pool.Get(300)
+			if err != nil {
+				b.Fatalf("Get() returned error: %v", err)
+			}
+
+			if err := pool.Put(buffer); err != nil {
+				b.Fatalf("Put() returned error: %v", err)
+			}
+		}
+	})
+}
+
 // BenchmarkPoolSnapshot measures the public diagnostic snapshot path. Snapshot
 // allocates class/shard slices and clones Policy by design.
 func BenchmarkPoolSnapshot(b *testing.B) {
@@ -154,6 +182,11 @@ func BenchmarkPoolShardSelectorParallel(b *testing.B) {
 	}
 }
 
+// poolBenchmarkPolicy returns a compact policy with enough credit and slots for
+// steady-state benchmark loops.
+//
+// The class profile stays small so benchmarks measure Pool data-plane overhead
+// rather than profile construction or large snapshot traversal.
 func poolBenchmarkPolicy(shardsPerClass int, selection ShardSelectionMode) Policy {
 	policy := poolTestSmallSingleShardPolicy()
 	policy.Retention.SoftRetainedBytes = 16 * KiB
@@ -170,6 +203,12 @@ func poolBenchmarkPolicy(shardsPerClass int, selection ShardSelectionMode) Polic
 	return policy
 }
 
+// poolBenchmarkSeedRetained preloads retained storage for snapshot and metrics
+// benchmarks.
+//
+// The helper fails the benchmark immediately if policy changes make the seed
+// path invalid, which keeps benchmark results from silently measuring an empty
+// pool.
 func poolBenchmarkSeedRetained(b *testing.B, pool *Pool, count int) {
 	b.Helper()
 
