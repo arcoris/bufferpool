@@ -113,10 +113,11 @@ func newPoolClassStates(table classTable, policy Policy) []classState {
 	return states
 }
 
-// newPoolShardSelector constructs the shard selector used by standalone Pool.
+// newPoolShardSelectors constructs one shard selector per class.
 //
-// The selector is owner-local. It is not shared across pools, groups, or
-// partitions.
+// Selectors are owner-local. They are not shared across pools, groups, or
+// partitions. Keeping sequence state per class avoids a single pool-wide
+// contention point for round-robin and random modes.
 func newPoolShardSelectors(classCount int, mode ShardSelectionMode) ([]shardSelector, error) {
 	selectors := make([]shardSelector, classCount)
 	for index := range selectors {
@@ -131,6 +132,11 @@ func newPoolShardSelectors(classCount int, mode ShardSelectionMode) ([]shardSele
 	return selectors, nil
 }
 
+// newPoolShardSelector constructs one selector instance for a single class.
+//
+// Pool creates one selector per class so sequence-based modes do not contend on
+// a single pool-wide atomic counter. The selector itself remains small and local
+// to classState calls.
 func newPoolShardSelector(mode ShardSelectionMode) (shardSelector, error) {
 	switch mode {
 	case ShardSelectionModeSingle:
@@ -147,6 +153,11 @@ func newPoolShardSelector(mode ShardSelectionMode) (shardSelector, error) {
 	}
 }
 
+// shardSelectorFor returns the selector associated with class.
+//
+// ClassID values are table-local ordinals. The descriptor must come from this
+// Pool's class table, and invalid ids panic because using a selector for the
+// wrong class would corrupt routing and accounting.
 func (p *Pool) shardSelectorFor(class SizeClass) shardSelector {
 	index := class.ID().Index()
 	if index < 0 || index >= len(p.selectors) {
@@ -156,6 +167,13 @@ func (p *Pool) shardSelectorFor(class SizeClass) shardSelector {
 	return p.selectors[index]
 }
 
+// poolInitialBudgetAssignments computes deterministic static class budgets.
+//
+// The algorithm starts from SoftRetainedBytes, caps every class by the policy's
+// byte and buffer limits, and redistributes unused bytes among classes that
+// still have spare capacity. It is intentionally static: future controllers may
+// publish workload-aware budgets later, but Pool construction must not hide an
+// adaptive control loop.
 func poolInitialBudgetAssignments(policy Policy, classes []classState) []uint64 {
 	assignments := make([]uint64, len(classes))
 	if len(classes) == 0 {
@@ -202,6 +220,11 @@ func poolInitialBudgetAssignments(policy Policy, classes []classState) []uint64 
 	return assignments
 }
 
+// poolBudgetEligibleClasses counts classes that can still receive budget.
+//
+// A class is eligible when its current assignment is below its static cap. The
+// count is recomputed each redistribution pass so capped classes stop receiving
+// shares immediately.
 func poolBudgetEligibleClasses(assignments []uint64, caps []uint64) int {
 	var eligible int
 	for index := range assignments {
@@ -266,6 +289,10 @@ func poolSaturatingProduct(left, right uint64) uint64 {
 	return left * right
 }
 
+// poolSaturatingAdd returns left + right or max uint64 on overflow.
+//
+// Static budget aggregation should never wrap. Saturating keeps overflow from
+// turning a large total cap into a small value that would underfund classes.
 func poolSaturatingAdd(left, right uint64) uint64 {
 	max := ^uint64(0)
 	if left > max-right {
@@ -275,6 +302,10 @@ func poolSaturatingAdd(left, right uint64) uint64 {
 	return left + right
 }
 
+// poolMinUint64 returns the smaller of left and right.
+//
+// The helper keeps budget arithmetic readable without introducing a generic
+// dependency for one unsigned integer operation.
 func poolMinUint64(left, right uint64) uint64 {
 	if left < right {
 		return left

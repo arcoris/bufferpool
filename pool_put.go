@@ -64,8 +64,8 @@ const (
 // invalid API input rather than reusable buffer returns.
 //
 // Retention zeroing and dropped-buffer zeroing are intentionally separate:
-// ZeroRetainedBuffers is applied only after class/shard storage accepts the
-// buffer, while ZeroDroppedBuffers is applied only when this call will not
+// ZeroRetainedBuffers is applied inside the shard retain path before bucket
+// publication, while ZeroDroppedBuffers is applied only when this call will not
 // retain the buffer.
 //
 // nil and zero-capacity buffers are invalid public input because they cannot
@@ -159,21 +159,19 @@ func (p *Pool) put(buffer []byte, runtime *poolRuntimeSnapshot) error {
 		)
 	}
 
-	result := p.mustClassStateFor(class).tryRetainSelected(p.shardSelectorFor(class), buffer)
+	result := p.mustClassStateFor(class).tryRetainSelectedWithOptions(
+		p.shardSelectorFor(class),
+		buffer,
+		classRetainOptions{
+			ZeroBeforeRetain: policy.Admission.ZeroRetainedBuffers,
+		},
+	)
 	if result.Retained() {
-		p.zeroRetainedBuffer(buffer, policy)
 		return nil
 	}
 
 	if result.RejectedByClass() {
-		return p.handleBufferAdmissionAction(
-			policy,
-			policy.Admission.UnsupportedClass,
-			ErrRetentionRejected,
-			errPoolPutClassRejected,
-			buffer,
-			PoolDropReasonNone,
-		)
+		return p.handleClassRetainRejection(policy, buffer)
 	}
 
 	if result.RejectedByCredit() {

@@ -164,6 +164,9 @@ func (m PoolMetrics) ReuseAttempts() uint64 {
 }
 
 // PutOutcomes returns Retains + Drops.
+//
+// The value may be lower than Puts when valid Put calls are rejected by
+// lifecycle before a retain/drop outcome exists.
 func (m PoolMetrics) PutOutcomes() uint64 {
 	return m.Retains + m.Drops
 }
@@ -213,6 +216,11 @@ func poolRatio(numerator, denominator uint64) PolicyRatio {
 	return PolicyRatio((numerator * scale) / denominator)
 }
 
+// newPoolMetricsFromCounters projects aggregate counters into PoolMetrics.
+//
+// The helper centralizes ratio denominator semantics so Metrics and
+// NewPoolMetrics stay consistent: hit/miss ratios are based on reuse attempts,
+// and retain/drop ratios are based on return outcomes.
 func newPoolMetricsFromCounters(name string, lifecycle LifecycleState, generation Generation, classCount int, shardCount int, counters PoolCountersSnapshot) PoolMetrics {
 	reuseAttempts := counters.ReuseAttempts()
 	putOutcomes := counters.PutOutcomes()

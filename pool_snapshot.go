@@ -315,6 +315,10 @@ type PoolCountersSnapshot struct {
 
 	// Puts is the number of valid public Put attempts at Pool aggregate level,
 	// or class/shard return attempts at lower snapshot levels.
+	//
+	// At Pool aggregate level, Puts can exceed Retains + Drops because a valid
+	// Put rejected by lifecycle in strict closed mode is still a public Put
+	// attempt but has no retained/dropped outcome.
 	Puts uint64
 
 	// ReturnedBytes is the sum of returned buffer capacities.
@@ -393,6 +397,9 @@ func (s PoolCountersSnapshot) ReuseAttempts() uint64 {
 }
 
 // PutOutcomes returns retain + drop outcomes.
+//
+// This is not guaranteed to equal Puts. Valid Put calls rejected by lifecycle in
+// strict closed mode are counted as Puts but not as retention outcomes.
 func (s PoolCountersSnapshot) PutOutcomes() uint64 {
 	return s.Retains + s.Drops
 }
@@ -452,6 +459,11 @@ func (p *Pool) Snapshot() PoolSnapshot {
 	}
 }
 
+// newPoolClassSnapshot converts an internal classState snapshot to the public
+// Pool class DTO.
+//
+// The conversion allocates shard snapshots because public Snapshot returns data
+// that callers can keep independently from Pool internals.
 func newPoolClassSnapshot(snapshot classStateSnapshot) PoolClassSnapshot {
 	shards := make([]PoolShardSnapshot, len(snapshot.Shards))
 
@@ -476,6 +488,11 @@ func newPoolClassSnapshot(snapshot classStateSnapshot) PoolClassSnapshot {
 	}
 }
 
+// newPoolShardSnapshot converts one internal shard state to the public shard
+// DTO.
+//
+// The owning class descriptor supplies ClassSize so credit consistency can be
+// checked across byte and buffer dimensions without comparing unrelated units.
 func newPoolShardSnapshot(index int, class SizeClass, snapshot shardState) PoolShardSnapshot {
 	counters := newPoolCountersFromShard(snapshot.Counters)
 
@@ -499,6 +516,11 @@ func newPoolShardSnapshot(index int, class SizeClass, snapshot shardState) PoolS
 	}
 }
 
+// newPoolCountersFromClass maps class lifetime counters into the public counter
+// projection.
+//
+// classCounters do not own current retained gauges. The caller supplies the
+// derived class current usage from classStateSnapshot.
 func newPoolCountersFromClass(snapshot classCountersSnapshot, currentBuffers uint64, currentBytes uint64) PoolCountersSnapshot {
 	return PoolCountersSnapshot{
 		Gets:           snapshot.Gets,
@@ -533,6 +555,11 @@ func newPoolCountersFromClass(snapshot classCountersSnapshot, currentBuffers uin
 	}
 }
 
+// newPoolCountersFromShard maps shard counters into the public counter
+// projection.
+//
+// Shard current retained gauges are authoritative, so they can be copied
+// directly from the shard counter snapshot.
 func newPoolCountersFromShard(snapshot shardCountersSnapshot) PoolCountersSnapshot {
 	return PoolCountersSnapshot{
 		Gets:           snapshot.Gets,
@@ -567,6 +594,12 @@ func newPoolCountersFromShard(snapshot shardCountersSnapshot) PoolCountersSnapsh
 	}
 }
 
+// poolCountersAdd adds src into dst.
+//
+// This helper is used for observational aggregation. It does not perform
+// overflow checks because counters are monotonic uint64 runtime counters; a
+// wrap would already mean the sampled counter stream exceeded its representable
+// diagnostic range.
 func poolCountersAdd(dst *PoolCountersSnapshot, src PoolCountersSnapshot) {
 	dst.Gets += src.Gets
 	dst.RequestedBytes += src.RequestedBytes
@@ -600,6 +633,13 @@ func poolCountersAdd(dst *PoolCountersSnapshot, src PoolCountersSnapshot) {
 	dst.CurrentRetainedBytes += src.CurrentRetainedBytes
 }
 
+// poolCountersApplyOwner merges Pool owner-side counters into an aggregate
+// counter snapshot.
+//
+// Owner Puts/ReturnedBytes replace the class sum because they represent every
+// valid public Put attempt, including attempts that never reached classState.
+// Owner Drops are added to lower-layer drops because they describe distinct
+// no-retain outcomes.
 func poolCountersApplyOwner(dst *PoolCountersSnapshot, owner poolOwnerCountersSnapshot) {
 	dst.Puts = owner.Puts
 	dst.ReturnedBytes = owner.ReturnedBytes
@@ -608,6 +648,11 @@ func poolCountersApplyOwner(dst *PoolCountersSnapshot, owner poolOwnerCountersSn
 	dst.DropReasons = poolDropReasonCountersAdd(dst.DropReasons, owner.DropReasons)
 }
 
+// poolDropReasonCountersAdd returns the field-wise sum of two owner-side reason
+// counter sets.
+//
+// Reason counters are intentionally separate from lower-layer drop counters, so
+// this helper is only for merging owner-side reason projections.
 func poolDropReasonCountersAdd(left, right PoolDropReasonCounters) PoolDropReasonCounters {
 	return PoolDropReasonCounters{
 		ClosedPool:              left.ClosedPool + right.ClosedPool,

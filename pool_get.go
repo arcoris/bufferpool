@@ -70,6 +70,16 @@ func (p *Pool) GetSize(requestedSize Size) ([]byte, error) {
 	return p.getSize(requestedSize)
 }
 
+// getSize runs the common acquisition path after receiver validation.
+//
+// Both Get and GetSize enter here so the receiver is checked once. The method
+// loads the runtime snapshot before planning and uses that same snapshot for the
+// whole operation, even if a future controller publishes a newer snapshot while
+// the call is running.
+//
+// Pure validation errors are returned before lifecycle admission. Valid
+// acquisition requests, including zero-size empty-buffer requests, enter the
+// lifecycle gate so Close consistently rejects acquisition after shutdown.
 func (p *Pool) getSize(requestedSize Size) ([]byte, error) {
 	runtime := p.currentRuntimeSnapshot()
 
@@ -78,12 +88,13 @@ func (p *Pool) getSize(requestedSize Size) ([]byte, error) {
 		return nil, err
 	}
 
-	if plan.empty {
-		return []byte{}, nil
-	}
-
 	if err := p.beginAcquireOperation(); err != nil {
 		return nil, err
+	}
+
+	if plan.empty {
+		p.endOperation()
+		return []byte{}, nil
 	}
 
 	buffer, err := p.get(plan)
@@ -204,6 +215,12 @@ func (p *Pool) normalizeGetRequest(requestedSize Size, policy Policy) (Size, boo
 	}
 }
 
+// poolSizeInt converts Size to int for Go slice APIs.
+//
+// Size is uint64-backed, but make([]byte, len, cap) requires int lengths and
+// capacities. This helper lets Pool reject impossible policy/request values with
+// classified errors instead of relying on a runtime panic or architecture-
+// dependent truncation.
 func poolSizeInt(size Size) (int, bool) {
 	maxInt := uint64(^uint(0) >> 1)
 	if size.Bytes() > maxInt {

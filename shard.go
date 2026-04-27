@@ -188,6 +188,16 @@ func (s *shard) recordAllocatedBuffer(buffer []byte) {
 // is preserved in shardRetainResult: CreditDecision may be accept while Retained
 // is false.
 func (s *shard) tryRetain(buffer []byte) shardRetainResult {
+	return s.tryRetainWithOptions(buffer, shardRetainOptions{})
+}
+
+// tryRetainWithOptions attempts to retain a returned buffer with caller-owned
+// publication options.
+//
+// Retained-buffer zeroing must happen before bucket publication. The shard owns
+// the storage mutex, so it is the last layer that can both know retention will
+// succeed and still prevent another goroutine from popping the buffer.
+func (s *shard) tryRetainWithOptions(buffer []byte, options shardRetainOptions) shardRetainResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -203,6 +213,19 @@ func (s *shard) tryRetain(buffer []byte) shardRetainResult {
 			Capacity:       capacity,
 			CreditDecision: decision,
 		}
+	}
+
+	if s.bucket.isFull() || !bucketCanRetain(buffer) {
+		s.counters.recordDrop(capacity)
+
+		return shardRetainResult{
+			Capacity:       capacity,
+			CreditDecision: decision,
+		}
+	}
+
+	if options.ZeroBeforeRetain {
+		zeroBufferCapacity(buffer)
 	}
 
 	if !s.bucket.push(buffer) {
@@ -221,6 +244,16 @@ func (s *shard) tryRetain(buffer []byte) shardRetainResult {
 		Retained:       true,
 		CreditDecision: decision,
 	}
+}
+
+// shardRetainOptions configures shard-local retain publication behavior.
+//
+// Options are internal because they describe synchronization-sensitive retained
+// storage publication details, not public Pool policy directly.
+type shardRetainOptions struct {
+	// ZeroBeforeRetain clears the full returned-buffer capacity while shard.mu is
+	// held and before the buffer is inserted into the bucket.
+	ZeroBeforeRetain bool
 }
 
 // trim removes up to maxBuffers retained buffers from this shard.

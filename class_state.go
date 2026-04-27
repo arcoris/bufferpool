@@ -293,6 +293,15 @@ func (s *classState) recordAllocatedBuffer(shardIndex int, buffer []byte) {
 // Callers must perform any lifecycle, owner-side accounting, or additional
 // retention-limit checks before or around this method.
 func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult {
+	return s.tryRetainWithOptions(shardIndex, buffer, classRetainOptions{})
+}
+
+// tryRetainWithOptions attempts to retain a returned buffer through one
+// selected shard with class-level publication options.
+//
+// Class admission still runs before shard admission. Options are forwarded only
+// after the buffer is known to be compatible with this class.
+func (s *classState) tryRetainWithOptions(shardIndex int, buffer []byte, options classRetainOptions) classRetainResult {
 	selectedShard := s.mustShardAt(shardIndex)
 	capacity := uint64(cap(buffer))
 	classDecision := evaluateClassRetain(s.class, buffer)
@@ -307,7 +316,9 @@ func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult 
 		}
 	}
 
-	shardResult := selectedShard.tryRetain(buffer)
+	shardResult := selectedShard.tryRetainWithOptions(buffer, shardRetainOptions{
+		ZeroBeforeRetain: options.ZeroBeforeRetain,
+	})
 	s.counters.recordRetainResult(shardResult)
 
 	return classRetainResult{
@@ -323,6 +334,19 @@ func (s *classState) tryRetain(shardIndex int, buffer []byte) classRetainResult 
 // shard.
 func (s *classState) tryRetainSelected(selector shardSelector, buffer []byte) classRetainResult {
 	return s.tryRetain(s.selectShard(selector), buffer)
+}
+
+// tryRetainSelectedWithOptions attempts to retain a returned buffer through a
+// selected shard with class-level publication options.
+func (s *classState) tryRetainSelectedWithOptions(selector shardSelector, buffer []byte, options classRetainOptions) classRetainResult {
+	return s.tryRetainWithOptions(s.selectShard(selector), buffer, options)
+}
+
+// classRetainOptions configures class-to-shard retain publication behavior.
+type classRetainOptions struct {
+	// ZeroBeforeRetain clears the returned buffer before shard publication when
+	// the shard accepts retention.
+	ZeroBeforeRetain bool
 }
 
 // trimShard removes up to maxBuffers retained buffers from one shard owned by

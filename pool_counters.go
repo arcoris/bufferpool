@@ -139,7 +139,8 @@ type poolOwnerCountersSnapshot struct {
 	// Puts and ReturnedBytes describe valid public Put attempts.
 	//
 	// They intentionally include attempts that are later dropped by owner-side
-	// admission, class admission, shard credit, bucket storage, or close policy.
+	// admission, class admission, shard credit, bucket storage, or rejected by
+	// close policy.
 	Puts          uint64
 	ReturnedBytes uint64
 
@@ -152,11 +153,21 @@ type poolOwnerCountersSnapshot struct {
 	DropReasons  PoolDropReasonCounters
 }
 
+// recordPut records one valid public Put attempt.
+//
+// The caller must pass buffer capacity, not len(buffer). Retention accounting is
+// capacity-oriented because reusable value is the backing array size.
 func (c *poolOwnerCounters) recordPut(capacity uint64) {
 	c.puts.Add(1)
 	c.returnedBytes.Add(capacity)
 }
 
+// recordDrop records one owner-side no-retain outcome.
+//
+// This method is not used for class/shard drops because those lower layers
+// already maintain their own drop counters. Invalid or none-like reasons are
+// folded into InvalidPolicy to keep the reason array bounded and fail closed in
+// diagnostics.
 func (c *poolOwnerCounters) recordDrop(reason PoolDropReason, capacity uint64) {
 	c.drops.Add(1)
 	c.droppedBytes.Add(capacity)
@@ -169,6 +180,11 @@ func (c *poolOwnerCounters) recordDrop(reason PoolDropReason, capacity uint64) {
 	c.dropReasons[index].Add(1)
 }
 
+// snapshot returns an atomic sample of owner-side counters.
+//
+// The sample is race-safe but not transactional across fields. This matches the
+// rest of Pool observability: public snapshots are diagnostic observations, not
+// global stop-the-world measurements.
 func (c *poolOwnerCounters) snapshot() poolOwnerCountersSnapshot {
 	return poolOwnerCountersSnapshot{
 		Puts:          c.puts.Load(),

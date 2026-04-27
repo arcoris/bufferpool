@@ -20,6 +20,10 @@ const (
 	// errPoolRuntimeSnapshotNil is used when runtime snapshot publication is
 	// asked to publish no snapshot.
 	errPoolRuntimeSnapshotNil = "bufferpool.Pool: runtime snapshot must not be nil"
+
+	// errPoolRuntimeSnapshotIncompatible is used when runtime snapshot
+	// publication attempts to change topology built during Pool construction.
+	errPoolRuntimeSnapshotIncompatible = "bufferpool.Pool: runtime snapshot is incompatible with constructed pool topology"
 )
 
 // poolRuntimeSnapshot is the immutable runtime view consumed by Pool hot paths.
@@ -82,6 +86,10 @@ func (p *Pool) publishRuntimeSnapshot(snapshot *poolRuntimeSnapshot) {
 		panic(errPoolRuntimeSnapshotNil)
 	}
 
+	if !poolRuntimePolicyCompatible(p.constructionPolicy, snapshot.Policy) {
+		panic(errPoolRuntimeSnapshotIncompatible)
+	}
+
 	p.runtimeSnapshot.Store(newPoolRuntimeSnapshot(snapshot.Generation, snapshot.Policy))
 }
 
@@ -96,4 +104,37 @@ func (p *Pool) currentRuntimeSnapshot() *poolRuntimeSnapshot {
 	}
 
 	return snapshot
+}
+
+// poolRuntimePolicyCompatible reports whether runtime can be published into a
+// Pool built from construction.
+//
+// Pool construction builds class table, class states, shards, buckets, and
+// selector state once. Runtime snapshot publication may change dynamic
+// admission and retention values, but it must not silently change structural
+// topology that would require rebuilding those objects.
+func poolRuntimePolicyCompatible(construction Policy, runtime Policy) bool {
+	if construction.Shards.Selection != runtime.Shards.Selection {
+		return false
+	}
+
+	if construction.Shards.ShardsPerClass != runtime.Shards.ShardsPerClass {
+		return false
+	}
+
+	if construction.Shards.BucketSlotsPerShard != runtime.Shards.BucketSlotsPerShard {
+		return false
+	}
+
+	if len(construction.Classes.Sizes) != len(runtime.Classes.Sizes) {
+		return false
+	}
+
+	for index, constructionSize := range construction.Classes.Sizes {
+		if constructionSize != runtime.Classes.Sizes[index] {
+			return false
+		}
+	}
+
+	return true
 }

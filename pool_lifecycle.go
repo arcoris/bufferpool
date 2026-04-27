@@ -135,6 +135,11 @@ func (p *Pool) Close() error {
 // active operation count and rejects the operation. This prevents Close from
 // clearing retained storage while an already-admitted acquisition path is still
 // executing.
+//
+// Admitted hot paths use explicit endOperation calls instead of defer to keep
+// overhead low. Internal invariant panics are treated as fatal runtime
+// corruption. If caller code recovers from such a panic, Pool does not guarantee
+// lifecycle drain correctness for that corrupted operation.
 func (p *Pool) beginAcquireOperation() error {
 	for {
 		if !p.lifecycle.AllowsWork() {

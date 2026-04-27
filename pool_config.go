@@ -412,10 +412,20 @@ func (m PoolClosedOperationMode) String() string {
 	}
 }
 
+// isPoolConfigNameUnset reports whether name should be treated as unspecified.
+//
+// Pool names are diagnostic metadata. Whitespace-only input is normalized the
+// same way as an empty name so construction does not preserve accidental
+// formatting as a meaningful runtime identifier.
 func isPoolConfigNameUnset(name string) bool {
 	return strings.TrimSpace(name) == ""
 }
 
+// normalizePoolConfigName returns the effective diagnostic Pool name.
+//
+// The helper is intentionally narrow: it does not validate Policy and does not
+// allocate or clone any runtime structures. It only applies the default name
+// when caller input is empty after trimming.
 func normalizePoolConfigName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -425,6 +435,11 @@ func normalizePoolConfigName(name string) string {
 	return name
 }
 
+// effectivePoolConfigPolicy returns the construction Policy after defaults.
+//
+// A zero Policy means "use the package default policy". An explicit non-zero
+// Policy is copied before being returned so later caller mutations to
+// ClassPolicy.Sizes cannot change the normalized config value.
 func effectivePoolConfigPolicy(policy Policy) Policy {
 	if policy.IsZero() {
 		return DefaultConfigPolicy()
@@ -433,11 +448,21 @@ func effectivePoolConfigPolicy(policy Policy) Policy {
 	return copyPoolConfigPolicy(policy)
 }
 
+// copyPoolConfigPolicy returns policy with caller-owned mutable slice fields.
+//
+// Policy is mostly value-shaped, but ClassPolicy.Sizes is a slice. PoolConfig
+// helpers clone that slice at every construction boundary to avoid sharing
+// mutable class profiles between caller values and runtime values.
 func copyPoolConfigPolicy(policy Policy) Policy {
 	policy.Classes.Sizes = policy.Classes.SizesCopy()
 	return policy
 }
 
+// effectivePoolPolicyValidationMode resolves unset validation mode to the
+// package construction default.
+//
+// Unknown explicit modes are deliberately preserved so Validate can report a
+// stable ErrInvalidOptions failure instead of silently replacing bad input.
 func effectivePoolPolicyValidationMode(mode PoolPolicyValidationMode) PoolPolicyValidationMode {
 	if mode == PoolPolicyValidationModeUnset {
 		return defaultPoolPolicyValidationMode()
@@ -446,6 +471,11 @@ func effectivePoolPolicyValidationMode(mode PoolPolicyValidationMode) PoolPolicy
 	return mode
 }
 
+// effectivePoolCloseMode resolves unset close behavior to the package default.
+//
+// Unknown explicit modes are preserved for Validate. This keeps normalization
+// side-effect free and makes validation responsible for rejecting bad enum
+// values.
 func effectivePoolCloseMode(mode PoolCloseMode) PoolCloseMode {
 	if mode == PoolCloseModeUnset {
 		return defaultPoolCloseMode()
@@ -454,6 +484,11 @@ func effectivePoolCloseMode(mode PoolCloseMode) PoolCloseMode {
 	return mode
 }
 
+// effectivePoolClosedOperationMode resolves unset post-close behavior to the
+// package default.
+//
+// Unknown explicit modes are preserved so caller mistakes are visible during
+// validation instead of being silently normalized away.
 func effectivePoolClosedOperationMode(mode PoolClosedOperationMode) PoolClosedOperationMode {
 	if mode == PoolClosedOperationModeUnset {
 		return defaultPoolClosedOperationMode()
@@ -462,6 +497,11 @@ func effectivePoolClosedOperationMode(mode PoolClosedOperationMode) PoolClosedOp
 	return mode
 }
 
+// defaultPoolPolicyValidationMode adapts the package boolean default into the
+// PoolConfig enum.
+//
+// Keeping this adapter here isolates Pool construction from the representation
+// chosen by config_defaults.go.
 func defaultPoolPolicyValidationMode() PoolPolicyValidationMode {
 	if DefaultConfigPolicyValidation() {
 		return PoolPolicyValidationModeEnabled
@@ -470,6 +510,11 @@ func defaultPoolPolicyValidationMode() PoolPolicyValidationMode {
 	return PoolPolicyValidationModeDisabled
 }
 
+// defaultPoolCloseMode adapts close-time retained-storage defaults into the
+// PoolConfig enum.
+//
+// The default expresses owner lifecycle behavior. It does not alter lower-level
+// classState or shard clear semantics.
 func defaultPoolCloseMode() PoolCloseMode {
 	if DefaultConfigCloseTrimsRetained() {
 		return PoolCloseModeClearRetained
@@ -478,6 +523,11 @@ func defaultPoolCloseMode() PoolCloseMode {
 	return PoolCloseModeKeepRetained
 }
 
+// defaultPoolClosedOperationMode adapts post-close operation defaults into the
+// PoolConfig enum.
+//
+// This keeps direct Pool construction aligned with package defaults while still
+// allowing tests and specialized internal callers to choose drop-return mode.
 func defaultPoolClosedOperationMode() PoolClosedOperationMode {
 	if DefaultConfigCloseRejectsOperations() {
 		return PoolClosedOperationModeReject
@@ -486,6 +536,11 @@ func defaultPoolClosedOperationMode() PoolClosedOperationMode {
 	return PoolClosedOperationModeDropReturns
 }
 
+// isKnownPoolPolicyValidationMode reports whether mode is one of the enum
+// values PoolConfig can execute.
+//
+// The unset value is considered known because Normalize resolves it before Pool
+// construction and Validate accepts zero configs.
 func isKnownPoolPolicyValidationMode(mode PoolPolicyValidationMode) bool {
 	switch mode {
 	case PoolPolicyValidationModeUnset,
@@ -497,6 +552,11 @@ func isKnownPoolPolicyValidationMode(mode PoolPolicyValidationMode) bool {
 	}
 }
 
+// isKnownPoolCloseMode reports whether mode is one of the supported close
+// behaviors.
+//
+// Validation uses this helper after normalization, but accepting unset keeps the
+// helper safe for direct tests and narrow callers.
 func isKnownPoolCloseMode(mode PoolCloseMode) bool {
 	switch mode {
 	case PoolCloseModeUnset,
@@ -508,6 +568,11 @@ func isKnownPoolCloseMode(mode PoolCloseMode) bool {
 	}
 }
 
+// isKnownPoolClosedOperationMode reports whether mode is one of the supported
+// post-close operation behaviors.
+//
+// The helper does not decide whether a particular operation should be admitted;
+// it only validates the enum domain used by lifecycle admission.
 func isKnownPoolClosedOperationMode(mode PoolClosedOperationMode) bool {
 	switch mode {
 	case PoolClosedOperationModeUnset,

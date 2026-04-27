@@ -46,8 +46,10 @@ type poolCounterSample struct {
 // allocate public class/shard slices and clone Policy for caller safety.
 //
 // The result is not transactional across all classes and shards. Each shard
-// state sample is locally consistent, but concurrent Get/Put/trim/clear work may
-// move counters while the aggregate is being built.
+// counter sample is atomic and race-safe, but concurrent Get/Put/trim/clear work
+// may move counters while the aggregate is being built. The method does not read
+// bucket state and does not take shard.mu; it samples retained gauges from shard
+// counters instead.
 func (p *Pool) sampleCounters(dst *poolCounterSample) {
 	if dst == nil {
 		return
@@ -67,9 +69,9 @@ func (p *Pool) sampleCounters(dst *poolCounterSample) {
 		poolCountersAdd(&counters, classCounters)
 
 		for shardIndex := range class.shards {
-			shardState := class.shards[shardIndex].state()
-			counters.CurrentRetainedBuffers += shardState.Counters.CurrentRetainedBuffers
-			counters.CurrentRetainedBytes += shardState.Counters.CurrentRetainedBytes
+			shardCounters := class.shards[shardIndex].countersSnapshot()
+			counters.CurrentRetainedBuffers += shardCounters.CurrentRetainedBuffers
+			counters.CurrentRetainedBytes += shardCounters.CurrentRetainedBytes
 			dst.ShardCount++
 		}
 	}
