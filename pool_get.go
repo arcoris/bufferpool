@@ -192,9 +192,10 @@ func (p *Pool) planGet(requestedSize Size, runtime *poolRuntimeSnapshot) (poolGe
 //   - empty buffer: return a zero-length non-retained buffer and avoid counters;
 //   - reject: report ErrInvalidSize.
 //
-// For the empty-buffer policy, the returned boolean is false. getSize then
-// returns a non-nil empty slice without entering the lifecycle gate or touching
-// retained storage.
+// For the empty-buffer policy, the returned boolean is false. getSize still
+// enters the lifecycle gate before returning the non-nil empty slice so
+// acquisition after Close is rejected consistently. The empty-buffer path does
+// not touch retained storage or class/shard counters.
 func (p *Pool) normalizeGetRequest(requestedSize Size, policy Policy) (Size, bool, error) {
 	if !requestedSize.IsZero() {
 		return requestedSize, true, nil

@@ -1,0 +1,326 @@
+/*
+  Copyright 2026 The ARCORIS Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+*/
+
+package bufferpool
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
+
+const (
+	poolBenchmarkDefaultBucketSlots = 512
+	poolBenchmarkDefaultSeedBatch   = 64
+)
+
+var (
+	poolBenchmarkBufferSink   []byte
+	poolBenchmarkErrorSink    error
+	poolBenchmarkIntSink      int
+	poolBenchmarkMetricsSink  PoolMetrics
+	poolBenchmarkSnapshotSink PoolSnapshot
+	poolBenchmarkSampleSink   poolCounterSample
+)
+
+// poolBenchmarkCase describes one benchmark topology or data-plane scenario.
+//
+// Benchmarks use explicit cases instead of hidden package defaults so output
+// names tell the reader which class size, shard count, selector mode, zeroing
+// mode, and retained seed shape were measured.
+type poolBenchmarkCase struct {
+	name         string
+	size         int
+	capacity     int
+	shards       int
+	selector     ShardSelectionMode
+	classes      []ClassSize
+	bucketSlots  int
+	retainedSeed int
+	zeroRetained bool
+	zeroDropped  bool
+}
+
+// poolBenchmarkPolicyForCase builds a valid, high-credit static policy for a
+// benchmark case.
+//
+// The policy keeps the Pool semantics intact: class table lookup, lifecycle,
+// counters, owner-side admission, shard credit, and bounded buckets all remain
+// active. The limits are deliberately generous so benchmarks named as hit or
+// retain paths do not silently become credit-drop benchmarks.
+func poolBenchmarkPolicyForCase(tc poolBenchmarkCase) Policy {
+	classes := tc.classes
+	if len(classes) == 0 {
+		classes = poolBenchmarkDefaultClasses()
+	}
+
+	shards := tc.shards
+	if shards <= 0 {
+		shards = 1
+	}
+
+	bucketSlots := tc.bucketSlots
+	if bucketSlots <= 0 {
+		bucketSlots = poolBenchmarkDefaultBucketSlots
+	}
+
+	selector := tc.selector
+	if selector == ShardSelectionModeUnset {
+		selector = ShardSelectionModeSingle
+	}
+
+	largest := poolBenchmarkLargestClassSize(classes)
+	shardBuffers := uint64(bucketSlots)
+	classBuffers := poolSaturatingProduct(uint64(shards), shardBuffers)
+	totalBuffers := poolSaturatingProduct(uint64(len(classes)), classBuffers)
+	shardBytes := poolSaturatingProduct(shardBuffers, largest.Bytes())
+	classBytes := poolSaturatingProduct(uint64(shards), shardBytes)
+	totalBytes := poolSaturatingProduct(uint64(len(classes)), classBytes)
+
+	return Policy{
+		Retention: RetentionPolicy{
+			SoftRetainedBytes:         SizeFromBytes(totalBytes),
+			HardRetainedBytes:         SizeFromBytes(totalBytes),
+			MaxRetainedBuffers:        totalBuffers,
+			MaxRequestSize:            largest.Size(),
+			MaxRetainedBufferCapacity: largest.Size(),
+			MaxClassRetainedBytes:     SizeFromBytes(classBytes),
+			MaxClassRetainedBuffers:   classBuffers,
+			MaxShardRetainedBytes:     SizeFromBytes(shardBytes),
+			MaxShardRetainedBuffers:   shardBuffers,
+		},
+		Classes: ClassPolicy{
+			Sizes: append([]ClassSize(nil), classes...),
+		},
+		Shards: ShardPolicy{
+			Selection:                 selector,
+			ShardsPerClass:            shards,
+			BucketSlotsPerShard:       bucketSlots,
+			AcquisitionFallbackShards: 0,
+			ReturnFallbackShards:      0,
+		},
+		Admission: AdmissionPolicy{
+			ZeroSizeRequests:    ZeroSizeRequestEmptyBuffer,
+			ReturnedBuffers:     ReturnedBufferPolicyAdmit,
+			OversizedReturn:     AdmissionActionDrop,
+			UnsupportedClass:    AdmissionActionDrop,
+			ClassMismatch:       AdmissionActionDrop,
+			CreditExhausted:     AdmissionActionDrop,
+			BucketFull:          AdmissionActionDrop,
+			ZeroRetainedBuffers: tc.zeroRetained,
+			ZeroDroppedBuffers:  tc.zeroDropped,
+		},
+		Pressure: PressurePolicy{},
+		Trim:     TrimPolicy{},
+		Ownership: OwnershipPolicy{
+			Mode:                      OwnershipModeNone,
+			TrackInUseBytes:           false,
+			TrackInUseBuffers:         false,
+			DetectDoubleRelease:       false,
+			MaxReturnedCapacityGrowth: 2 * PolicyRatioOne,
+		},
+	}
+}
+
+// poolBenchmarkNewPool constructs a Pool and registers cleanup for a benchmark.
+func poolBenchmarkNewPool(b *testing.B, policy Policy) *Pool {
+	b.Helper()
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	b.Cleanup(func() {
+		_ = pool.Close()
+	})
+
+	return pool
+}
+
+// poolBenchmarkNewPoolWithConfig constructs a Pool from a full config.
+func poolBenchmarkNewPoolWithConfig(b *testing.B, config PoolConfig) *Pool {
+	b.Helper()
+
+	pool := MustNew(config)
+	b.Cleanup(func() {
+		_ = pool.Close()
+	})
+
+	return pool
+}
+
+// poolBenchmarkSeedRetained preloads retained storage without measuring setup.
+//
+// The helper uses classState directly so seed distribution can be exact and does
+// not depend on selector state. This keeps hit-path benchmarks from accidentally
+// measuring miss allocation because setup and measured selector sequences drift.
+func poolBenchmarkSeedRetained(b *testing.B, pool *Pool, capacity int, count int) {
+	b.Helper()
+
+	if count <= 0 {
+		return
+	}
+
+	class, ok := pool.table.classForCapacity(SizeFromInt(capacity))
+	if !ok {
+		b.Fatalf("capacity %d is not supported by benchmark policy", capacity)
+	}
+
+	state := pool.mustClassStateFor(class)
+	shardCount := len(state.shards)
+	for index := 0; index < count; index++ {
+		result := state.tryRetain(index%shardCount, make([]byte, 0, capacity))
+		if !result.Retained() {
+			b.Fatalf("seed retain %d failed: %#v", index, result)
+		}
+	}
+}
+
+// poolBenchmarkSeedEveryShard preloads each shard in the class selected by
+// capacity.
+func poolBenchmarkSeedEveryShard(b *testing.B, pool *Pool, capacity int, perShard int) {
+	b.Helper()
+
+	if perShard <= 0 {
+		return
+	}
+
+	class, ok := pool.table.classForCapacity(SizeFromInt(capacity))
+	if !ok {
+		b.Fatalf("capacity %d is not supported by benchmark policy", capacity)
+	}
+
+	state := pool.mustClassStateFor(class)
+	for shardIndex := range state.shards {
+		for index := 0; index < perShard; index++ {
+			result := state.tryRetain(shardIndex, make([]byte, 0, capacity))
+			if !result.Retained() {
+				b.Fatalf("seed retain shard %d item %d failed: %#v", shardIndex, index, result)
+			}
+		}
+	}
+}
+
+// poolBenchmarkClearRetained removes retained storage between measured batches.
+func poolBenchmarkClearRetained(pool *Pool) {
+	pool.clearRetainedStorage()
+}
+
+// poolBenchmarkDefaultClasses returns the common benchmark class profile.
+func poolBenchmarkDefaultClasses() []ClassSize {
+	return []ClassSize{
+		ClassSizeFromBytes(512),
+		ClassSizeFromSize(KiB),
+		ClassSizeFromSize(4 * KiB),
+		ClassSizeFromSize(64 * KiB),
+	}
+}
+
+// poolBenchmarkClasses returns count power-of-two classes starting at 512 B.
+func poolBenchmarkClasses(count int) []ClassSize {
+	classes := make([]ClassSize, count)
+	size := uint64(512)
+	for index := range classes {
+		classes[index] = ClassSizeFromBytes(size)
+		size *= 2
+	}
+
+	return classes
+}
+
+// poolBenchmarkLargestClassSize returns the largest class in an ordered profile.
+func poolBenchmarkLargestClassSize(classes []ClassSize) ClassSize {
+	if len(classes) == 0 {
+		panic("bufferpool.poolBenchmark: class profile must not be empty")
+	}
+
+	return classes[len(classes)-1]
+}
+
+// poolBenchmarkRoutingCases returns representative class/selector topologies
+// for Get and Put path benchmarks.
+func poolBenchmarkRoutingCases() []poolBenchmarkCase {
+	return []poolBenchmarkCase{
+		{name: "size_300/cap_512/shards_1/selector_single", size: 300, capacity: 512, shards: 1, selector: ShardSelectionModeSingle},
+		{name: "size_300/cap_512/shards_8/selector_round_robin", size: 300, capacity: 512, shards: 8, selector: ShardSelectionModeRoundRobin},
+		{name: "size_300/cap_512/shards_32/selector_random", size: 300, capacity: 512, shards: 32, selector: ShardSelectionModeRandom},
+		{name: "size_900/cap_1024/shards_8/selector_round_robin", size: 900, capacity: 1024, shards: 8, selector: ShardSelectionModeRoundRobin},
+		{name: "size_4096/cap_4096/shards_1/selector_single", size: 4096, capacity: 4096, shards: 1, selector: ShardSelectionModeSingle},
+	}
+}
+
+// poolBenchmarkFlowCases returns the Get+Put matrix used for stable flow
+// benchmarks.
+func poolBenchmarkFlowCases() []poolBenchmarkCase {
+	var cases []poolBenchmarkCase
+	for _, size := range []struct {
+		name     string
+		request  int
+		capacity int
+	}{
+		{name: "size_300/cap_512", request: 300, capacity: 512},
+		{name: "size_900/cap_1024", request: 900, capacity: 1024},
+	} {
+		for _, shards := range []int{1, 8, 32} {
+			for _, selector := range []ShardSelectionMode{
+				ShardSelectionModeSingle,
+				ShardSelectionModeRoundRobin,
+				ShardSelectionModeRandom,
+			} {
+				cases = append(cases, poolBenchmarkCase{
+					name:     size.name + "/shards_" + strconv.Itoa(shards) + "/selector_" + poolBenchmarkSelectorName(selector),
+					size:     size.request,
+					capacity: size.capacity,
+					shards:   shards,
+					selector: selector,
+				})
+			}
+		}
+	}
+
+	return cases
+}
+
+// poolBenchmarkName joins benchmark name fragments without hiding dimensions in
+// helper state.
+func poolBenchmarkName(parts ...string) string {
+	return strings.Join(parts, "/")
+}
+
+// poolBenchmarkSelectorName returns a stable selector label for benchstat.
+func poolBenchmarkSelectorName(mode ShardSelectionMode) string {
+	switch mode {
+	case ShardSelectionModeSingle:
+		return "single"
+	case ShardSelectionModeRoundRobin:
+		return "round_robin"
+	case ShardSelectionModeRandom:
+		return "random"
+	default:
+		return "unknown"
+	}
+}
+
+// poolBenchmarkBatchSize keeps setup outside measured loops without creating
+// huge out-of-timer allocation bursts for large buffer classes.
+func poolBenchmarkBatchSize(capacity int) int {
+	if capacity >= 64*KiB.Int() {
+		return 8
+	}
+
+	if capacity >= 4*KiB.Int() {
+		return 32
+	}
+
+	return poolBenchmarkDefaultSeedBatch
+}
