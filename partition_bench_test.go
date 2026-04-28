@@ -33,6 +33,12 @@ var (
 
 	// partitionBenchmarkReportSink prevents tick benchmark results being optimized away.
 	partitionBenchmarkReportSink PartitionControllerReport
+
+	// partitionBenchmarkIndexSink prevents active-registry indexes being optimized away.
+	partitionBenchmarkIndexSink []int
+
+	// partitionBenchmarkDrainSink prevents drain benchmark results being optimized away.
+	partitionBenchmarkDrainSink PoolPartitionDrainResult
 )
 
 // Partition benchmarks measure the owner above Pool: named Pool lookup,
@@ -145,6 +151,27 @@ func BenchmarkPoolPartitionTick(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolPartitionTickInto measures reusable manual controller reports.
+// It still performs the current all-Pool detailed scan, but caller-owned sample
+// storage removes the per-call report allocation.
+func BenchmarkPoolPartitionTickInto(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	report := PartitionControllerReport{
+		Sample: PoolPartitionSample{
+			Pools: make([]PoolPartitionPoolSample, 0, 16),
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() returned error: %v", err)
+		}
+		partitionBenchmarkReportSink = report
+	}
+}
+
 // BenchmarkPoolPartitionMetrics measures public lifetime-derived metrics.
 func BenchmarkPoolPartitionMetrics(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 16)
@@ -153,6 +180,45 @@ func BenchmarkPoolPartitionMetrics(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		partitionBenchmarkMetricsSink = partition.Metrics()
+	}
+}
+
+// BenchmarkPoolPartitionActiveRegistry measures deterministic active-index copy.
+func BenchmarkPoolPartitionActiveRegistry(b *testing.B) {
+	names := make([]string, 16)
+	for index := range names {
+		names[index] = "pool_" + strconv.Itoa(index)
+	}
+	registry := newPartitionActiveRegistry(names)
+	indexes := make([]int, 0, len(names))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		indexes = registry.activeIndexes(indexes)
+	}
+	partitionBenchmarkIndexSink = indexes
+}
+
+// BenchmarkPoolPartitionDrain measures bounded graceful close with no active leases.
+//
+// Each iteration constructs a fresh partition because successful drain closes the
+// partition. The benchmark is for lifecycle cost, not Pool hot-path cost.
+func BenchmarkPoolPartitionDrain(b *testing.B) {
+	config := testPartitionConfig("primary")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partition := MustNewPoolPartition(config)
+		result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{})
+		if err != nil {
+			b.Fatalf("CloseGracefully() returned error: %v", err)
+		}
+		if !result.Completed {
+			b.Fatalf("CloseGracefully() result = %+v, want completed", result)
+		}
+		partitionBenchmarkDrainSink = result
 	}
 }
 

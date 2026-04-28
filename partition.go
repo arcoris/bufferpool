@@ -51,6 +51,10 @@ type PoolPartition struct {
 	// registry owns the partition's immutable named Pool set.
 	registry partitionRegistry
 
+	// activeRegistry tracks partition-local active/dirty Pool indexes for
+	// future controller sampling boundaries without adding Pool hot-path hooks.
+	activeRegistry *partitionActiveRegistry
+
 	// leases owns checked-out ownership records for partition acquisitions.
 	leases *LeaseRegistry
 }
@@ -70,7 +74,13 @@ func NewPoolPartition(config PoolPartitionConfig) (*PoolPartition, error) {
 		_ = leases.Close()
 		return nil, err
 	}
-	partition := &PoolPartition{name: normalized.Name, config: clonePartitionConfig(normalized), registry: registry, leases: leases}
+	partition := &PoolPartition{
+		name:           normalized.Name,
+		config:         clonePartitionConfig(normalized),
+		registry:       registry,
+		activeRegistry: newPartitionActiveRegistry(registry.names),
+		leases:         leases,
+	}
 	partition.generation.Store(InitialGeneration)
 	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	partition.lifecycle.Activate()
@@ -141,7 +151,13 @@ func (p *PoolPartition) Acquire(poolName string, size int) (Lease, error) {
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+poolName)
 	}
-	return p.leases.Acquire(pool, size)
+	index, _ := p.registry.poolIndex(poolName)
+	lease, err := p.leases.Acquire(pool, size)
+	if err != nil {
+		return Lease{}, err
+	}
+	p.markPoolActiveAndDirty(index)
+	return lease, nil
 }
 
 // AcquireSize is the Size-typed form of Acquire.
@@ -154,13 +170,27 @@ func (p *PoolPartition) AcquireSize(poolName string, size Size) (Lease, error) {
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+poolName)
 	}
-	return p.leases.AcquireSize(pool, size)
+	index, _ := p.registry.poolIndex(poolName)
+	lease, err := p.leases.AcquireSize(pool, size)
+	if err != nil {
+		return Lease{}, err
+	}
+	p.markPoolActiveAndDirty(index)
+	return lease, nil
 }
 
 // Release releases a lease through the partition-owned LeaseRegistry.
 func (p *PoolPartition) Release(lease Lease, buffer []byte) error {
 	p.mustBeInitialized()
-	return p.leases.Release(lease, buffer)
+	if err := p.leases.Release(lease, buffer); err != nil {
+		return err
+	}
+	if lease.record != nil {
+		if index, ok := p.registry.poolIndexForPool(lease.record.pool); ok {
+			p.markPoolActiveAndDirty(index)
+		}
+	}
+	return nil
 }
 
 // pool returns a raw partition-owned Pool for internal partition code.
@@ -172,9 +202,15 @@ func (p *PoolPartition) pool(name string) (*Pool, bool) {
 	return p.registry.pool(name)
 }
 
+// markPoolActiveAndDirty records partition-owned activity outside Pool hot paths.
+func (p *PoolPartition) markPoolActiveAndDirty(index int) {
+	_ = p.activeRegistry.markActiveIndex(index)
+	_ = p.activeRegistry.markDirtyIndex(index)
+}
+
 // mustBeInitialized verifies that p was constructed by NewPoolPartition.
 func (p *PoolPartition) mustBeInitialized() {
-	if p == nil || p.leases == nil || p.runtimeSnapshot.Load() == nil {
+	if p == nil || p.leases == nil || p.activeRegistry == nil || p.runtimeSnapshot.Load() == nil {
 		panic(errNilPoolPartition)
 	}
 }

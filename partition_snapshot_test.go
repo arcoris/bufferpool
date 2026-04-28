@@ -110,3 +110,25 @@ func TestPoolPartitionSnapshotUsesCoherentPolicyGeneration(t *testing.T) {
 		t.Fatalf("metrics policy generation = %s, want snapshot policy generation %s", snapshot.Metrics.PolicyGeneration, snapshot.PolicyGeneration)
 	}
 }
+
+// TestPoolPartitionSnapshotMatchesQuiescentSample verifies simple quiescent consistency.
+func TestPoolPartitionSnapshotMatchesQuiescentSample(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+
+	sample := partition.Sample()
+	snapshot := partition.Snapshot()
+
+	if snapshot.Metrics.CurrentRetainedBytes != sample.CurrentRetainedBytes {
+		t.Fatalf("snapshot retained bytes = %d, sample retained bytes = %d", snapshot.Metrics.CurrentRetainedBytes, sample.CurrentRetainedBytes)
+	}
+	if snapshot.Metrics.ActiveLeases != 0 || snapshot.Leases.ActiveCount() != 0 {
+		t.Fatalf("snapshot active leases = metrics %d leases %d, want zero", snapshot.Metrics.ActiveLeases, snapshot.Leases.ActiveCount())
+	}
+	if snapshot.Metrics.PolicyGeneration != snapshot.PolicyGeneration {
+		t.Fatalf("snapshot metrics policy generation = %s, want %s", snapshot.Metrics.PolicyGeneration, snapshot.PolicyGeneration)
+	}
+}

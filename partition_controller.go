@@ -55,24 +55,42 @@ type PartitionControllerReport struct {
 // is active.
 //
 // Tick returns a detailed diagnostic/planning report and may allocate per-Pool
-// sample/report storage. The current controller skeleton scans every owned Pool;
-// a future automatic controller should use reusable scratch space and a bounded
-// full-scan or active-registry strategy instead of treating this API as a mature
-// adaptive loop.
+// sample/report storage. The current detailed report still scans every owned
+// Pool. The partition now has an active/dirty registry boundary, but future
+// automatic controllers still need window deltas, idle expiry, and bounded
+// active-only sampling before this becomes a mature adaptive loop.
 func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 	p.mustBeInitialized()
+	var report PartitionControllerReport
+	err := p.TickInto(&report)
+	return report, err
+}
+
+// TickInto writes one explicit partition controller observation/planning pass
+// into dst.
+//
+// TickInto has the same control semantics as Tick but reuses dst.Sample.Pools
+// capacity. A nil dst is a no-op after receiver and lifecycle validation. Like
+// Tick, this is a manual foreground call: it does not start background
+// goroutines, publish Pool runtime policy, execute physical trim, or perform
+// adaptive redistribution.
+func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
+	p.mustBeInitialized()
 	if !p.lifecycle.AllowsWork() {
-		return PartitionControllerReport{}, newError(ErrClosed, errPartitionClosed)
+		return newError(ErrClosed, errPartitionClosed)
+	}
+	if dst == nil {
+		return nil
 	}
 	generation := p.generation.Advance()
 	runtime := p.currentRuntimeSnapshot()
-	var sample PoolPartitionSample
+	sample := dst.Sample
 	p.sampleWithRuntimeAndGeneration(&sample, runtime, generation, true)
 	metrics := newPoolPartitionMetrics(p.name, sample)
 	budget := newPartitionBudgetSnapshot(runtime.Policy.Budget, sample)
 	pressure := newPartitionPressureSnapshot(runtime.Policy.Pressure, sample)
 	trimPlan := newPartitionTrimPlan(runtime.Policy.Trim, pressure, sample)
-	return PartitionControllerReport{
+	*dst = PartitionControllerReport{
 		Generation:       generation,
 		PolicyGeneration: sample.PolicyGeneration,
 		Lifecycle:        p.lifecycle.Load(),
@@ -81,5 +99,6 @@ func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 		Budget:           budget,
 		Pressure:         pressure,
 		TrimPlan:         trimPlan,
-	}, nil
+	}
+	return nil
 }

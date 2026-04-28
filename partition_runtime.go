@@ -41,6 +41,9 @@ func (p *PoolPartition) publishRuntimeSnapshot(snapshot *partitionRuntimeSnapsho
 		panic(errPartitionRuntimeSnapshotNil)
 	}
 	p.runtimeSnapshot.Store(newPartitionRuntimeSnapshot(snapshot.Generation, snapshot.Policy))
+	if p.activeRegistry != nil {
+		p.activeRegistry.markAllDirty()
+	}
 }
 
 // currentRuntimeSnapshot returns the currently published partition policy view.
@@ -78,6 +81,9 @@ func (p *PoolPartition) publishPoolRuntimeSnapshot(poolName string, generation G
 	}
 
 	pool.publishRuntimeSnapshot(newPoolRuntimeSnapshot(generation, normalized))
+	if index, ok := p.registry.poolIndex(poolName); ok {
+		_ = p.activeRegistry.markDirtyIndex(index)
+	}
 	p.generation.Advance()
 	return nil
 }

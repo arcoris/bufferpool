@@ -41,8 +41,11 @@ func (p *PoolPartition) IsClosed() bool { p.mustBeInitialized(); return p.lifecy
 // PoolPartition shutdown modes may add a drain phase before closing Pools.
 func (p *PoolPartition) Close() error {
 	p.mustBeInitialized()
-	if !p.lifecycle.BeginClose() {
+	if p.lifecycle.IsClosed() {
 		return nil
+	}
+	if !p.lifecycle.IsClosing() {
+		p.lifecycle.BeginClose()
 	}
 	var err error
 	if closeErr := p.leases.Close(); closeErr != nil {

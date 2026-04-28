@@ -37,12 +37,21 @@ type partitionRegistry struct {
 	// byName provides partition-local Pool lookup for Acquire and diagnostics.
 	byName map[string]*Pool
 
+	// indexByName maps partition-local names to deterministic registry indexes.
+	indexByName map[string]int
+
+	// indexByPool maps owned Pool pointers back to deterministic registry indexes.
+	indexByPool map[*Pool]int
+
 	// names stores the defensive-copy source returned by PoolNames.
 	names []string
 }
 
 // partitionPoolEntry ties a partition-local name to an owned Pool.
 type partitionPoolEntry struct {
+	// index is the deterministic registry index.
+	index int
+
 	// name is the partition-local Pool name.
 	name string
 
@@ -55,7 +64,13 @@ func newPartitionRegistry(configs []PartitionPoolConfig) (partitionRegistry, err
 	if len(configs) == 0 {
 		return partitionRegistry{}, newError(ErrInvalidOptions, errPartitionRegistryNoPools)
 	}
-	registry := partitionRegistry{entries: make([]partitionPoolEntry, 0, len(configs)), byName: make(map[string]*Pool, len(configs)), names: make([]string, 0, len(configs))}
+	registry := partitionRegistry{
+		entries:     make([]partitionPoolEntry, 0, len(configs)),
+		byName:      make(map[string]*Pool, len(configs)),
+		indexByName: make(map[string]int, len(configs)),
+		indexByPool: make(map[*Pool]int, len(configs)),
+		names:       make([]string, 0, len(configs)),
+	}
 	for _, config := range configs {
 		normalized := config.Normalize()
 		if normalized.Name == "" {
@@ -70,8 +85,11 @@ func newPartitionRegistry(configs []PartitionPoolConfig) (partitionRegistry, err
 		if err != nil {
 			return partitionRegistry{}, multierr.Append(err, registry.closeAll())
 		}
-		registry.entries = append(registry.entries, partitionPoolEntry{name: normalized.Name, pool: pool})
+		index := len(registry.entries)
+		registry.entries = append(registry.entries, partitionPoolEntry{index: index, name: normalized.Name, pool: pool})
 		registry.byName[normalized.Name] = pool
+		registry.indexByName[normalized.Name] = index
+		registry.indexByPool[pool] = index
 		registry.names = append(registry.names, normalized.Name)
 	}
 	return registry, nil
@@ -81,6 +99,18 @@ func newPartitionRegistry(configs []PartitionPoolConfig) (partitionRegistry, err
 func (r partitionRegistry) pool(name string) (*Pool, bool) {
 	pool, ok := r.byName[name]
 	return pool, ok
+}
+
+// poolIndex looks up a deterministic Pool index by partition-local name.
+func (r partitionRegistry) poolIndex(name string) (int, bool) {
+	index, ok := r.indexByName[name]
+	return index, ok
+}
+
+// poolIndexForPool looks up a deterministic Pool index by owned Pool pointer.
+func (r partitionRegistry) poolIndexForPool(pool *Pool) (int, bool) {
+	index, ok := r.indexByPool[pool]
+	return index, ok
 }
 
 // namesCopy returns a caller-owned copy of deterministic Pool names.

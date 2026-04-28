@@ -60,6 +60,62 @@ func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T)
 	}
 }
 
+// TestPoolPartitionTickIntoReusesReportStorage verifies reusable tick reports.
+func TestPoolPartitionTickIntoReusesReportStorage(t *testing.T) {
+	config := testPartitionConfig("primary", "secondary")
+	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	report := PartitionControllerReport{
+		Sample: PoolPartitionSample{
+			Pools: make([]PoolPartitionPoolSample, 0, 8),
+		},
+	}
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	if report.Generation.IsZero() || report.Sample.Generation != report.Generation || report.Metrics.Generation != report.Generation {
+		t.Fatalf("TickInto report has incoherent generation: %+v", report)
+	}
+	if report.PolicyGeneration != report.Sample.PolicyGeneration || report.PolicyGeneration != report.Metrics.PolicyGeneration {
+		t.Fatalf("TickInto policy generation mismatch: %+v", report)
+	}
+	if len(report.Sample.Pools) != 2 {
+		t.Fatalf("len(report.Sample.Pools) = %d, want 2", len(report.Sample.Pools))
+	}
+	if cap(report.Sample.Pools) != 8 {
+		t.Fatalf("cap(report.Sample.Pools) = %d, want reused capacity 8", cap(report.Sample.Pools))
+	}
+	if report.TrimResult.Attempted || report.TrimResult.Executed {
+		t.Fatalf("TickInto should not execute physical trim: %+v", report.TrimResult)
+	}
+
+	report.Sample.Pools = append(report.Sample.Pools, PoolPartitionPoolSample{Name: "stale"})
+	requirePartitionNoError(t, partition.TickInto(&report))
+	if len(report.Sample.Pools) != 2 {
+		t.Fatalf("reused len(report.Sample.Pools) = %d, want 2 without stale entries", len(report.Sample.Pools))
+	}
+	for _, pool := range report.Sample.Pools {
+		if pool.Name == "stale" {
+			t.Fatalf("TickInto retained stale pool entry")
+		}
+	}
+}
+
+// TestPoolPartitionTickIntoNilDestinationIsNoOp verifies nil destination behavior.
+func TestPoolPartitionTickIntoNilDestinationIsNoOp(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	before := partition.Sample().Generation
+
+	requirePartitionNoError(t, partition.TickInto(nil))
+
+	after := partition.Sample().Generation
+	if after != before {
+		t.Fatalf("TickInto(nil) advanced generation from %s to %s", before, after)
+	}
+}
+
 // TestPoolPartitionTickRejectsClosedPartition verifies lifecycle gating for ticks.
 func TestPoolPartitionTickRejectsClosedPartition(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))
@@ -67,6 +123,9 @@ func TestPoolPartitionTickRejectsClosedPartition(t *testing.T) {
 	requirePartitionNoError(t, partition.Close())
 
 	_, err = partition.Tick()
+	requirePartitionErrorIs(t, err, ErrClosed)
+
+	err = partition.TickInto(&PartitionControllerReport{})
 	requirePartitionErrorIs(t, err, ErrClosed)
 }
 
