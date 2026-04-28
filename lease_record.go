@@ -47,7 +47,9 @@ type leaseRecord struct {
 	// buffer is the originally acquired slice header.
 	//
 	// Strict release canonicalizes Pool.Put handoff back to this base and
-	// capacity after validation succeeds.
+	// capacity after validation succeeds. The registry stores the header for
+	// identity and handoff; it does not serialize caller reads or writes to the
+	// backing array while the lease is active.
 	buffer []byte
 
 	// data is the acquired slice base used for strict identity validation.

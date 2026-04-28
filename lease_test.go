@@ -396,8 +396,17 @@ func TestLeaseReleaseForeignBufferAccounting(t *testing.T) {
 	if counters.Releases != 1 {
 		t.Fatalf("Releases = %d, want 1", counters.Releases)
 	}
+	if counters.ActiveLeases != 0 {
+		t.Fatalf("ActiveLeases = %d, want 0", counters.ActiveLeases)
+	}
+	if counters.ActiveBytes != 0 {
+		t.Fatalf("ActiveBytes = %d, want 0", counters.ActiveBytes)
+	}
 	if counters.OwnershipViolations != 0 {
 		t.Fatalf("OwnershipViolations = %d, want 0", counters.OwnershipViolations)
+	}
+	if counters.ReleasedBytes != 512 {
+		t.Fatalf("ReleasedBytes = %d, want replacement buffer capacity 512", counters.ReleasedBytes)
 	}
 	if counters.PoolReturnSuccesses != 1 {
 		t.Fatalf("PoolReturnSuccesses = %d, want 1", counters.PoolReturnSuccesses)
@@ -574,8 +583,68 @@ func TestLeaseReleaseAfterPoolCloseCompletesOwnership(t *testing.T) {
 	if snapshot.Counters.PoolReturnClosedFailures != 1 {
 		t.Fatalf("PoolReturnClosedFailures = %d, want 1", snapshot.Counters.PoolReturnClosedFailures)
 	}
+	if snapshot.Counters.ActiveLeases != 0 {
+		t.Fatalf("ActiveLeases = %d, want 0", snapshot.Counters.ActiveLeases)
+	}
+	if snapshot.Counters.ActiveBytes != 0 {
+		t.Fatalf("ActiveBytes = %d, want 0", snapshot.Counters.ActiveBytes)
+	}
 
 	err = lease.Release(buffer)
+	if !errors.Is(err, ErrDoubleRelease) {
+		t.Fatalf("second Release() error = %v, want ErrDoubleRelease", err)
+	}
+}
+
+// TestLeaseReleasePoolHandoffAdmissionFailureIsDiagnostic verifies that a
+// non-lifecycle Pool.Put rejection after ownership release is reported through
+// handoff counters without reactivating the lease.
+func TestLeaseReleasePoolHandoffAdmissionFailureIsDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Admission.OversizedReturn = AdmissionActionError
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	defer closePoolForTest(t, pool)
+	registry := MustNewLeaseRegistry(LeaseConfigFromOwnershipPolicy(AccountingOwnershipPolicy()))
+	defer closeLeaseRegistryForTest(t, registry)
+
+	lease, err := registry.Acquire(pool, 128)
+	if err != nil {
+		t.Fatalf("Acquire() returned error: %v", err)
+	}
+	replacement := make([]byte, 0, 2*KiB)
+	beforeRelease := registry.Snapshot().Generation
+
+	if err := lease.Release(replacement); err != nil {
+		t.Fatalf("Release(replacement) returned error: %v", err)
+	}
+
+	snapshot := registry.Snapshot()
+	if !snapshot.Generation.After(beforeRelease) {
+		t.Fatalf("generation after handoff failure = %s, want after %s", snapshot.Generation, beforeRelease)
+	}
+	if snapshot.ActiveCount() != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", snapshot.ActiveCount())
+	}
+	if snapshot.Counters.Releases != 1 {
+		t.Fatalf("Releases = %d, want 1", snapshot.Counters.Releases)
+	}
+	if snapshot.Counters.PoolReturnAttempts != 1 {
+		t.Fatalf("PoolReturnAttempts = %d, want 1", snapshot.Counters.PoolReturnAttempts)
+	}
+	if snapshot.Counters.PoolReturnFailures != 1 {
+		t.Fatalf("PoolReturnFailures = %d, want 1", snapshot.Counters.PoolReturnFailures)
+	}
+	if snapshot.Counters.PoolReturnAdmissionFailures != 1 {
+		t.Fatalf("PoolReturnAdmissionFailures = %d, want 1", snapshot.Counters.PoolReturnAdmissionFailures)
+	}
+	if snapshot.Counters.PoolReturnClosedFailures != 0 {
+		t.Fatalf("PoolReturnClosedFailures = %d, want 0", snapshot.Counters.PoolReturnClosedFailures)
+	}
+
+	err = lease.Release(replacement)
 	if !errors.Is(err, ErrDoubleRelease) {
 		t.Fatalf("second Release() error = %v, want ErrDoubleRelease", err)
 	}

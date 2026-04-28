@@ -126,6 +126,15 @@ func TestLeaseRegistryClosePreventsAcquireButAllowsRelease(t *testing.T) {
 	if snapshot.Counters.Releases != 1 {
 		t.Fatalf("Releases = %d, want 1", snapshot.Counters.Releases)
 	}
+	if snapshot.Counters.ActiveLeases != 0 {
+		t.Fatalf("ActiveLeases = %d, want 0", snapshot.Counters.ActiveLeases)
+	}
+	if snapshot.Counters.ActiveBytes != 0 {
+		t.Fatalf("ActiveBytes = %d, want 0", snapshot.Counters.ActiveBytes)
+	}
+	if snapshot.Counters.PoolReturnSuccesses != 1 {
+		t.Fatalf("PoolReturnSuccesses = %d, want 1", snapshot.Counters.PoolReturnSuccesses)
+	}
 }
 
 // TestLeaseRegistryCloseIsIdempotent verifies repeated close calls.
@@ -224,6 +233,7 @@ func TestLeaseRegistrySnapshotReportsActiveLeases(t *testing.T) {
 	if snapshot.Counters.ActiveBytes != leaseA.AcquiredCapacity()+leaseB.AcquiredCapacity() {
 		t.Fatalf("ActiveBytes = %d, want %d", snapshot.Counters.ActiveBytes, leaseA.AcquiredCapacity()+leaseB.AcquiredCapacity())
 	}
+	assertLeaseRegistrySnapshotActiveConsistency(t, snapshot)
 
 	ids := map[LeaseID]bool{}
 	for _, active := range snapshot.Active {
@@ -244,6 +254,49 @@ func TestLeaseRegistrySnapshotReportsActiveLeases(t *testing.T) {
 	}
 	if err := leaseB.ReleaseUnchanged(); err != nil {
 		t.Fatalf("Release B returned error: %v", err)
+	}
+}
+
+// TestLeaseRegistrySnapshotCountersMatchActiveState verifies that active-map
+// mutation, active gauges, and generation are published at one registry boundary
+// for ordinary acquire/release transitions.
+func TestLeaseRegistrySnapshotCountersMatchActiveState(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+	registry := MustNewLeaseRegistry(DefaultLeaseConfig())
+	defer closeLeaseRegistryForTest(t, registry)
+
+	initial := registry.Snapshot().Generation
+	lease, err := registry.Acquire(pool, 700)
+	if err != nil {
+		t.Fatalf("Acquire() returned error: %v", err)
+	}
+
+	afterAcquire := registry.Snapshot()
+	if !afterAcquire.Generation.After(initial) {
+		t.Fatalf("generation after acquire = %s, want after %s", afterAcquire.Generation, initial)
+	}
+	assertLeaseRegistrySnapshotActiveConsistency(t, afterAcquire)
+
+	afterAcquireGeneration := afterAcquire.Generation
+	if err := lease.ReleaseUnchanged(); err != nil {
+		t.Fatalf("ReleaseUnchanged() returned error: %v", err)
+	}
+
+	afterRelease := registry.Snapshot()
+	if !afterRelease.Generation.After(afterAcquireGeneration) {
+		t.Fatalf("generation after release = %s, want after %s", afterRelease.Generation, afterAcquireGeneration)
+	}
+	if afterRelease.ActiveCount() != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", afterRelease.ActiveCount())
+	}
+	if afterRelease.Counters.ActiveLeases != 0 {
+		t.Fatalf("ActiveLeases = %d, want 0", afterRelease.Counters.ActiveLeases)
+	}
+	if afterRelease.Counters.ActiveBytes != 0 {
+		t.Fatalf("ActiveBytes = %d, want 0", afterRelease.Counters.ActiveBytes)
 	}
 }
 
@@ -361,6 +414,53 @@ func TestLeaseRegistryConcurrentAcquireRelease(t *testing.T) {
 	}
 }
 
+// TestLeaseRegistryMultipleRegistriesSharePoolWithSeparateAccounting verifies
+// that LeaseRegistry is an ownership scope, not a Pool-global registry.
+func TestLeaseRegistryMultipleRegistriesSharePoolWithSeparateAccounting(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+	registryA := MustNewLeaseRegistry(DefaultLeaseConfig())
+	defer closeLeaseRegistryForTest(t, registryA)
+	registryB := MustNewLeaseRegistry(DefaultLeaseConfig())
+	defer closeLeaseRegistryForTest(t, registryB)
+
+	leaseA, err := registryA.Acquire(pool, 128)
+	if err != nil {
+		t.Fatalf("registryA Acquire() returned error: %v", err)
+	}
+	leaseB, err := registryB.Acquire(pool, 128)
+	if err != nil {
+		t.Fatalf("registryB Acquire() returned error: %v", err)
+	}
+
+	if registryA.Snapshot().ActiveCount() != 1 {
+		t.Fatalf("registryA ActiveCount() = %d, want 1", registryA.Snapshot().ActiveCount())
+	}
+	if registryB.Snapshot().ActiveCount() != 1 {
+		t.Fatalf("registryB ActiveCount() = %d, want 1", registryB.Snapshot().ActiveCount())
+	}
+
+	err = registryB.Release(leaseA, leaseA.Buffer())
+	if !errors.Is(err, ErrInvalidLease) {
+		t.Fatalf("registryB Release(leaseA) error = %v, want ErrInvalidLease", err)
+	}
+	if registryB.Snapshot().Counters.InvalidReleases != 1 {
+		t.Fatalf("registryB InvalidReleases = %d, want 1", registryB.Snapshot().Counters.InvalidReleases)
+	}
+	if registryA.Snapshot().ActiveCount() != 1 {
+		t.Fatalf("registryA ActiveCount() after wrong-registry release = %d, want 1", registryA.Snapshot().ActiveCount())
+	}
+
+	if err := leaseA.ReleaseUnchanged(); err != nil {
+		t.Fatalf("registryA ReleaseUnchanged() returned error: %v", err)
+	}
+	if err := leaseB.ReleaseUnchanged(); err != nil {
+		t.Fatalf("registryB ReleaseUnchanged() returned error: %v", err)
+	}
+}
+
 // TestLeaseRegistryNilReceiverPanics verifies fail-fast receiver validation.
 func TestLeaseRegistryNilReceiverPanics(t *testing.T) {
 	t.Parallel()
@@ -375,5 +475,21 @@ func closeLeaseRegistryForTest(t *testing.T, registry *LeaseRegistry) {
 	t.Helper()
 	if err := registry.Close(); err != nil {
 		t.Fatalf("LeaseRegistry.Close() returned error: %v", err)
+	}
+}
+
+func assertLeaseRegistrySnapshotActiveConsistency(t *testing.T, snapshot LeaseRegistrySnapshot) {
+	t.Helper()
+
+	if uint64(snapshot.ActiveCount()) != snapshot.Counters.ActiveLeases {
+		t.Fatalf("ActiveCount()/ActiveLeases = %d/%d", snapshot.ActiveCount(), snapshot.Counters.ActiveLeases)
+	}
+
+	var activeBytes uint64
+	for _, lease := range snapshot.Active {
+		activeBytes += lease.AcquiredCapacity
+	}
+	if activeBytes != snapshot.Counters.ActiveBytes {
+		t.Fatalf("sum active capacity/ActiveBytes = %d/%d", activeBytes, snapshot.Counters.ActiveBytes)
 	}
 }

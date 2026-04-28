@@ -37,6 +37,13 @@ package bufferpool
 // Lease does not make Pool a controller. A future PoolPartition can own a
 // LeaseRegistry and use it to provide ownership-aware acquisition/release while
 // Pool remains the local retained-storage data plane.
+//
+// Lease synchronizes ownership state, not buffer contents. While the lease is
+// active, the returned []byte contents are caller-owned memory and callers must
+// provide their own synchronization if multiple goroutines read or write the
+// buffer. After Release succeeds, the caller must not read, write, append to, or
+// retain the slice for future use. The release path may hand the backing memory
+// to Pool.Put, and Pool may zero, drop, retain, or later reuse that memory.
 type Lease struct {
 	registry *LeaseRegistry
 	record   *leaseRecord
@@ -66,6 +73,10 @@ func (l Lease) ID() LeaseID {
 // The returned slice is a copy of the slice header. Mutating the slice contents
 // mutates the checked-out buffer. If the caller appends and receives a new slice
 // header, the final header should be passed to Release.
+//
+// The registry lock protects only the lease record state needed to fetch this
+// header. It does not protect concurrent access to the buffer contents. Caller
+// code owns content synchronization until successful Release.
 func (l Lease) Buffer() []byte {
 	if l.record == nil {
 		return nil
@@ -137,6 +148,11 @@ func (l Lease) Snapshot() LeaseSnapshot {
 // best-effort retained-storage handoff. If that handoff fails, Release still
 // returns nil because ownership has completed and retrying the same lease would
 // be a double release; the registry records the handoff failure in counters.
+//
+// Successful Release transfers any remaining responsibility for the backing
+// memory away from the caller. Continuing to use the released slice is caller
+// misuse and can race with Pool zeroing, retention, or later reuse by another
+// goroutine.
 func (l Lease) Release(buffer []byte) error {
 	if l.registry == nil {
 		return newError(ErrInvalidLease, errLeaseInvalid)

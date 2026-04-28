@@ -54,6 +54,22 @@ func (p *Pool) ClassSizes() []ClassSize {
 	return p.table.classSizes()
 }
 
+// originClassForAcquiredCapacity maps a Pool-returned backing capacity back to
+// the immutable class descriptor that produced it.
+//
+// LeaseRegistry uses this helper during acquisition diagnostics instead of
+// reaching into the Pool's class table directly. The helper keeps class-table
+// ownership inside Pool while still letting the ownership layer record the
+// origin class needed for strict release validation and active-byte accounting.
+func (p *Pool) originClassForAcquiredCapacity(capacity uint64) (SizeClass, bool) {
+	p.mustBeInitialized()
+	if capacity == 0 {
+		return SizeClass{}, false
+	}
+
+	return p.table.classForCapacity(SizeFromBytes(capacity))
+}
+
 // publishInitialBudgets publishes the Pool's initial static class budgets.
 //
 // Pool has no hidden adaptive controller. It therefore starts from a

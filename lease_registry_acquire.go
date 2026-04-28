@@ -79,7 +79,7 @@ func (r *LeaseRegistry) AcquireSize(pool *Pool, requestedSize Size) (Lease, erro
 		return Lease{}, newError(ErrZeroCapacity, errLeaseAcquireZeroCapacity)
 	}
 
-	originClass, ok := pool.table.classForCapacity(SizeFromBytes(uint64(cap(buffer))))
+	originClass, ok := pool.originClassForAcquiredCapacity(uint64(cap(buffer)))
 	if !ok {
 		return Lease{}, newError(ErrUnsupportedClass, errLeaseAcquireUnsupportedClass)
 	}
@@ -100,14 +100,20 @@ func (r *LeaseRegistry) AcquireSize(pool *Pool, requestedSize Size) (Lease, erro
 	r.mu.Lock()
 	if !r.lifecycle.AllowsWork() {
 		r.mu.Unlock()
+		// No lease was created in this rollback path. Pool.GetSize succeeded,
+		// but registry shutdown won the race before the record entered active
+		// ownership. The Pool.Put call is a best-effort return of a buffer that
+		// never became checked-out lease state, so it is intentionally not
+		// counted as a lease pool-return handoff. Future PoolPartition shutdown
+		// ordering should normally close registries before pools so this path is
+		// rare and remains a simple rollback.
 		_ = pool.Put(buffer)
 		return Lease{}, newError(ErrClosed, errLeaseRegistryClosed)
 	}
 	r.active[record.id] = record
-	r.mu.Unlock()
-
 	r.counters.recordAcquire(requestedSize, record.acquiredCapacity)
 	r.generation.Advance()
+	r.mu.Unlock()
 
 	return Lease{registry: r, record: record}, nil
 }

@@ -57,6 +57,12 @@ func (r *LeaseRegistry) Release(lease Lease, buffer []byte) error {
 // concurrent snapshot/release cannot deadlock. Pool.Put is called only after
 // both locks are released because Pool return admission may take shard locks and
 // must not run while registry bookkeeping locks are held.
+//
+// The active-map deletion, active-gauge decrement, release counters, and
+// generation movement happen in the same registry critical section. That keeps
+// registry snapshots from seeing a lease removed from Active while ActiveLeases
+// still includes it. Pool-return handoff diagnostics are recorded after the
+// locks are released because the handoff is intentionally best effort.
 func (r *LeaseRegistry) releaseRecord(record *leaseRecord, buffer []byte) error {
 	r.mu.Lock()
 	record.mu.Lock()
@@ -82,19 +88,18 @@ func (r *LeaseRegistry) releaseRecord(record *leaseRecord, buffer []byte) error 
 	returnedCapacity := record.returnedCapacity
 	pool := record.pool
 	delete(r.active, record.id)
+	r.counters.recordRelease(acquiredCapacity, returnedCapacity)
+	r.generation.Advance()
 	record.mu.Unlock()
 	r.mu.Unlock()
 
-	r.counters.recordRelease(acquiredCapacity, returnedCapacity)
-	r.counters.recordPoolReturnAttempt()
+	r.recordPoolReturnAttempt()
 	if err := pool.Put(returnBuffer); err != nil {
-		r.counters.recordPoolReturnFailure(err)
-		r.generation.Advance()
+		r.recordPoolReturnFailure(err)
 		return nil
 	}
 
-	r.counters.recordPoolReturnSuccess()
-	r.generation.Advance()
+	r.recordPoolReturnSuccess()
 	return nil
 }
 
@@ -104,8 +109,39 @@ func (r *LeaseRegistry) releaseRecord(record *leaseRecord, buffer []byte) error 
 // Invalid release counters are snapshot-visible diagnostics, so generation moves
 // even though active ownership state may remain unchanged.
 func (r *LeaseRegistry) recordInvalidRelease(kind OwnershipViolationKind) {
+	r.mu.Lock()
 	r.counters.recordInvalidRelease(kind)
 	r.generation.Advance()
+	r.mu.Unlock()
+}
+
+// recordPoolReturnAttempt records a post-release Pool.Put handoff attempt.
+//
+// The update is guarded by the registry lock so Snapshot samples active records,
+// counters, and generation at a clear registry boundary. Pool.Put itself is not
+// called while this lock is held.
+func (r *LeaseRegistry) recordPoolReturnAttempt() {
+	r.mu.Lock()
+	r.counters.recordPoolReturnAttempt()
+	r.generation.Advance()
+	r.mu.Unlock()
+}
+
+// recordPoolReturnSuccess records that a post-release Pool.Put handoff returned
+// nil.
+func (r *LeaseRegistry) recordPoolReturnSuccess() {
+	r.mu.Lock()
+	r.counters.recordPoolReturnSuccess()
+	r.generation.Advance()
+	r.mu.Unlock()
+}
+
+// recordPoolReturnFailure records that a post-release Pool.Put handoff failed.
+func (r *LeaseRegistry) recordPoolReturnFailure(err error) {
+	r.mu.Lock()
+	r.counters.recordPoolReturnFailure(err)
+	r.generation.Advance()
+	r.mu.Unlock()
 }
 
 // canonicalLeaseReturnBuffer returns the slice header handed to Pool.Put after

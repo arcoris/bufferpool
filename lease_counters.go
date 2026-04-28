@@ -28,6 +28,11 @@ import (
 // Pool-return counters describe the best-effort handoff after ownership release;
 // they are separate from ownership validation failures because Pool.Put failure
 // does not make a released lease active again.
+//
+// The registry stores raw facts only. Rates such as pool-return failure rate,
+// active memory ratio, or release failure rate should be computed from sampled
+// counters by metrics/controller code rather than maintained as hot-path
+// counters.
 type LeaseCountersSnapshot struct {
 	// Acquisitions is the number of leases successfully created.
 	Acquisitions uint64

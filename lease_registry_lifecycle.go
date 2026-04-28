@@ -58,8 +58,10 @@ func (r *LeaseRegistry) Close() error {
 		return nil
 	}
 
+	r.mu.Lock()
 	r.lifecycle.MarkClosed()
 	r.generation.Advance()
+	r.mu.Unlock()
 
 	return nil
 }

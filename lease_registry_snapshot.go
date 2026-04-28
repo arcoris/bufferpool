@@ -22,6 +22,10 @@ package bufferpool
 // record lock in the same order used by release. It does not expose mutable
 // lease records or buffers. The result is useful for diagnostics and future
 // controller sampling, but it is not a global transaction across Pool storage.
+//
+// Active records, active gauges, and generation are sampled while the registry
+// lock is held. Pool-return handoff counters may still move after ownership
+// release because Pool.Put deliberately runs outside registry locks.
 func (r *LeaseRegistry) Snapshot() LeaseRegistrySnapshot {
 	r.mustBeInitialized()
 	r.mu.Lock()
@@ -29,13 +33,16 @@ func (r *LeaseRegistry) Snapshot() LeaseRegistrySnapshot {
 	for _, record := range r.active {
 		active = append(active, record.snapshot())
 	}
+	lifecycle := r.lifecycle.Load()
+	generation := r.generation.Load()
+	counters := r.counters.snapshot()
 	r.mu.Unlock()
 
 	return LeaseRegistrySnapshot{
-		Lifecycle:  r.lifecycle.Load(),
-		Generation: r.generation.Load(),
+		Lifecycle:  lifecycle,
+		Generation: generation,
 		Config:     r.config,
-		Counters:   r.counters.snapshot(),
+		Counters:   counters,
 		Active:     active,
 	}
 }
