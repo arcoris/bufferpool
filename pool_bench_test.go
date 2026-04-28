@@ -89,7 +89,9 @@ func BenchmarkPoolGetHit(b *testing.B) {
 //
 // These cases are intentionally not named as guaranteed hits. Selector state,
 // shard distribution, and the absence of measured Put calls can produce a real
-// mix of hits and allocation misses. Reported metrics show the actual path mix.
+// mix of hits and allocation misses. Reported metrics show only acquisition
+// ratios because return counters mostly describe public seed setup, not the
+// measured Get-only loop.
 func BenchmarkPoolGetSeededMixed(b *testing.B) {
 	for _, tc := range poolBenchmarkSeededMixedCases() {
 		tc := tc
@@ -127,7 +129,7 @@ func BenchmarkPoolGetSeededMixed(b *testing.B) {
 				completed += batch
 			}
 
-			poolBenchmarkReportOutcomeRatios(b, pool)
+			poolBenchmarkReportGetRatios(b, pool)
 		})
 	}
 }

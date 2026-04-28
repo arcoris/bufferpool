@@ -50,6 +50,11 @@ const (
 	// errPoolPutBucketFull is used when shard credit accepts a returned buffer
 	// but the physical bucket has no free retained-buffer slot.
 	errPoolPutBucketFull = "bufferpool.Pool.Put: shard bucket is full"
+
+	// errPoolReturnOutcomeMissingErrorKind is used when an internal return
+	// outcome asks Pool to report an error without selecting a public error
+	// class.
+	errPoolReturnOutcomeMissingErrorKind = "bufferpool.Pool.Put: return outcome error kind must not be nil"
 )
 
 // Put returns buffer to the Pool for possible retention.
@@ -58,10 +63,21 @@ const (
 // Depending on admission actions, unsuitable returned buffers may be silently
 // dropped or reported as errors.
 //
+// Bare []byte returns are capacity-admitted, not ownership-verified. The
+// current API cannot prove that a buffer originated from this Pool, cannot
+// detect double release, cannot enforce origin-class capacity growth, and cannot
+// track in-use bytes or buffers. Those guarantees require a lease-aware
+// ownership layer above or beside the bare []byte API; Pool does not fake them
+// in the hot path.
+//
 // Put records valid public return attempts before lifecycle admission so
 // post-close drop-return behavior remains visible in snapshots and metrics. nil
 // and zero-capacity inputs are rejected before accounting because they are
 // invalid API input rather than reusable buffer returns.
+//
+// Close reject mode returns ErrClosed after the valid Put attempt is counted,
+// but it does not accept the buffer as a dropped return. In that mode the caller
+// remains responsible for the buffer and ZeroDroppedBuffers is not applied.
 //
 // Retention zeroing and dropped-buffer zeroing are intentionally separate:
 // ZeroRetainedBuffers is applied inside the shard retain path before bucket
@@ -144,7 +160,8 @@ func (p *Pool) validateReturnInput(buffer []byte) (poolReturnInput, error) {
 //	-> apply outcome
 //
 // Bare []byte Put can only perform capacity-based admission. Origin-class
-// growth checks require an ownership-aware lease API and are not hidden here.
+// growth checks, double-release detection, and in-use accounting require an
+// ownership-aware lease API and are not hidden here.
 func (p *Pool) returnBuffer(input poolReturnInput, runtime *poolRuntimeSnapshot) poolReturnOutcome {
 	policy := runtime.Policy
 
@@ -271,6 +288,10 @@ func (p *Pool) applyReturnOutcome(policy Policy, input poolReturnInput, outcome 
 		return nil
 
 	case AdmissionActionError:
+		if outcome.Kind == nil {
+			return newError(ErrInvalidPolicy, errPoolReturnOutcomeMissingErrorKind)
+		}
+
 		return newError(outcome.Kind, outcome.Message)
 
 	default:

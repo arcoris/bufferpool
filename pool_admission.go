@@ -19,10 +19,12 @@ package bufferpool
 // zeroDroppedBuffer clears a returned buffer when ZeroDroppedBuffers is enabled.
 //
 // This is used only for no-retain outcomes after Pool has decided that the
-// returned buffer will not become visible through a bucket. Retained-buffer
-// zeroing is intentionally separate and runs inside the shard retain path before
-// bucket publication, where shard.mu still prevents concurrent Get from popping
-// the buffer.
+// returned buffer will not become visible through a bucket and Pool has accepted
+// responsibility for handling that return. Close reject mode is different: it
+// returns ErrClosed and leaves the caller responsible for the buffer, so this
+// helper is not called. Retained-buffer zeroing is intentionally separate and
+// runs inside the shard retain path before bucket publication, where shard.mu
+// still prevents concurrent Get from popping the buffer.
 func zeroDroppedBuffer(buffer []byte, policy Policy) {
 	if !policy.Admission.ZeroDroppedBuffers {
 		return

@@ -111,7 +111,10 @@ func TestPoolOperationsAfterClose(t *testing.T) {
 	t.Run("default rejects get and put", func(t *testing.T) {
 		t.Parallel()
 
-		pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
+		policy := poolTestSingleShardPolicy()
+		policy.Admission.ZeroDroppedBuffers = true
+
+		pool := MustNew(PoolConfig{Policy: policy})
 		closePoolForTest(t, pool)
 
 		buffer, err := pool.Get(128)
@@ -127,13 +130,21 @@ func TestPoolOperationsAfterClose(t *testing.T) {
 			t.Fatalf("Get() after close error does not match ErrClosed: %v", err)
 		}
 
-		err = pool.Put(make([]byte, 0, 256))
+		lateBuffer := make([]byte, 256)
+		lateBuffer[0] = 1
+		lateBuffer[255] = 2
+
+		err = pool.Put(lateBuffer[:1])
 		if err == nil {
 			t.Fatal("Put() after close returned nil error")
 		}
 
 		if !errors.Is(err, ErrClosed) {
 			t.Fatalf("Put() after close error does not match ErrClosed: %v", err)
+		}
+
+		if lateBuffer[0] != 1 || lateBuffer[255] != 2 {
+			t.Fatal("close reject mode zeroed a buffer that remains caller-owned")
 		}
 
 		snapshot := pool.Snapshot()
@@ -145,6 +156,9 @@ func TestPoolOperationsAfterClose(t *testing.T) {
 		}
 		if snapshot.Counters.Drops != 0 {
 			t.Fatalf("rejected late drops = %d, want 0", snapshot.Counters.Drops)
+		}
+		if snapshot.Counters.DropReasons.Total() != 0 {
+			t.Fatalf("rejected late drop reasons = %d, want 0", snapshot.Counters.DropReasons.Total())
 		}
 	})
 

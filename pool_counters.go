@@ -18,12 +18,15 @@ package bufferpool
 
 import "sync/atomic"
 
-// PoolDropReason identifies why Pool owner-side admission discarded a returned
-// buffer before class/shard retention completed.
+// PoolDropReason identifies why Pool owner-side admission accepted a returned
+// buffer as a no-retain drop before class/shard retention completed.
 //
 // These reasons are pool-owner facts. They cover decisions made outside
 // classState and shard counters, so aggregate snapshots can include returned
-// buffers that never reached lower retained-storage accounting.
+// buffers that never reached lower retained-storage accounting. They are not a
+// complete taxonomy of every Pool drop: class admission, shard credit, and
+// bucket-full drops are counted by lower layers and use PoolDropReasonNone at
+// Pool outcome-application time to avoid double counting.
 type PoolDropReason uint8
 
 const (
@@ -127,8 +130,10 @@ func (c PoolDropReasonCounters) Total() uint64 {
 // outcomes.
 //
 // Puts means "valid public Put calls". It intentionally includes valid buffers
-// later rejected by lifecycle in close-reject mode. PutOutcomes is Retains +
-// Drops at the aggregate Pool level, so Puts may be greater than PutOutcomes.
+// later rejected by lifecycle in close-reject mode. Close reject mode does not
+// accept the buffer as a dropped return, so it does not increment Drops or apply
+// dropped-buffer zeroing. PutOutcomes is Retains + Drops at the aggregate Pool
+// level, so Puts may be greater than PutOutcomes.
 type poolOwnerCounters struct {
 	puts          atomic.Uint64
 	returnedBytes atomic.Uint64

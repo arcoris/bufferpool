@@ -353,8 +353,33 @@ func poolBenchmarkBatchSize(capacity int) int {
 	return poolBenchmarkDefaultSeedBatch
 }
 
-// poolBenchmarkReportOutcomeRatios reports actual ratios observed by a Pool
-// benchmark after the measured loop.
+// poolBenchmarkReportGetRatios reports acquisition ratios for Get-only
+// benchmarks.
+//
+// It intentionally omits retain/drop ratios because those may describe seed
+// setup rather than the measured Get loop.
+func poolBenchmarkReportGetRatios(b *testing.B, pool *Pool) {
+	b.Helper()
+	b.StopTimer()
+
+	metrics := pool.Metrics()
+	b.ReportMetric(metrics.HitRatio.Float64(), "actual_hit_ratio")
+	b.ReportMetric(metrics.MissRatio.Float64(), "actual_miss_ratio")
+}
+
+// poolBenchmarkReportReturnRatios reports return outcome ratios for Put or
+// return-rate benchmarks.
+func poolBenchmarkReportReturnRatios(b *testing.B, pool *Pool) {
+	b.Helper()
+	b.StopTimer()
+
+	metrics := pool.Metrics()
+	b.ReportMetric(metrics.RetainRatio.Float64(), "actual_retain_ratio")
+	b.ReportMetric(metrics.DropRatio.Float64(), "actual_drop_ratio")
+}
+
+// poolBenchmarkReportOutcomeRatios reports acquisition and return ratios for
+// benchmarks that actually measure both sides of the data-plane flow.
 func poolBenchmarkReportOutcomeRatios(b *testing.B, pool *Pool) {
 	b.Helper()
 	b.StopTimer()

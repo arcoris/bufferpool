@@ -197,7 +197,9 @@ func TestStaticPoolRuntimeIntegration(t *testing.T) {
 //
 // The policy is intentionally larger than the small unit-test policy: it has
 // multiple classes and two shards per class so routing, budget publication,
-// shard selection, trim, and clear behavior can be exercised together.
+// shard selection, trim, and clear behavior can be exercised together. Fallback
+// shard probing stays disabled because current standalone Pool probes only the
+// selected shard.
 func poolTestIntegrationPolicy() Policy {
 	policy := poolTestSmallSingleShardPolicy()
 	policy.Retention.SoftRetainedBytes = 6 * KiB
@@ -215,8 +217,8 @@ func poolTestIntegrationPolicy() Policy {
 	}
 	policy.Shards.ShardsPerClass = 2
 	policy.Shards.BucketSlotsPerShard = 2
-	policy.Shards.AcquisitionFallbackShards = 1
-	policy.Shards.ReturnFallbackShards = 1
+	policy.Shards.AcquisitionFallbackShards = 0
+	policy.Shards.ReturnFallbackShards = 0
 
 	return policy
 }

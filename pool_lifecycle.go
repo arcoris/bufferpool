@@ -137,9 +137,12 @@ func (p *Pool) Close() error {
 // executing.
 //
 // Admitted hot paths use explicit endOperation calls instead of defer to keep
-// overhead low. Internal invariant panics are treated as fatal runtime
-// corruption. If caller code recovers from such a panic, Pool does not guarantee
-// lifecycle drain correctness for that corrupted operation.
+// overhead low. This is a deliberate data-plane trade-off: internal invariant
+// panics are treated as fatal runtime corruption, not recoverable application
+// errors. If caller code recovers from an internal Pool panic and keeps using
+// the same Pool, lifecycle drain correctness is no longer guaranteed for the
+// corrupted operation because the active-operation counter may not have been
+// decremented.
 func (p *Pool) beginAcquireOperation() error {
 	for {
 		if !p.lifecycle.AllowsWork() {

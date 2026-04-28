@@ -138,6 +138,42 @@ func TestPoolApplyReturnOutcomeZeroesDroppedBuffers(t *testing.T) {
 	}
 }
 
+// TestPoolApplyReturnOutcomeRejectsMissingErrorKind verifies that the outcome
+// application stage fails closed when an internal caller asks for an error
+// action without selecting a stable public error class.
+func TestPoolApplyReturnOutcomeRejectsMissingErrorKind(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSingleShardPolicy()
+	policy.Admission.ZeroDroppedBuffers = true
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	defer closePoolForTest(t, pool)
+
+	buffer := []byte{1, 2, 3}
+	input := poolReturnInput{Buffer: buffer[:1], Capacity: uint64(cap(buffer))}
+	outcome := poolReturnOutcomeDrop(AdmissionActionError, nil, "missing kind", PoolDropReasonInvalidPolicy, input.Capacity)
+
+	err := pool.applyReturnOutcome(policy, input, outcome)
+	if err == nil {
+		t.Fatal("applyReturnOutcome() returned nil")
+	}
+	if !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("applyReturnOutcome() error does not match ErrInvalidPolicy: %v", err)
+	}
+
+	for index, value := range buffer {
+		if value != 0 {
+			t.Fatalf("buffer[%d] = %d, want zeroed dropped buffer", index, value)
+		}
+	}
+
+	snapshot := pool.Snapshot()
+	if snapshot.Counters.DropReasons.InvalidPolicy != 1 {
+		t.Fatalf("invalid-policy drop reasons = %d, want 1", snapshot.Counters.DropReasons.InvalidPolicy)
+	}
+}
+
 // TestPoolAdmissionActionKnown verifies the narrow action set accepted by the
 // return-outcome application stage.
 func TestPoolAdmissionActionKnown(t *testing.T) {

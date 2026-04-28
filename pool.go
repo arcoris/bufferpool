@@ -162,6 +162,9 @@ func New(config PoolConfig) (*Pool, error) {
 	if err := normalized.Validate(); err != nil {
 		return nil, err
 	}
+	if err := validatePoolSupportedPolicy(normalized.Policy); err != nil {
+		return nil, wrapError(ErrInvalidOptions, err, errPoolConfigInvalidPolicy)
+	}
 
 	normalized.Policy = clonePoolPolicy(normalized.Policy)
 
