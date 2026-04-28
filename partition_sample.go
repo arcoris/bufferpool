@@ -1,0 +1,162 @@
+/*
+  Copyright 2026 The ARCORIS Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+*/
+
+package bufferpool
+
+// PoolPartitionSample is an aggregate partition sample for explicit controller
+// ticks.
+//
+// Generation is the partition state/event generation. PolicyGeneration is the
+// currently published partition runtime-policy generation. Keeping them separate
+// prevents controller reports from mixing partition events with policy
+// publication versions.
+type PoolPartitionSample struct {
+	// Generation is the partition state/event generation.
+	Generation Generation
+
+	// PolicyGeneration is the published partition runtime-policy generation.
+	PolicyGeneration Generation
+
+	// Lifecycle is the observed partition lifecycle state.
+	Lifecycle LifecycleState
+
+	// PoolCount is the number of Pools owned by the partition.
+	PoolCount int
+
+	// Pools contains per-Pool counter samples.
+	Pools []PoolPartitionPoolSample
+
+	// PoolCounters aggregates retained-storage counters across owned Pools.
+	PoolCounters PoolCountersSnapshot
+
+	// LeaseLifecycle is the observed partition LeaseRegistry lifecycle state.
+	LeaseLifecycle LifecycleState
+
+	// LeaseGeneration is the observed partition LeaseRegistry generation.
+	LeaseGeneration Generation
+
+	// LeaseCounters contains ownership-layer counters from the partition
+	// LeaseRegistry.
+	LeaseCounters LeaseCountersSnapshot
+
+	// ActiveLeases is the current active lease count.
+	ActiveLeases int
+
+	// CurrentRetainedBytes is retained storage currently owned by Pools.
+	CurrentRetainedBytes uint64
+
+	// CurrentActiveBytes is checked-out capacity currently owned by leases.
+	CurrentActiveBytes uint64
+
+	// CurrentOwnedBytes is retained plus active bytes, with saturating addition.
+	CurrentOwnedBytes uint64
+}
+
+// PoolPartitionPoolSample is one Pool's aggregate sample inside a partition.
+type PoolPartitionPoolSample struct {
+	// Name is the partition-local Pool name.
+	Name string
+
+	// Generation is the Pool runtime-policy generation.
+	Generation Generation
+
+	// Lifecycle is the Pool lifecycle state.
+	Lifecycle LifecycleState
+
+	// ClassCount is the number of configured Pool classes.
+	ClassCount int
+
+	// ShardCount is the aggregate shard count across Pool classes.
+	ShardCount int
+
+	// Counters is the Pool's aggregate counter sample.
+	Counters PoolCountersSnapshot
+}
+
+// Sample returns an observational partition sample.
+func (p *PoolPartition) Sample() PoolPartitionSample {
+	p.mustBeInitialized()
+	var sample PoolPartitionSample
+	p.sample(&sample)
+	return sample
+}
+
+// sample writes a detailed controller-facing sample into dst.
+func (p *PoolPartition) sample(dst *PoolPartitionSample) {
+	p.sampleWithRuntimeAndGeneration(dst, p.currentRuntimeSnapshot(), p.generation.Load(), true)
+}
+
+// sampleSummary writes aggregate counters without per-Pool sample records.
+func (p *PoolPartition) sampleSummary(dst *PoolPartitionSample) {
+	p.sampleWithRuntimeAndGeneration(dst, p.currentRuntimeSnapshot(), p.generation.Load(), false)
+}
+
+// sampleWithRuntimeAndGeneration samples Pools and leases against a fixed
+// partition generation and runtime-policy view.
+func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample, runtime *partitionRuntimeSnapshot, generation Generation, includePools bool) {
+	if dst == nil {
+		return
+	}
+	pools := dst.Pools[:0]
+	if includePools && cap(pools) < p.registry.len() {
+		pools = make([]PoolPartitionPoolSample, 0, p.registry.len())
+	}
+	if !includePools {
+		pools = nil
+	}
+	*dst = PoolPartitionSample{
+		Generation:       generation,
+		PolicyGeneration: runtime.Generation,
+		Lifecycle:        p.lifecycle.Load(),
+		PoolCount:        p.registry.len(),
+		Pools:            pools,
+	}
+	for _, entry := range p.registry.entries {
+		var poolSample poolCounterSample
+		entry.pool.sampleCounters(&poolSample)
+		if includePools {
+			dst.Pools = append(dst.Pools, PoolPartitionPoolSample{
+				Name:       entry.name,
+				Generation: poolSample.Generation,
+				Lifecycle:  poolSample.Lifecycle,
+				ClassCount: poolSample.ClassCount,
+				ShardCount: poolSample.ShardCount,
+				Counters:   poolSample.Counters,
+			})
+		}
+		poolCountersAdd(&dst.PoolCounters, poolSample.Counters)
+	}
+	var leaseSample leaseCounterSample
+	p.leases.sampleCounters(&leaseSample)
+	dst.LeaseLifecycle = leaseSample.Lifecycle
+	dst.LeaseGeneration = leaseSample.Generation
+	dst.LeaseCounters = leaseSample.Counters
+	dst.ActiveLeases = leaseSample.ActiveCount
+	dst.CurrentRetainedBytes = dst.PoolCounters.CurrentRetainedBytes
+	dst.CurrentActiveBytes = dst.LeaseCounters.ActiveBytes
+	dst.CurrentOwnedBytes = poolSaturatingAdd(dst.CurrentRetainedBytes, dst.CurrentActiveBytes)
+}
+
+// partitionOwnedBytesFromSample returns retained plus active bytes safely.
+func partitionOwnedBytesFromSample(sample PoolPartitionSample) uint64 {
+	// Hand-built tests may set only CurrentOwnedBytes. Real samples always carry
+	// retained and active gauges, and those are the authoritative inputs.
+	ownedBytes := poolSaturatingAdd(sample.CurrentRetainedBytes, sample.CurrentActiveBytes)
+	if ownedBytes == 0 && sample.CurrentOwnedBytes != 0 {
+		return sample.CurrentOwnedBytes
+	}
+	return ownedBytes
+}

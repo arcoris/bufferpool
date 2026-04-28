@@ -86,11 +86,28 @@ func (p *Pool) publishRuntimeSnapshot(snapshot *poolRuntimeSnapshot) {
 		panic(errPoolRuntimeSnapshotNil)
 	}
 
-	if !poolRuntimePolicyCompatible(p.constructionPolicy, snapshot.Policy) {
+	if err := p.validateRuntimePolicyCompatible(snapshot.Policy); err != nil {
 		panic(errPoolRuntimeSnapshotIncompatible)
 	}
 
 	p.runtimeSnapshot.Store(newPoolRuntimeSnapshot(snapshot.Generation, snapshot.Policy))
+}
+
+// validateRuntimePolicyCompatible validates that policy can be published into
+// this already-built Pool without rebuilding class, shard, selector, or bucket
+// topology.
+//
+// Controller-facing publishers use this error-returning helper before calling
+// publishRuntimeSnapshot so invalid controller output returns an error instead
+// of surfacing as a Pool invariant panic.
+func (p *Pool) validateRuntimePolicyCompatible(policy Policy) error {
+	p.mustBeInitialized()
+
+	if !poolRuntimePolicyCompatible(p.constructionPolicy, policy) {
+		return newError(ErrInvalidPolicy, errPoolRuntimeSnapshotIncompatible)
+	}
+
+	return nil
 }
 
 // currentRuntimeSnapshot returns the currently published runtime view.
