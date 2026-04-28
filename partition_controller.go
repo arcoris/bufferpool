@@ -53,6 +53,12 @@ type PartitionControllerReport struct {
 // snapshots and does not execute physical trim. Controller.Enabled controls
 // future automatic scheduling; manual Tick remains available when the partition
 // is active.
+//
+// Tick returns a detailed diagnostic/planning report and may allocate per-Pool
+// sample/report storage. The current controller skeleton scans every owned Pool;
+// a future automatic controller should use reusable scratch space and a bounded
+// full-scan or active-registry strategy instead of treating this API as a mature
+// adaptive loop.
 func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 	p.mustBeInitialized()
 	if !p.lifecycle.AllowsWork() {

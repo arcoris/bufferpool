@@ -18,17 +18,22 @@ package bufferpool
 
 // PartitionPressurePolicy defines partition-local owned-memory pressure
 // thresholds.
+//
+// A zero threshold is disabled for that level. Configured thresholds are
+// evaluated critical, then high, then medium; omitted levels simply do not
+// participate. For example, omitting MediumOwnedBytes lets pressure jump from
+// normal to high when HighOwnedBytes is configured.
 type PartitionPressurePolicy struct {
 	// Enabled controls whether partition pressure is interpreted.
 	Enabled bool
 
-	// MediumOwnedBytes is the owned-memory threshold for medium pressure.
+	// MediumOwnedBytes is the optional owned-memory threshold for medium pressure.
 	MediumOwnedBytes Size
 
-	// HighOwnedBytes is the owned-memory threshold for high pressure.
+	// HighOwnedBytes is the optional owned-memory threshold for high pressure.
 	HighOwnedBytes Size
 
-	// CriticalOwnedBytes is the owned-memory threshold for critical pressure.
+	// CriticalOwnedBytes is the optional owned-memory threshold for critical pressure.
 	CriticalOwnedBytes Size
 }
 
@@ -58,7 +63,8 @@ func (p PartitionPressurePolicy) IsZero() bool {
 	return !p.Enabled && p.MediumOwnedBytes.IsZero() && p.HighOwnedBytes.IsZero() && p.CriticalOwnedBytes.IsZero()
 }
 
-// Validate validates pressure thresholds.
+// Validate validates configured pressure thresholds without requiring a full
+// medium/high/critical chain.
 func (p PartitionPressurePolicy) Validate() error {
 	if !p.Enabled {
 		return nil

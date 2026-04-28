@@ -125,7 +125,8 @@ func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 //
 // PoolPartition does not yet have a stable physical Pool trim API to invoke.
 // The method is retained for controller wiring tests, but it does not visit
-// Pools or remove retained buffers.
+// Pools or remove retained buffers. ExecuteTrim is not a physical trim
+// operation in the current implementation.
 func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 	p.mustBeInitialized()
 	if !p.Policy().Trim.Enabled {

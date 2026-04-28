@@ -66,9 +66,40 @@ func BenchmarkPoolPartitionAcquireReleaseStrict(b *testing.B) {
 	}
 }
 
-// BenchmarkPoolPartitionSample measures the reusable internal sample path used
-// by explicit controller ticks and future PoolPartition control loops.
+// BenchmarkPoolPartitionSample measures public value-returning samples. Public
+// Sample may allocate per-Pool sample storage; SampleInto is the reusable path
+// for callers that need allocation control.
 func BenchmarkPoolPartitionSample(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		pools  int
+		active int
+	}{
+		{name: "pools_1_active_0", pools: 1, active: 0},
+		{name: "pools_16_active_0", pools: 16, active: 0},
+		{name: "pools_16_active_256", pools: 16, active: 256},
+	} {
+		tc := tc
+		b.Run(tc.name, func(b *testing.B) {
+			partition := partitionBenchmarkNew(b, tc.pools)
+			leases := partitionBenchmarkAcquireActive(b, partition, tc.active)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				partitionBenchmarkSampleSink = partition.Sample()
+			}
+			b.StopTimer()
+
+			partitionBenchmarkReleaseAll(b, partition, leases)
+		})
+	}
+}
+
+// BenchmarkPoolPartitionSampleInto measures reusable partition sampling. The
+// caller preallocates per-Pool storage so lease sampling and Pool scanning do
+// not allocate.
+func BenchmarkPoolPartitionSampleInto(b *testing.B) {
 	for _, tc := range []struct {
 		name   string
 		pools  int
@@ -87,7 +118,7 @@ func BenchmarkPoolPartitionSample(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				partition.sample(&sample)
+				partition.SampleInto(&sample)
 			}
 			b.StopTimer()
 
@@ -98,7 +129,8 @@ func BenchmarkPoolPartitionSample(b *testing.B) {
 }
 
 // BenchmarkPoolPartitionTick measures one explicit non-background controller
-// observation/planning pass.
+// observation/planning pass. Tick returns a detailed report and may allocate
+// per-Pool sample/report storage.
 func BenchmarkPoolPartitionTick(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 16)
 

@@ -96,6 +96,9 @@ func TestPartitionPressurePolicyValidateAndSnapshot(t *testing.T) {
 	if err := (PartitionPressurePolicy{Enabled: true, MediumOwnedBytes: 2 * MiB, HighOwnedBytes: MiB}).Validate(); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("inverted medium/high pressure thresholds error = %v, want ErrInvalidPolicy", err)
 	}
+	if err := (PartitionPressurePolicy{Enabled: true, MediumOwnedBytes: 2 * MiB, CriticalOwnedBytes: MiB}).Validate(); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("inverted medium/critical pressure thresholds error = %v, want ErrInvalidPolicy", err)
+	}
 	if err := (PartitionPressurePolicy{Enabled: true, HighOwnedBytes: 2 * MiB, CriticalOwnedBytes: MiB}).Validate(); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("inverted pressure thresholds error = %v, want ErrInvalidPolicy", err)
 	}
@@ -116,6 +119,36 @@ func TestPartitionPressurePolicyValidateAndSnapshot(t *testing.T) {
 	}
 	if got := newPartitionPressureSnapshot(policy, PoolPartitionSample{CurrentOwnedBytes: 200}).Level; got != PressureLevelCritical {
 		t.Fatalf("pressure level at 200 = %s, want critical", got)
+	}
+}
+
+// TestPartitionPressurePolicyPartialThresholds verifies optional pressure levels.
+func TestPartitionPressurePolicyPartialThresholds(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy PartitionPressurePolicy
+		owned  uint64
+		want   PressureLevel
+	}{
+		{name: "only medium below", policy: PartitionPressurePolicy{Enabled: true, MediumOwnedBytes: 50}, owned: 49, want: PressureLevelNormal},
+		{name: "only medium reached", policy: PartitionPressurePolicy{Enabled: true, MediumOwnedBytes: 50}, owned: 50, want: PressureLevelMedium},
+		{name: "only high below", policy: PartitionPressurePolicy{Enabled: true, HighOwnedBytes: 100}, owned: 99, want: PressureLevelNormal},
+		{name: "only high reached", policy: PartitionPressurePolicy{Enabled: true, HighOwnedBytes: 100}, owned: 100, want: PressureLevelHigh},
+		{name: "only critical below", policy: PartitionPressurePolicy{Enabled: true, CriticalOwnedBytes: 200}, owned: 199, want: PressureLevelNormal},
+		{name: "only critical reached", policy: PartitionPressurePolicy{Enabled: true, CriticalOwnedBytes: 200}, owned: 200, want: PressureLevelCritical},
+		{name: "medium and critical middle", policy: PartitionPressurePolicy{Enabled: true, MediumOwnedBytes: 50, CriticalOwnedBytes: 200}, owned: 100, want: PressureLevelMedium},
+		{name: "medium and critical critical", policy: PartitionPressurePolicy{Enabled: true, MediumOwnedBytes: 50, CriticalOwnedBytes: 200}, owned: 200, want: PressureLevelCritical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requirePartitionNoError(t, tt.policy.Validate())
+
+			got := newPartitionPressureSnapshot(tt.policy, PoolPartitionSample{CurrentOwnedBytes: tt.owned}).Level
+			if got != tt.want {
+				t.Fatalf("pressure level = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -150,6 +183,11 @@ func TestPartitionTrimPolicyValidateNormalizeAndPlan(t *testing.T) {
 	if noPressure.Enabled || noPressure.Reason != "no_pressure" {
 		t.Fatalf("normal-pressure trim plan = %+v, want disabled no_pressure", noPressure)
 	}
+
+	mediumPressure := newPartitionTrimPlan(PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 2, MaxBytesPerCycle: 8 * KiB, TrimOnPressure: true}, PartitionPressureSnapshot{Enabled: true, Level: PressureLevelMedium}, PoolPartitionSample{PoolCount: 3})
+	if !mediumPressure.Enabled || mediumPressure.Reason != "pressure" {
+		t.Fatalf("medium-pressure trim plan = %+v, want pressure", mediumPressure)
+	}
 }
 
 // TestPoolPartitionPlanAndExecuteTrim verifies planning-only trim execution.
@@ -160,6 +198,14 @@ func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	requirePartitionNoError(t, err)
 	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
 
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	retainedBefore := partition.Metrics().CurrentRetainedBytes
+	if retainedBefore == 0 {
+		t.Fatalf("test requires retained bytes before ExecuteTrim")
+	}
+
 	plan := partition.PlanTrim()
 	if !plan.Enabled || plan.Reason != "policy" {
 		t.Fatalf("PlanTrim() = %+v, want enabled policy plan", plan)
@@ -169,7 +215,17 @@ func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	if !result.Attempted {
 		t.Fatalf("ExecuteTrim().Attempted = false, want true")
 	}
-	if result.Executed || result.Reason != "planning_only" || result.TrimmedBuffers != 0 || result.TrimmedBytes != 0 {
+	if result.Executed || result.Reason != "planning_only" || result.VisitedPools != 0 || result.TrimmedBuffers != 0 || result.TrimmedBytes != 0 {
 		t.Fatalf("ExecuteTrim() = %+v, want current no-op result", result)
+	}
+	retainedAfter := partition.Metrics().CurrentRetainedBytes
+	if retainedAfter != retainedBefore {
+		t.Fatalf("ExecuteTrim changed retained bytes from %d to %d", retainedBefore, retainedAfter)
+	}
+
+	disabled := testNewPoolPartition(t, "secondary")
+	disabledResult := disabled.ExecuteTrim()
+	if disabledResult.Attempted || disabledResult.Executed || disabledResult.Reason != "trim_disabled" {
+		t.Fatalf("disabled ExecuteTrim() = %+v, want trim_disabled without execution", disabledResult)
 	}
 }

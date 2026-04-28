@@ -78,6 +78,10 @@ func TestPoolPartitionCloseAllowsActiveLeaseRelease(t *testing.T) {
 	if metrics.PoolReturnSuccesses != 0 {
 		t.Fatalf("PoolReturnSuccesses = %d, want 0 after closed-pool handoff", metrics.PoolReturnSuccesses)
 	}
+	sample := partition.Sample()
+	if sample.LeaseCounters.PoolReturnClosedFailures != 1 {
+		t.Fatalf("PoolReturnClosedFailures = %d, want 1 after hard close", sample.LeaseCounters.PoolReturnClosedFailures)
+	}
 
 	err = partition.Release(lease, buffer)
 	if !errors.Is(err, ErrDoubleRelease) {
@@ -91,4 +95,5 @@ func TestPoolPartitionNilReceiverPanics(t *testing.T) {
 	requirePartitionPanic(t, func() { _ = partition.Name() })
 	requirePartitionPanic(t, func() { _ = partition.Metrics() })
 	requirePartitionPanic(t, func() { _ = partition.Snapshot() })
+	requirePartitionPanic(t, func() { partition.SampleInto(nil) })
 }

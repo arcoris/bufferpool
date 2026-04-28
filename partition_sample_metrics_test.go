@@ -55,8 +55,60 @@ func TestPoolPartitionSampleIncludesPoolAndLeaseState(t *testing.T) {
 	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
 }
 
-// TestPoolPartitionInternalSampleAvoidsLeaseSnapshotAllocation verifies cheap lease sampling.
-func TestPoolPartitionInternalSampleAvoidsLeaseSnapshotAllocation(t *testing.T) {
+// TestPoolPartitionSampleIntoNilDestinationIsNoOp verifies nil destination behavior.
+func TestPoolPartitionSampleIntoNilDestinationIsNoOp(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+
+	partition.SampleInto(nil)
+}
+
+// TestPoolPartitionSampleIntoReusesPoolStorage verifies reusable sample storage.
+func TestPoolPartitionSampleIntoReusesPoolStorage(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary", "secondary")
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	defer func() { requirePartitionNoError(t, partition.Release(lease, lease.Buffer())) }()
+
+	dst := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 8)}
+	partition.SampleInto(&dst)
+
+	if len(dst.Pools) != 2 {
+		t.Fatalf("len(Pools) = %d, want 2", len(dst.Pools))
+	}
+	if cap(dst.Pools) != 8 {
+		t.Fatalf("cap(Pools) = %d, want reused capacity 8", cap(dst.Pools))
+	}
+	if dst.Generation.IsZero() {
+		t.Fatalf("Generation is zero")
+	}
+	if dst.PolicyGeneration != InitialGeneration {
+		t.Fatalf("PolicyGeneration = %s, want %s", dst.PolicyGeneration, InitialGeneration)
+	}
+	if dst.ActiveLeases != 1 {
+		t.Fatalf("ActiveLeases = %d, want 1", dst.ActiveLeases)
+	}
+	if dst.CurrentActiveBytes != lease.AcquiredCapacity() {
+		t.Fatalf("CurrentActiveBytes = %d, want %d", dst.CurrentActiveBytes, lease.AcquiredCapacity())
+	}
+	if dst.CurrentOwnedBytes != poolSaturatingAdd(dst.CurrentRetainedBytes, dst.CurrentActiveBytes) {
+		t.Fatalf("CurrentOwnedBytes = %d, want retained + active", dst.CurrentOwnedBytes)
+	}
+
+	dst.Pools = append(dst.Pools, PoolPartitionPoolSample{Name: "stale"})
+	partition.SampleInto(&dst)
+	if len(dst.Pools) != 2 {
+		t.Fatalf("reused len(Pools) = %d, want 2 without stale entries", len(dst.Pools))
+	}
+	for _, pool := range dst.Pools {
+		if pool.Name == "stale" {
+			t.Fatalf("SampleInto retained stale pool entry")
+		}
+	}
+}
+
+// TestPoolPartitionSampleIntoAvoidsLeaseSnapshotAllocation verifies cheap lease sampling.
+func TestPoolPartitionSampleIntoAvoidsLeaseSnapshotAllocation(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary", "secondary")
 
 	leases := make([]Lease, 16)
@@ -73,10 +125,10 @@ func TestPoolPartitionInternalSampleAvoidsLeaseSnapshotAllocation(t *testing.T) 
 
 	dst := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, len(partition.PoolNames()))}
 	allocs := testing.AllocsPerRun(100, func() {
-		partition.sample(&dst)
+		partition.SampleInto(&dst)
 	})
 	if allocs != 0 {
-		t.Fatalf("partition.sample allocations = %v, want 0", allocs)
+		t.Fatalf("SampleInto allocations = %v, want 0", allocs)
 	}
 	if dst.ActiveLeases != len(leases) {
 		t.Fatalf("ActiveLeases = %d, want %d", dst.ActiveLeases, len(leases))

@@ -40,6 +40,12 @@ func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T)
 	if report.Sample.Generation != report.Generation {
 		t.Fatalf("sample/report generation = %s/%s", report.Sample.Generation, report.Generation)
 	}
+	if report.Metrics.Generation != report.Generation {
+		t.Fatalf("metrics/report generation = %s/%s", report.Metrics.Generation, report.Generation)
+	}
+	if report.Sample.PolicyGeneration != report.PolicyGeneration || report.Metrics.PolicyGeneration != report.PolicyGeneration {
+		t.Fatalf("policy generation mismatch: report=%s sample=%s metrics=%s", report.PolicyGeneration, report.Sample.PolicyGeneration, report.Metrics.PolicyGeneration)
+	}
 	if report.Lifecycle != LifecycleActive {
 		t.Fatalf("Tick lifecycle = %s, want active", report.Lifecycle)
 	}
@@ -74,7 +80,7 @@ func TestPoolPartitionManualTickAllowedWhenControllerDisabled(t *testing.T) {
 
 	report, err := partition.Tick()
 	requirePartitionNoError(t, err)
-	if report.Generation.IsZero() || report.Sample.Generation != report.Generation {
+	if report.Generation.IsZero() || report.Sample.Generation != report.Generation || report.Metrics.Generation != report.Generation {
 		t.Fatalf("manual Tick report has incoherent generation: %+v", report)
 	}
 }

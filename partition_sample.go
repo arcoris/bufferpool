@@ -87,11 +87,29 @@ type PoolPartitionPoolSample struct {
 }
 
 // Sample returns an observational partition sample.
+//
+// Sample returns a value and may allocate per-Pool sample storage. Frequent
+// controller-style callers should use SampleInto with a preallocated Pools
+// slice to reuse storage.
 func (p *PoolPartition) Sample() PoolPartitionSample {
-	p.mustBeInitialized()
 	var sample PoolPartitionSample
-	p.sample(&sample)
+	p.SampleInto(&sample)
 	return sample
+}
+
+// SampleInto writes an observational partition sample into dst.
+//
+// PoolPartition owns the sampling boundary above Pool and LeaseRegistry:
+// retained-storage counters come from Pool samples, while active ownership
+// counters come from the partition-owned LeaseRegistry. dst.Pools capacity is
+// reused, so callers can avoid per-call allocation by preallocating capacity for
+// PoolCount entries. A nil dst is a no-op after receiver validation.
+func (p *PoolPartition) SampleInto(dst *PoolPartitionSample) {
+	p.mustBeInitialized()
+	if dst == nil {
+		return
+	}
+	p.sample(dst)
 }
 
 // sample writes a detailed controller-facing sample into dst.
