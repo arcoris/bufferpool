@@ -21,9 +21,9 @@ import (
 	"testing"
 )
 
-// TestPoolHandleAdmissionAction verifies action-to-error mapping for
-// non-buffer-specific admission conditions.
-func TestPoolHandleAdmissionAction(t *testing.T) {
+// TestPoolApplyReturnOutcome verifies action-to-error mapping for already
+// decided no-retain outcomes.
+func TestPoolApplyReturnOutcome(t *testing.T) {
 	t.Parallel()
 
 	pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
@@ -67,29 +67,36 @@ func TestPoolHandleAdmissionAction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := pool.handleAdmissionAction(tt.action, ErrInvalidBuffer, "test admission")
+			buffer := []byte{1, 2, 3}
+			input := poolReturnInput{
+				Buffer:   buffer[:1],
+				Capacity: uint64(cap(buffer)),
+			}
+			outcome := poolReturnOutcomeDrop(tt.action, ErrInvalidBuffer, "test admission", PoolDropReasonNone, input.Capacity)
+
+			err := pool.applyReturnOutcome(pool.Policy(), input, outcome)
 			if tt.wantErr == nil {
 				if err != nil {
-					t.Fatalf("handleAdmissionAction() returned error: %v", err)
+					t.Fatalf("applyReturnOutcome() returned error: %v", err)
 				}
 
 				return
 			}
 
 			if err == nil {
-				t.Fatal("handleAdmissionAction() returned nil error")
+				t.Fatal("applyReturnOutcome() returned nil error")
 			}
 
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("handleAdmissionAction() error = %v, want %v", err, tt.wantErr)
+				t.Fatalf("applyReturnOutcome() error = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// TestPoolHandleBufferAdmissionActionZeroesDroppedBuffers verifies that
-// ZeroDroppedBuffers is applied to every no-retain outcome.
-func TestPoolHandleBufferAdmissionActionZeroesDroppedBuffers(t *testing.T) {
+// TestPoolApplyReturnOutcomeZeroesDroppedBuffers verifies that
+// ZeroDroppedBuffers is applied to every no-retain return outcome.
+func TestPoolApplyReturnOutcomeZeroesDroppedBuffers(t *testing.T) {
 	t.Parallel()
 
 	policy := poolTestSingleShardPolicy()
@@ -116,15 +123,10 @@ func TestPoolHandleBufferAdmissionActionZeroesDroppedBuffers(t *testing.T) {
 
 			buffer := []byte{1, 2, 3}
 			buffer = buffer[:1]
+			input := poolReturnInput{Buffer: buffer, Capacity: uint64(cap(buffer))}
+			outcome := poolReturnOutcomeDrop(tt.action, ErrInvalidBuffer, "test admission", PoolDropReasonOversized, input.Capacity)
 
-			_ = pool.handleBufferAdmissionAction(
-				pool.Policy(),
-				tt.action,
-				ErrInvalidBuffer,
-				"test admission",
-				buffer,
-				PoolDropReasonOversized,
-			)
+			_ = pool.applyReturnOutcome(pool.Policy(), input, outcome)
 
 			full := buffer[:cap(buffer)]
 			for index, value := range full {
@@ -133,6 +135,29 @@ func TestPoolHandleBufferAdmissionActionZeroesDroppedBuffers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPoolAdmissionActionKnown verifies the narrow action set accepted by the
+// return-outcome application stage.
+func TestPoolAdmissionActionKnown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		action AdmissionAction
+		want   bool
+	}{
+		{action: AdmissionActionDrop, want: true},
+		{action: AdmissionActionIgnore, want: true},
+		{action: AdmissionActionError, want: true},
+		{action: AdmissionActionUnset, want: false},
+		{action: AdmissionAction(255), want: false},
+	}
+
+	for _, tt := range tests {
+		if got := poolAdmissionActionKnown(tt.action); got != tt.want {
+			t.Fatalf("poolAdmissionActionKnown(%s) = %v, want %v", tt.action, got, tt.want)
+		}
 	}
 }
 

@@ -125,6 +125,10 @@ func (c PoolDropReasonCounters) Total() uint64 {
 // that happen before or outside classState so aggregate snapshots do not miss
 // disabled-return, oversized, unsupported, closed-drop, or invalid-policy
 // outcomes.
+//
+// Puts means "valid public Put calls". It intentionally includes valid buffers
+// later rejected by lifecycle in close-reject mode. PutOutcomes is Retains +
+// Drops at the aggregate Pool level, so Puts may be greater than PutOutcomes.
 type poolOwnerCounters struct {
 	puts          atomic.Uint64
 	returnedBytes atomic.Uint64

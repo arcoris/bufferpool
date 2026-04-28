@@ -141,7 +141,7 @@ func poolBenchmarkObservabilityPool(b *testing.B, tc poolBenchmarkCase) *Pool {
 	policy := poolBenchmarkPolicyForCase(tc)
 	pool := poolBenchmarkNewPool(b, policy)
 	if tc.retainedSeed > 0 {
-		poolBenchmarkSeedRetained(b, pool, int(tc.classes[0].Bytes()), tc.retainedSeed)
+		poolBenchmarkSeedRetainedPublic(b, pool, int(tc.classes[0].Bytes()), tc.retainedSeed)
 	}
 
 	return pool

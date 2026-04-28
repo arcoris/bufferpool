@@ -28,22 +28,20 @@ import (
 // the cost of Pool as a bounded observable runtime component, not as a raw
 // allocator or sync.Pool replacement.
 
-// BenchmarkPoolGetHit measures Get when retained storage has been seeded.
+// BenchmarkPoolGetHit measures Get when retained storage is guaranteed to hit.
 //
 // Setup work is outside the timer. Each measured batch performs only Get calls;
 // retained buffers are re-seeded between batches to keep the benchmark on the
-// hit path.
+// hit path. The benchmark validates miss counters outside the timed section so
+// a future selector/setup change cannot silently turn this into a mixed path.
 func BenchmarkPoolGetHit(b *testing.B) {
-	for _, tc := range poolBenchmarkRoutingCases() {
+	for _, tc := range poolBenchmarkHitCases() {
 		tc := tc
 
 		b.Run(tc.name, func(b *testing.B) {
 			pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(tc))
 			batchSize := poolBenchmarkBatchSize(tc.capacity)
-			shardsToSeed := tc.shards
-			if tc.selector == ShardSelectionModeSingle {
-				shardsToSeed = 1
-			}
+			var previousMisses uint64
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -56,7 +54,62 @@ func BenchmarkPoolGetHit(b *testing.B) {
 
 				b.StopTimer()
 				poolBenchmarkClearRetained(pool)
-				poolBenchmarkSeedRetained(b, pool, tc.capacity, batch*shardsToSeed)
+				poolBenchmarkSeedRetainedInternal(b, pool, tc.capacity, batch)
+				b.StartTimer()
+
+				for index := 0; index < batch; index++ {
+					buffer, err := pool.Get(tc.size)
+					if err != nil {
+						b.Fatalf("Get() returned error: %v", err)
+					}
+					if len(buffer) != tc.size || cap(buffer) < tc.capacity {
+						b.Fatalf("Get() len/cap = %d/%d, want %d/>=%d", len(buffer), cap(buffer), tc.size, tc.capacity)
+					}
+
+					poolBenchmarkBufferSink = buffer
+				}
+
+				completed += batch
+
+				b.StopTimer()
+				var sample poolCounterSample
+				pool.sampleCounters(&sample)
+				if sample.Counters.Misses != previousMisses {
+					b.Fatalf("GetHit observed %d new misses", sample.Counters.Misses-previousMisses)
+				}
+				previousMisses = sample.Counters.Misses
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+// BenchmarkPoolGetSeededMixed measures Get with seeded retained storage and
+// non-single selectors.
+//
+// These cases are intentionally not named as guaranteed hits. Selector state,
+// shard distribution, and the absence of measured Put calls can produce a real
+// mix of hits and allocation misses. Reported metrics show the actual path mix.
+func BenchmarkPoolGetSeededMixed(b *testing.B) {
+	for _, tc := range poolBenchmarkSeededMixedCases() {
+		tc := tc
+
+		b.Run(tc.name, func(b *testing.B) {
+			pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(tc))
+			batchSize := poolBenchmarkBatchSize(tc.capacity)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for completed := 0; completed < b.N; {
+				batch := batchSize
+				if remaining := b.N - completed; remaining < batch {
+					batch = remaining
+				}
+
+				b.StopTimer()
+				poolBenchmarkClearRetained(pool)
+				poolBenchmarkSeedRetainedPublic(b, pool, tc.capacity, batch*tc.shards)
 				b.StartTimer()
 
 				for index := 0; index < batch; index++ {
@@ -73,6 +126,8 @@ func BenchmarkPoolGetHit(b *testing.B) {
 
 				completed += batch
 			}
+
+			poolBenchmarkReportOutcomeRatios(b, pool)
 		})
 	}
 }
@@ -199,7 +254,7 @@ func BenchmarkPoolGetPutSequential(b *testing.B) {
 
 		b.Run(poolBenchmarkName(flow, tc.name), func(b *testing.B) {
 			pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(tc))
-			poolBenchmarkSeedEveryShard(b, pool, tc.capacity, 8)
+			poolBenchmarkSeedRetainedPublic(b, pool, tc.capacity, tc.shards*8)
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -231,7 +286,7 @@ func BenchmarkPoolGetPutParallel(b *testing.B) {
 
 		b.Run(poolBenchmarkName("mixed", tc.name), func(b *testing.B) {
 			pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(tc))
-			poolBenchmarkSeedEveryShard(b, pool, tc.capacity, 8)
+			poolBenchmarkSeedRetainedPublic(b, pool, tc.capacity, tc.shards*8)
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -254,23 +309,22 @@ func BenchmarkPoolGetPutParallel(b *testing.B) {
 	}
 }
 
-// BenchmarkPoolGetPutHitRatio approximates workloads with different retained
-// supply levels.
+// BenchmarkPoolGetPutReturnRate controls how often acquired buffers are
+// returned to Pool.
 //
-// The ratios are controlled by whether each acquired buffer is returned. This is
-// intentionally an approximate mixed-flow benchmark: it includes normal Pool
-// policy, lifecycle, allocation, and retention behavior rather than manually
-// forcing exact class/shard counters.
-func BenchmarkPoolGetPutHitRatio(b *testing.B) {
+// Return rate is not the same as hit ratio. Actual hit, miss, retain, and drop
+// ratios depend on shard selection, retained supply, allocation, credit, and
+// bucket state, so the benchmark reports observed ratios after the loop.
+func BenchmarkPoolGetPutReturnRate(b *testing.B) {
 	cases := []struct {
 		name      string
 		putEvery  int
 		seedCount int
 	}{
-		{name: "hit_100", putEvery: 1, seedCount: 64},
-		{name: "hit_90", putEvery: 10, seedCount: 64},
-		{name: "hit_50", putEvery: 2, seedCount: 32},
-		{name: "hit_0", putEvery: 0, seedCount: 0},
+		{name: "return_100", putEvery: 1, seedCount: 64},
+		{name: "return_90", putEvery: 10, seedCount: 64},
+		{name: "return_50", putEvery: 2, seedCount: 32},
+		{name: "return_0", putEvery: 0, seedCount: 0},
 	}
 
 	for _, tc := range cases {
@@ -279,7 +333,7 @@ func BenchmarkPoolGetPutHitRatio(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			benchCase := poolBenchmarkCase{size: 300, capacity: 512, shards: 8, selector: ShardSelectionModeRandom}
 			pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(benchCase))
-			poolBenchmarkSeedRetained(b, pool, benchCase.capacity, tc.seedCount)
+			poolBenchmarkSeedRetainedPublic(b, pool, benchCase.capacity, tc.seedCount)
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -298,6 +352,8 @@ func BenchmarkPoolGetPutHitRatio(b *testing.B) {
 
 				poolBenchmarkBufferSink = buffer
 			}
+
+			poolBenchmarkReportOutcomeRatios(b, pool)
 		})
 	}
 }

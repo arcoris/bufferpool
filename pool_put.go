@@ -73,16 +73,12 @@ const (
 func (p *Pool) Put(buffer []byte) error {
 	p.mustBeInitialized()
 
-	if buffer == nil {
-		return newError(ErrNilBuffer, errPoolPutNilBuffer)
+	input, err := p.validateReturnInput(buffer)
+	if err != nil {
+		return err
 	}
 
-	if cap(buffer) == 0 {
-		return newError(ErrZeroCapacity, errPoolPutZeroCapacity)
-	}
-
-	capacity := uint64(cap(buffer))
-	p.ownerCounters.recordPut(capacity)
+	p.ownerCounters.recordPut(input.Capacity)
 
 	runtime := p.currentRuntimeSnapshot()
 
@@ -92,109 +88,265 @@ func (p *Pool) Put(buffer []byte) error {
 	}
 
 	if !admitted {
-		p.recordOwnerDrop(runtime.Policy, PoolDropReasonClosedPool, capacity, buffer)
-		return nil
+		return p.applyReturnOutcome(
+			runtime.Policy,
+			input,
+			poolReturnOutcomeDrop(
+				AdmissionActionDrop,
+				nil,
+				"",
+				PoolDropReasonClosedPool,
+				input.Capacity,
+			),
+		)
 	}
 
-	err = p.put(buffer, runtime)
+	outcome := p.returnBuffer(input, runtime)
+	err = p.applyReturnOutcome(runtime.Policy, input, outcome)
 	p.endOperation()
 
 	return err
 }
 
-// put executes an already lifecycle-admitted return path.
+// validateReturnInput validates public Put input and records the capacity value
+// used by every later return-path stage.
 //
-// This method owns owner-side return admission, returned-capacity class routing,
-// retained/dropped buffer zeroing, classState retention call, and mapping local
-// class/shard outcomes to public error classes.
+// nil and zero-capacity buffers are invalid API input. They are rejected before
+// owner counters because they are not valid returned-buffer attempts.
+func (p *Pool) validateReturnInput(buffer []byte) (poolReturnInput, error) {
+	if buffer == nil {
+		return poolReturnInput{}, newError(ErrNilBuffer, errPoolPutNilBuffer)
+	}
+
+	if cap(buffer) == 0 {
+		return poolReturnInput{}, newError(ErrZeroCapacity, errPoolPutZeroCapacity)
+	}
+
+	return poolReturnInput{
+		Buffer:   buffer,
+		Capacity: uint64(cap(buffer)),
+	}, nil
+}
+
+// returnBuffer executes owner-side and class/shard return admission after
+// lifecycle admission.
 //
-// Admission order is deliberately explicit:
+// The method decides the outcome but does not apply dropped-buffer hygiene or
+// owner-side drop accounting. Keeping decision and application separate makes
+// the Put pipeline reviewable:
 //
-//   - effective returned-buffer policy;
-//   - maximum retained capacity;
-//   - capacity-to-class floor routing;
-//   - class/shard retention attempt;
-//   - retained or dropped buffer hygiene;
-//   - public error classification.
+//	validate input
+//	-> record valid public Put attempt
+//	-> lifecycle gate
+//	-> owner-side policy admission
+//	-> class routing
+//	-> class/shard retain
+//	-> apply outcome
 //
 // Bare []byte Put can only perform capacity-based admission. Origin-class
 // growth checks require an ownership-aware lease API and are not hidden here.
-func (p *Pool) put(buffer []byte, runtime *poolRuntimeSnapshot) error {
+func (p *Pool) returnBuffer(input poolReturnInput, runtime *poolRuntimeSnapshot) poolReturnOutcome {
 	policy := runtime.Policy
 
 	switch policy.Admission.ReturnedBuffers {
 	case ReturnedBufferPolicyDrop:
-		p.recordOwnerDrop(policy, PoolDropReasonReturnedBuffersDisabled, uint64(cap(buffer)), buffer)
-		return nil
+		return poolReturnOutcomeDrop(
+			AdmissionActionDrop,
+			nil,
+			"",
+			PoolDropReasonReturnedBuffersDisabled,
+			input.Capacity,
+		)
 
 	case ReturnedBufferPolicyAdmit:
 
 	default:
-		p.recordOwnerDrop(policy, PoolDropReasonInvalidPolicy, uint64(cap(buffer)), buffer)
-		return newError(ErrInvalidPolicy, errPoolPutInvalidReturnedBufferPolicy)
+		return poolReturnOutcomeDrop(
+			AdmissionActionError,
+			ErrInvalidPolicy,
+			errPoolPutInvalidReturnedBufferPolicy,
+			PoolDropReasonInvalidPolicy,
+			input.Capacity,
+		)
 	}
 
-	capacity := SizeFromInt(cap(buffer))
-
+	capacity := SizeFromBytes(input.Capacity)
 	if capacity > policy.Retention.MaxRetainedBufferCapacity {
-		return p.handleBufferAdmissionAction(
-			policy,
+		return poolReturnOutcomeDrop(
 			policy.Admission.OversizedReturn,
 			ErrBufferTooLarge,
 			errPoolPutBufferTooLarge,
-			buffer,
 			PoolDropReasonOversized,
+			input.Capacity,
 		)
 	}
 
 	class, ok := p.table.classForCapacity(capacity)
 	if !ok {
-		return p.handleBufferAdmissionAction(
-			policy,
+		return poolReturnOutcomeDrop(
 			policy.Admission.UnsupportedClass,
 			ErrUnsupportedClass,
 			errPoolPutUnsupportedClass,
-			buffer,
 			PoolDropReasonUnsupportedClass,
+			input.Capacity,
 		)
 	}
 
 	result := p.mustClassStateFor(class).tryRetainSelectedWithOptions(
 		p.shardSelectorFor(class),
-		buffer,
+		input.Buffer,
 		classRetainOptions{
 			ZeroBeforeRetain: policy.Admission.ZeroRetainedBuffers,
 		},
 	)
 	if result.Retained() {
-		return nil
+		return poolReturnOutcomeRetained(input.Capacity)
 	}
 
 	if result.RejectedByClass() {
-		return p.handleClassRetainRejection(policy, buffer)
+		return poolReturnOutcomeDrop(
+			policy.Admission.ClassMismatch,
+			ErrRetentionRejected,
+			errPoolPutClassRejected,
+			PoolDropReasonNone,
+			input.Capacity,
+		)
 	}
 
 	if result.RejectedByCredit() {
-		return p.handleBufferAdmissionAction(
-			policy,
+		return poolReturnOutcomeDrop(
 			policy.Admission.CreditExhausted,
 			ErrRetentionCreditExhausted,
 			errPoolPutCreditExhausted,
-			buffer,
 			PoolDropReasonNone,
+			input.Capacity,
 		)
 	}
 
 	if result.RejectedByBucket() {
-		return p.handleBufferAdmissionAction(
-			policy,
+		return poolReturnOutcomeDrop(
 			policy.Admission.BucketFull,
 			ErrRetentionStorageFull,
 			errPoolPutBucketFull,
-			buffer,
 			PoolDropReasonNone,
+			input.Capacity,
 		)
 	}
 
-	return nil
+	return poolReturnOutcomeDrop(
+		AdmissionActionDrop,
+		nil,
+		"",
+		PoolDropReasonNone,
+		input.Capacity,
+	)
+}
+
+// applyReturnOutcome applies the already-decided return outcome.
+//
+// Retained outcomes need no Pool-side zeroing because ZeroRetainedBuffers runs
+// inside shard publication before bucket visibility. No-retain outcomes apply
+// ZeroDroppedBuffers here after the lower layer has recorded its own drop, or
+// after owner-side accounting has recorded an owner drop.
+func (p *Pool) applyReturnOutcome(policy Policy, input poolReturnInput, outcome poolReturnOutcome) error {
+	if outcome.Retained {
+		return nil
+	}
+
+	reason := outcome.DropReason
+	if !poolAdmissionActionKnown(outcome.Action) {
+		if reason != PoolDropReasonNone {
+			reason = PoolDropReasonInvalidPolicy
+		}
+	}
+
+	if reason != PoolDropReasonNone {
+		p.ownerCounters.recordDrop(reason, outcome.Capacity)
+	}
+
+	zeroDroppedBuffer(input.Buffer, policy)
+
+	switch outcome.Action {
+	case AdmissionActionDrop, AdmissionActionIgnore:
+		return nil
+
+	case AdmissionActionError:
+		return newError(outcome.Kind, outcome.Message)
+
+	default:
+		return newError(ErrInvalidPolicy, outcome.Message)
+	}
+}
+
+// poolReturnInput is the validated public Put input carried through the return
+// pipeline.
+type poolReturnInput struct {
+	// Buffer is the caller-provided slice. Retention and zeroing operate on its
+	// full backing capacity.
+	Buffer []byte
+
+	// Capacity is cap(Buffer) captured once after validation.
+	Capacity uint64
+}
+
+// poolReturnOutcome describes the final return-path decision before Pool
+// applies no-retain hygiene and public error mapping.
+type poolReturnOutcome struct {
+	// Retained is true only when class/shard storage accepted and published the
+	// returned buffer.
+	Retained bool
+
+	// Action is the policy-selected action to apply for a no-retain outcome.
+	Action AdmissionAction
+
+	// Kind is the public error class used when Action is AdmissionActionError.
+	Kind error
+
+	// Message is the operation-specific diagnostic error message.
+	Message string
+
+	// DropReason is recorded only for owner-side drops. PoolDropReasonNone means
+	// classState or shard already counted the drop.
+	DropReason PoolDropReason
+
+	// Capacity is the returned backing capacity used for drop accounting.
+	Capacity uint64
+}
+
+// poolReturnOutcomeRetained constructs the successful return outcome.
+func poolReturnOutcomeRetained(capacity uint64) poolReturnOutcome {
+	return poolReturnOutcome{
+		Retained: true,
+		Capacity: capacity,
+	}
+}
+
+// poolReturnOutcomeDrop constructs a no-retain outcome.
+//
+// reason must be PoolDropReasonNone for class/shard drops because those lower
+// layers already update drop counters. Owner-side decisions pass a concrete
+// reason so aggregate Pool counters include returns that never reached storage.
+func poolReturnOutcomeDrop(action AdmissionAction, kind error, message string, reason PoolDropReason, capacity uint64) poolReturnOutcome {
+	return poolReturnOutcome{
+		Action:     action,
+		Kind:       kind,
+		Message:    message,
+		DropReason: reason,
+		Capacity:   capacity,
+	}
+}
+
+// poolAdmissionActionKnown reports whether Pool can execute action while
+// applying a return outcome.
+//
+// Policy validation should reject unknown actions before construction, but the
+// runtime snapshot boundary is defensive. Unknown actions are treated as invalid
+// policy and still run dropped-buffer hygiene for the returned buffer.
+func poolAdmissionActionKnown(action AdmissionAction) bool {
+	switch action {
+	case AdmissionActionDrop, AdmissionActionIgnore, AdmissionActionError:
+		return true
+	default:
+		return false
+	}
 }

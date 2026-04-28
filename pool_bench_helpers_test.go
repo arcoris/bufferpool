@@ -36,6 +36,20 @@ var (
 	poolBenchmarkSampleSink   poolCounterSample
 )
 
+// Pool benchmark command guide:
+//
+//   - full matrix:
+//     go test -run '^$' -bench . -benchmem ./...
+//   - quick pool data-plane slice:
+//     go test -run '^$' -bench 'BenchmarkPool(GetHit|GetMiss|PutRetain|Metrics|SampleCounters)' -benchmem ./...
+//   - parallel CPU matrix:
+//     go test -run '^$' -bench 'BenchmarkPoolGetPutParallel' -benchmem -cpu 1,2,4,8,16 ./...
+//   - broad pool-only matrix:
+//     go test -run '^$' -bench 'BenchmarkPool(Baseline|Get|Put|GetPut|Zeroing|Metrics|Snapshot|Sample|ShardSelector)' -benchmem ./...
+//
+// The full matrix is intentionally diagnostic and can be slow. Use focused
+// expressions when iterating on one part of the data plane.
+
 // poolBenchmarkCase describes one benchmark topology or data-plane scenario.
 //
 // Benchmarks use explicit cases instead of hidden package defaults so output
@@ -159,12 +173,16 @@ func poolBenchmarkNewPoolWithConfig(b *testing.B, config PoolConfig) *Pool {
 	return pool
 }
 
-// poolBenchmarkSeedRetained preloads retained storage without measuring setup.
+// poolBenchmarkSeedRetainedInternal preloads retained storage without measuring
+// setup and without passing through public Pool.Put.
 //
 // The helper uses classState directly so seed distribution can be exact and does
 // not depend on selector state. This keeps hit-path benchmarks from accidentally
 // measuring miss allocation because setup and measured selector sequences drift.
-func poolBenchmarkSeedRetained(b *testing.B, pool *Pool, capacity int, count int) {
+// Use this only for controlled storage setup. Observability and realistic flow
+// benchmarks should use poolBenchmarkSeedRetainedPublic so owner counters and
+// lifecycle admission describe a public Pool state.
+func poolBenchmarkSeedRetainedInternal(b *testing.B, pool *Pool, capacity int, count int) {
 	b.Helper()
 
 	if count <= 0 {
@@ -186,27 +204,17 @@ func poolBenchmarkSeedRetained(b *testing.B, pool *Pool, capacity int, count int
 	}
 }
 
-// poolBenchmarkSeedEveryShard preloads each shard in the class selected by
-// capacity.
-func poolBenchmarkSeedEveryShard(b *testing.B, pool *Pool, capacity int, perShard int) {
+// poolBenchmarkSeedRetainedPublic preloads retained storage through Pool.Put.
+//
+// Public seeding is less exact than internal seeding, but it produces realistic
+// Pool snapshots: owner counters, lifecycle admission, runtime snapshot reads,
+// class counters, shard counters, and retained storage all observe the seed.
+func poolBenchmarkSeedRetainedPublic(b *testing.B, pool *Pool, capacity int, count int) {
 	b.Helper()
 
-	if perShard <= 0 {
-		return
-	}
-
-	class, ok := pool.table.classForCapacity(SizeFromInt(capacity))
-	if !ok {
-		b.Fatalf("capacity %d is not supported by benchmark policy", capacity)
-	}
-
-	state := pool.mustClassStateFor(class)
-	for shardIndex := range state.shards {
-		for index := 0; index < perShard; index++ {
-			result := state.tryRetain(shardIndex, make([]byte, 0, capacity))
-			if !result.Retained() {
-				b.Fatalf("seed retain shard %d item %d failed: %#v", shardIndex, index, result)
-			}
+	for index := 0; index < count; index++ {
+		if err := pool.Put(make([]byte, 0, capacity)); err != nil {
+			b.Fatalf("public seed Put(%d) returned error: %v", index, err)
 		}
 	}
 }
@@ -256,6 +264,26 @@ func poolBenchmarkRoutingCases() []poolBenchmarkCase {
 		{name: "size_300/cap_512/shards_32/selector_random", size: 300, capacity: 512, shards: 32, selector: ShardSelectionModeRandom},
 		{name: "size_900/cap_1024/shards_8/selector_round_robin", size: 900, capacity: 1024, shards: 8, selector: ShardSelectionModeRoundRobin},
 		{name: "size_4096/cap_4096/shards_1/selector_single", size: 4096, capacity: 4096, shards: 1, selector: ShardSelectionModeSingle},
+	}
+}
+
+// poolBenchmarkHitCases returns only cases where Get can be guaranteed to hit
+// without relying on selector distribution.
+func poolBenchmarkHitCases() []poolBenchmarkCase {
+	return []poolBenchmarkCase{
+		{name: "size_300/cap_512/shards_1/selector_single", size: 300, capacity: 512, shards: 1, selector: ShardSelectionModeSingle},
+		{name: "size_900/cap_1024/shards_1/selector_single", size: 900, capacity: 1024, shards: 1, selector: ShardSelectionModeSingle},
+		{name: "size_4096/cap_4096/shards_1/selector_single", size: 4096, capacity: 4096, shards: 1, selector: ShardSelectionModeSingle},
+	}
+}
+
+// poolBenchmarkSeededMixedCases returns seeded storage scenarios where selector
+// behavior can still produce misses.
+func poolBenchmarkSeededMixedCases() []poolBenchmarkCase {
+	return []poolBenchmarkCase{
+		{name: "size_300/cap_512/shards_8/selector_round_robin", size: 300, capacity: 512, shards: 8, selector: ShardSelectionModeRoundRobin},
+		{name: "size_300/cap_512/shards_32/selector_random", size: 300, capacity: 512, shards: 32, selector: ShardSelectionModeRandom},
+		{name: "size_900/cap_1024/shards_8/selector_round_robin", size: 900, capacity: 1024, shards: 8, selector: ShardSelectionModeRoundRobin},
 	}
 }
 
@@ -323,4 +351,17 @@ func poolBenchmarkBatchSize(capacity int) int {
 	}
 
 	return poolBenchmarkDefaultSeedBatch
+}
+
+// poolBenchmarkReportOutcomeRatios reports actual ratios observed by a Pool
+// benchmark after the measured loop.
+func poolBenchmarkReportOutcomeRatios(b *testing.B, pool *Pool) {
+	b.Helper()
+	b.StopTimer()
+
+	metrics := pool.Metrics()
+	b.ReportMetric(metrics.HitRatio.Float64(), "actual_hit_ratio")
+	b.ReportMetric(metrics.MissRatio.Float64(), "actual_miss_ratio")
+	b.ReportMetric(metrics.RetainRatio.Float64(), "actual_retain_ratio")
+	b.ReportMetric(metrics.DropRatio.Float64(), "actual_drop_ratio")
 }

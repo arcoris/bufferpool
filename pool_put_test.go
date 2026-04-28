@@ -456,9 +456,13 @@ func TestPoolPutClassMismatchUsesClassMismatchAdmission(t *testing.T) {
 	pool := MustNew(PoolConfig{Policy: policy})
 	defer closePoolForTest(t, pool)
 
-	err := pool.handleClassRetainRejection(policy, make([]byte, 0, 512))
+	buffer := make([]byte, 0, 512)
+	input := poolReturnInput{Buffer: buffer, Capacity: uint64(cap(buffer))}
+	outcome := poolReturnOutcomeDrop(policy.Admission.ClassMismatch, ErrRetentionRejected, errPoolPutClassRejected, PoolDropReasonNone, input.Capacity)
+
+	err := pool.applyReturnOutcome(policy, input, outcome)
 	if err == nil {
-		t.Fatal("handleClassRetainRejection() returned nil error")
+		t.Fatal("applyReturnOutcome() returned nil error")
 	}
 	if !errors.Is(err, ErrRetentionRejected) {
 		t.Fatalf("class retain rejection error = %v, want ErrRetentionRejected", err)
