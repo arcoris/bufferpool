@@ -11,4 +11,6 @@
 //
 // The package does not mutate active registries or policies by itself. It does
 // not import the root bufferpool package and is not a hot-path dependency.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package activity

@@ -12,4 +12,6 @@
 // This package performs no policy mutation, runtime publication, scheduling, or
 // background work. It does not import the root bufferpool package and must not
 // be called from Pool.Get, Pool.Put, or lease-release hot paths.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package smooth

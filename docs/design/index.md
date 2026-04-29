@@ -1,3 +1,3 @@
 # Design
 
-TODO: Curate this section.
+- [Control algorithms](control-algorithms.md)

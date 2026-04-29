@@ -16,4 +16,6 @@
 // math primitives, but it must not depend on Pool, LeaseRegistry,
 // PoolPartition, PoolGroup, policy snapshots, metrics snapshots, or any root
 // domain type. Domain-specific meaning belongs in the root package adapters.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package numeric

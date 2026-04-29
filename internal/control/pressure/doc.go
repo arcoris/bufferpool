@@ -12,4 +12,6 @@
 // classifies every value as normal. The package does not sample runtime
 // metrics, mutate policies, publish runtime snapshots, or import the root
 // bufferpool package.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package pressure

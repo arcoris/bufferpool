@@ -22,4 +22,6 @@
 //
 // The package does not directly mutate policies, publish runtime snapshots, or
 // import the root bufferpool package. It is control-plane only.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package risk

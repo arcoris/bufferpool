@@ -9,4 +9,6 @@
 // This package does not import the root bufferpool package and does not mutate
 // runtime state. Root package adapters decide what each generic current, limit,
 // score, and target means for PoolPartition and future PoolGroup control.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package budget

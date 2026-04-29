@@ -15,4 +15,6 @@
 //
 // The package does not compute scores, mutate policies, attach domain meaning
 // to candidate indexes, or import the root bufferpool package.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package rank

@@ -11,4 +11,6 @@
 // scores, pressure decisions, trim plans, or budget redistribution. It only
 // defines generic movement and sample-scope metadata that root adapters can map
 // onto PoolPartition and future PoolGroup observations.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package series

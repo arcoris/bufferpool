@@ -9,4 +9,6 @@
 //
 // The package does not sample state, rank candidates, mutate policies, or
 // import the root bufferpool package.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package stability

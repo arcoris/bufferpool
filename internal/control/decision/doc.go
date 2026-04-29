@@ -7,4 +7,6 @@
 //
 // No policy mutation happens here. This package does not import the root
 // bufferpool package and should not be used for hot-path state changes.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package decision

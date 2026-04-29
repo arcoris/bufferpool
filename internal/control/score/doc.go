@@ -14,4 +14,6 @@
 // before they acquire partition or group meaning. This package does not import
 // the root bufferpool package, does not mutate runtime state, and must not
 // publish policy snapshots or execute trim.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package score

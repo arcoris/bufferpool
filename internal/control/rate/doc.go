@@ -10,4 +10,6 @@
 // It does not import the root bufferpool package. Root adapters choose which
 // deltas represent gets, puts, lease attempts, or bytes, then pass scalar
 // values here for pure calculation.
+// Repository-level control boundaries and verification gates are documented in
+// docs/design/control-algorithms.md.
 package rate
