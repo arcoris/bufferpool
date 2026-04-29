@@ -16,6 +16,9 @@
 // All coefficients are conservative initial defaults. They are named and
 // documented so controller adapters can tune them later; they are not
 // mathematically optimal workload-specific values.
+// Scorer is preferred for repeated evaluation because all weight groups are
+// normalized once. Root controllers may use risk to suppress unsafe
+// recommendations or raise diagnostics, but risk never mutates ownership state.
 //
 // The package does not directly mutate policies, publish runtime snapshots, or
 // import the root bufferpool package. It is control-plane only.

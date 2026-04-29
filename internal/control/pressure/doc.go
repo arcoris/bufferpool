@@ -7,6 +7,9 @@
 // without high.
 //
 // Root package adapters map these generic levels to domain pressure types. The
-// package does not sample runtime metrics, mutate policies, publish runtime
-// snapshots, or import the root bufferpool package.
+// Classifier type validates stable thresholds once for repeated evaluation. A
+// zero Classifier is equivalent to no configured pressure thresholds and
+// classifies every value as normal. The package does not sample runtime
+// metrics, mutate policies, publish runtime snapshots, or import the root
+// bufferpool package.
 package pressure

@@ -66,7 +66,9 @@ type HotnessConfig struct {
 //
 // Hotness measures recent throughput intensity. It is distinct from usefulness:
 // a workload can be hot but inefficient if it misses frequently, and it can be
-// useful but low-volume if retained buffers still avoid allocations.
+// useful but low-volume if retained buffers still avoid allocations. The zero
+// value is valid but disabled: Score returns zero until a scorer is constructed
+// with NewHotnessScorer.
 type HotnessScorer struct {
 	config HotnessConfig
 }
@@ -100,7 +102,10 @@ func (c HotnessConfig) Normalize() HotnessConfig {
 	return c
 }
 
-// Hotness returns a normalized activity score from enabled dimensions.
+// Hotness is a one-off convenience wrapper.
+//
+// Repeated controller loops should construct HotnessScorer once and call
+// HotnessScorer.Score so thresholds and weights are normalized once.
 func Hotness(input HotnessInput, config HotnessConfig) float64 {
 	return NewHotnessScorer(config).Score(input)
 }

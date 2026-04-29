@@ -32,3 +32,30 @@ func TestSortNormalizesNonFiniteScores(t *testing.T) {
 		t.Fatalf("SortDescending(non-finite) = %+v", candidates)
 	}
 }
+
+func TestRankNaNAndInfScores(t *testing.T) {
+	candidates := []Candidate{
+		{Index: 1, Score: math.NaN(), TieBreak: 1},
+		{Index: 2, Score: math.Inf(1), TieBreak: 2},
+		{Index: 3, Score: 0.2, TieBreak: 3},
+	}
+	SortDescending(candidates)
+	if candidates[0].Index != 3 || candidates[1].Index != 1 || candidates[2].Index != 2 {
+		t.Fatalf("SortDescending(non-finite) = %+v", candidates)
+	}
+}
+
+func BenchmarkControlRankSortDescending(b *testing.B) {
+	for _, tt := range rankBenchmarkCases {
+		b.Run(tt.name, func(b *testing.B) {
+			candidates := benchmarkCandidates(tt.count)
+			work := make([]Candidate, len(candidates))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				copy(work, candidates)
+				SortDescending(work)
+			}
+		})
+	}
+}

@@ -38,6 +38,31 @@ func TestHotness(t *testing.T) {
 	}
 }
 
+func TestHotnessScorerZeroValue(t *testing.T) {
+	var scorer HotnessScorer
+	if got := scorer.Score(HotnessInput{GetsPerSecond: 10}); got != 0 {
+		t.Fatalf("zero HotnessScorer.Score() = %v, want 0", got)
+	}
+}
+
+func TestHotnessScorerMatchesHotness(t *testing.T) {
+	config := HotnessConfig{HighGetsPerSecond: 10, HighPutsPerSecond: 10}
+	scorer := NewHotnessScorer(config)
+	input := HotnessInput{GetsPerSecond: 5, PutsPerSecond: 10}
+	if got, want := scorer.Score(input), Hotness(input, config); got != want {
+		t.Fatalf("HotnessScorer.Score() = %v, want %v", got, want)
+	}
+}
+
+func TestHotnessOneOffVsPrepared(t *testing.T) {
+	config := HotnessConfig{HighGetsPerSecond: 10, GetsWeight: 1}
+	input := HotnessInput{GetsPerSecond: 7}
+	prepared := NewHotnessScorer(config)
+	if got, want := Hotness(input, config), prepared.Score(input); got != want {
+		t.Fatalf("Hotness() = %v, want prepared score %v", got, want)
+	}
+}
+
 func BenchmarkControlActivityHotness(b *testing.B) {
 	input := HotnessInput{GetsPerSecond: 5000, PutsPerSecond: 3000, BytesPerSecond: 1 << 20, LeaseOpsPerSecond: 8000}
 	config := HotnessConfig{

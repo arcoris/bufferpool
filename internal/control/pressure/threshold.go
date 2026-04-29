@@ -29,7 +29,9 @@ type Thresholds struct {
 //
 // Controller loops usually classify many observations against the same
 // thresholds. Preparing the classifier validates ordering once and keeps the
-// repeated classification path explicit and allocation-free.
+// repeated classification path explicit and allocation-free. The zero value is
+// valid and equivalent to no configured pressure thresholds; it classifies every
+// value as LevelNormal.
 type Classifier struct {
 	thresholds Thresholds
 }
@@ -59,7 +61,10 @@ func (c Classifier) Classify(value uint64) Level {
 	return Classify(value, c.thresholds)
 }
 
-// Classify returns the highest configured pressure level exceeded by value.
+// Classify is a one-off convenience wrapper over thresholds.
+//
+// Repeated controller loops should construct Classifier once so threshold
+// ordering is validated once.
 func Classify(value uint64, thresholds Thresholds) Level {
 	if thresholds.Critical != 0 && value >= thresholds.Critical {
 		return LevelCritical

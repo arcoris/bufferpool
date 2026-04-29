@@ -42,7 +42,9 @@ type Score struct {
 //
 // Risk is a safety and misuse projection, not a retention-efficiency score.
 // Root controllers should use it to suppress risky recommendations or surface
-// diagnostics, not to mutate ownership state.
+// diagnostics, not to mutate ownership state. The zero value is valid but
+// disabled and returns a zero Score until a scorer is constructed with
+// DefaultScorer, NewScorer, or NewScorerWithMisuseWeights.
 type Scorer struct {
 	weights          Weights
 	returnWeights    ReturnFailureWeights
@@ -89,12 +91,18 @@ func (s Scorer) Score(input Input) Score {
 	return newScoreWithNormalizedWeights(input, s.weights, s.returnWeights, s.ownershipWeights, s.misuseWeights)
 }
 
-// NewScore returns a generic safety risk score.
+// NewScore is a one-off convenience wrapper over DefaultScorer.
+//
+// Repeated controller loops should keep a Scorer so weight groups are
+// normalized once.
 func NewScore(input Input) Score {
 	return DefaultScorer().Score(input)
 }
 
-// NewScoreWithWeights returns a risk score with caller-provided weights.
+// NewScoreWithWeights is a one-off convenience wrapper with caller-provided weights.
+//
+// Repeated controller loops should keep a Scorer constructed with NewScorer or
+// NewScorerWithMisuseWeights so weight groups are normalized once.
 //
 // Closed return failures are intentionally separated from admission/runtime
 // failures so shutdown diagnostics do not poison normal adaptive scoring.
@@ -104,8 +112,12 @@ func NewScoreWithWeights(input Input, weights Weights, returnWeights ReturnFailu
 	return NewScorer(weights, returnWeights, ownershipWeights).Score(input)
 }
 
-// NewScoreWithMisuseWeights returns a risk score with explicit caller-misuse
-// weights while keeping the other risk weight groups caller-provided.
+// NewScoreWithMisuseWeights is a one-off convenience wrapper with explicit
+// caller-misuse weights while keeping the other risk weight groups
+// caller-provided.
+//
+// Repeated controller loops should keep a Scorer constructed with
+// NewScorerWithMisuseWeights so all weight groups are normalized once.
 func NewScoreWithMisuseWeights(
 	input Input,
 	weights Weights,

@@ -36,6 +36,25 @@ func TestUsefulness(t *testing.T) {
 	}
 }
 
+func TestUsefulnessScorerZeroValue(t *testing.T) {
+	var scorer UsefulnessScorer
+	input := UsefulnessInput{HitRatio: 1, RetainRatio: 1, AllocationAvoidance: 1, ActivityScore: 1}
+	if got := scorer.Score(input); got.Value != 0 || len(got.Components) != 0 {
+		t.Fatalf("zero UsefulnessScorer.Score() = %+v, want zero score", got)
+	}
+	if got := scorer.ScoreValue(input); got != 0 {
+		t.Fatalf("zero UsefulnessScorer.ScoreValue() = %v, want 0", got)
+	}
+}
+
+func TestUsefulnessScorerScoreValueMatchesScore(t *testing.T) {
+	scorer := NewUsefulnessScorer(DefaultUsefulnessWeights())
+	input := UsefulnessInput{HitRatio: 0.8, RetainRatio: 0.7, AllocationAvoidance: 0.9, ActivityScore: 0.6, DropPenalty: 0.1}
+	if got, want := scorer.ScoreValue(input), scorer.Score(input).Value; got != want {
+		t.Fatalf("UsefulnessScorer.ScoreValue() = %v, want %v", got, want)
+	}
+}
+
 func BenchmarkControlScoreUsefulness(b *testing.B) {
 	input := UsefulnessInput{HitRatio: 0.8, RetainRatio: 0.7, AllocationAvoidance: 0.9, ActivityScore: 0.6, DropPenalty: 0.1}
 	b.ReportAllocs()

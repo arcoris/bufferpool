@@ -3,8 +3,10 @@ package rank
 // SortDescending stably sorts candidates by score descending and tie-break ascending.
 //
 // The implementation is a typed stable insertion sort. Candidate lists used by
-// controller ranking are expected to be small, and avoiding sort.SliceStable
-// keeps this helper allocation-free for repeated control-loop use.
+// controller ranking are expected to be small or medium, and avoiding
+// sort.SliceStable keeps this helper allocation-free for repeated control-loop
+// use. If future group-level ranking routinely sorts thousands of candidates,
+// the benchmark matrix should guide a hybrid implementation.
 func SortDescending(candidates []Candidate) {
 	sortCandidates(candidates, descendingBefore)
 }

@@ -5,6 +5,9 @@
 // throughput dimensions against caller-provided high-water marks; zero
 // thresholds disable a dimension. Idle helpers use quiet-window counts rather
 // than wall-clock timers so callers can decide the sampling cadence.
+// HotnessScorer is preferred for repeated evaluation because thresholds and
+// weights are normalized once. Hotness measures volume and intensity, not reuse
+// usefulness or memory pressure.
 //
 // The package does not mutate active registries or policies by itself. It does
 // not import the root bufferpool package and is not a hot-path dependency.

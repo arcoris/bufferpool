@@ -5,6 +5,9 @@
 // observations use alpha to move toward the new value. Alpha validation is
 // explicit so callers can choose whether invalid configuration should be an
 // error or whether defensive update behavior is enough.
+// EWMASmoother prepares alpha but does not store moving state; controllers own
+// EWMA values and pass them through Update explicitly. A zero EWMASmoother is
+// disabled and returns state unchanged, avoiding hidden default configuration.
 //
 // This package performs no policy mutation, runtime publication, scheduling, or
 // background work. It does not import the root bufferpool package and must not

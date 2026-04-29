@@ -54,6 +54,17 @@ func TestEWMASmoother(t *testing.T) {
 	}
 }
 
+func TestEWMASmootherZeroValue(t *testing.T) {
+	var smoother EWMASmoother
+	state := EWMA{Initialized: true, Value: 10}
+	if got := smoother.Update(state, 100); got != state {
+		t.Fatalf("zero EWMASmoother.Update(initialized) = %+v, want %+v", got, state)
+	}
+	if got := smoother.Update(EWMA{}, 100); got != (EWMA{}) {
+		t.Fatalf("zero EWMASmoother.Update(empty) = %+v, want zero state", got)
+	}
+}
+
 func BenchmarkControlSmoothEWMAUpdate(b *testing.B) {
 	b.ReportAllocs()
 	avg := EWMA{}

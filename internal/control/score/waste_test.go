@@ -32,6 +32,25 @@ func TestWaste(t *testing.T) {
 	}
 }
 
+func TestWasteScorerZeroValue(t *testing.T) {
+	var scorer WasteScorer
+	input := WasteInput{LowHitScore: 1, RetainedPressure: 1, LowActivityScore: 1, DropScore: 1}
+	if got := scorer.Score(input); got.Value != 0 || len(got.Components) != 0 {
+		t.Fatalf("zero WasteScorer.Score() = %+v, want zero score", got)
+	}
+	if got := scorer.ScoreValue(input); got != 0 {
+		t.Fatalf("zero WasteScorer.ScoreValue() = %v, want 0", got)
+	}
+}
+
+func TestWasteScorerScoreValueMatchesScore(t *testing.T) {
+	scorer := NewWasteScorer(DefaultWasteWeights())
+	input := WasteInput{LowHitScore: 0.8, RetainedPressure: 0.7, LowActivityScore: 0.4, DropScore: 0.2}
+	if got, want := scorer.ScoreValue(input), scorer.Score(input).Value; got != want {
+		t.Fatalf("WasteScorer.ScoreValue() = %v, want %v", got, want)
+	}
+}
+
 func BenchmarkControlScoreWaste(b *testing.B) {
 	input := WasteInput{LowHitScore: 0.8, RetainedPressure: 0.7, LowActivityScore: 0.4, DropScore: 0.2}
 	b.ReportAllocs()

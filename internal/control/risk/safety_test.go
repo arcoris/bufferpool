@@ -44,6 +44,27 @@ func TestRiskScore(t *testing.T) {
 	}
 }
 
+func TestRiskScorerZeroValue(t *testing.T) {
+	var scorer Scorer
+	if got := scorer.Score(Input{PoolReturnAdmissionRatio: 1, OwnershipViolationRatio: 1, InvalidReleaseRatio: 1}); got != (Score{}) {
+		t.Fatalf("zero Scorer.Score() = %+v, want zero score", got)
+	}
+}
+
+func TestRiskScorerMatchesNewScore(t *testing.T) {
+	input := Input{PoolReturnAdmissionRatio: 0.2, OwnershipViolationRatio: 0.3, InvalidReleaseRatio: 0.1}
+	if got, want := DefaultScorer().Score(input), NewScore(input); got != want {
+		t.Fatalf("DefaultScorer.Score() = %+v, want %+v", got, want)
+	}
+}
+
+func TestRiskScorerCustomWeights(t *testing.T) {
+	scorer := NewScorer(Weights{ReturnFailure: 1}, ReturnFailureWeights{Closed: 1}, OwnershipWeights{})
+	if got := scorer.Score(Input{PoolReturnClosedRatio: 1}); got.Value != 1 {
+		t.Fatalf("custom scorer risk = %+v, want value 1", got)
+	}
+}
+
 func TestRiskScorerDefaultMisuseWeights(t *testing.T) {
 	scorer := DefaultScorer()
 	got := scorer.Score(Input{InvalidReleaseRatio: 1})

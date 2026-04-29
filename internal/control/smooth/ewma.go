@@ -17,7 +17,9 @@ type EWMA struct {
 // windows. Preparing the alpha once avoids repeated normalization and
 // validation while keeping the update path explicit and allocation-free.
 // EWMASmoother does not store moving state; callers pass and receive EWMA
-// values so ownership of state remains visible.
+// values so ownership of state remains visible. The zero value is valid but
+// disabled: Update returns the input state unchanged until a smoother is
+// constructed with NewEWMASmoother or MustNewEWMASmoother.
 type EWMASmoother struct {
 	alpha float64
 }
@@ -47,11 +49,21 @@ func MustNewEWMASmoother(config AlphaConfig) EWMASmoother {
 }
 
 // Update returns state after observing value with the prepared alpha.
+//
+// A zero-value EWMASmoother has alpha zero and is intentionally a no-op. This
+// avoids hidden default configuration in unconstructed controller state.
 func (s EWMASmoother) Update(state EWMA, value float64) EWMA {
+	if s.alpha <= 0 {
+		return state
+	}
 	return state.Update(s.alpha, value)
 }
 
 // Update returns a new EWMA after observing value with alpha.
+//
+// This direct one-off helper is useful for tests or simple callers. Repeated
+// controller loops with stable alpha should use EWMASmoother so configuration
+// validation and normalization happen once.
 func (e EWMA) Update(alpha float64, value float64) EWMA {
 	value = numeric.FiniteOrZero(value)
 	if !e.Initialized {

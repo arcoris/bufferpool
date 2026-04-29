@@ -45,3 +45,22 @@ func TestThresholds(t *testing.T) {
 	}
 	_ = MustNewClassifier(Thresholds{Medium: 10})
 }
+
+func TestClassifierZeroValue(t *testing.T) {
+	var classifier Classifier
+	for _, value := range []uint64{0, 1, 100} {
+		if got := classifier.Classify(value); got != LevelNormal {
+			t.Fatalf("zero Classifier.Classify(%d) = %v, want normal", value, got)
+		}
+	}
+}
+
+func TestClassifierMatchesClassify(t *testing.T) {
+	thresholds := Thresholds{Medium: 10, High: 20, Critical: 30}
+	classifier := MustNewClassifier(thresholds)
+	for _, value := range []uint64{0, 10, 20, 30, 40} {
+		if got, want := classifier.Classify(value), Classify(value, thresholds); got != want {
+			t.Fatalf("Classifier.Classify(%d) = %v, want %v", value, got, want)
+		}
+	}
+}

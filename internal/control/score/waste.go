@@ -18,7 +18,9 @@ type WasteInput struct {
 // WasteScorer is a prepared waste evaluator with stable weights.
 //
 // Waste identifies cold or inefficient retained capacity. It is not a trim
-// command and does not know memory budgets or ownership risk by itself.
+// command and does not know memory budgets or ownership risk by itself. The
+// zero value is valid but disabled: Score returns a zero-value WeightedScore
+// and ScoreValue returns zero until a scorer is constructed with NewWasteScorer.
 type WasteScorer struct {
 	weights WasteWeights
 }
@@ -30,22 +32,34 @@ func NewWasteScorer(weights WasteWeights) WasteScorer {
 
 // Score returns an explainable waste score with copied components.
 func (s WasteScorer) Score(input WasteInput) WeightedScore {
+	if s.weights == (WasteWeights{}) {
+		return WeightedScore{}
+	}
 	components := wasteComponents(input, s.weights)
 	return NewWeightedScore(components[:])
 }
 
 // ScoreValue returns only the scalar waste score without component allocation.
 func (s WasteScorer) ScoreValue(input WasteInput) float64 {
+	if s.weights == (WasteWeights{}) {
+		return 0
+	}
 	components := wasteComponents(input, s.weights)
 	return WeightedScoreValue(components[:])
 }
 
-// Waste returns a score that is high for cold or ineffective retained storage.
+// Waste is a one-off convenience wrapper over default waste weights.
+//
+// Repeated controller loops should construct WasteScorer once and call its Score
+// or ScoreValue methods so weights are normalized once.
 func Waste(input WasteInput) WeightedScore {
 	return NewWasteScorer(DefaultWasteWeights()).Score(input)
 }
 
-// WasteWithWeights returns a waste score with caller-provided weights.
+// WasteWithWeights is a one-off convenience wrapper with caller-provided weights.
+//
+// Repeated controller loops should construct WasteScorer once with the stable
+// weights and reuse it across windows.
 //
 // The score is a pure projection. A high value identifies inefficient retained
 // capacity, but it is not a trim command and should be combined with pressure,

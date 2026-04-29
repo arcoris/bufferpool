@@ -21,18 +21,6 @@ import (
 	controlscore "arcoris.dev/bufferpool/internal/control/score"
 )
 
-var (
-	// partitionUsefulnessScorer prepares the default shared usefulness weights
-	// for repeated partition controller projections. It is immutable and does
-	// not publish runtime policy or retain domain state.
-	partitionUsefulnessScorer = controlscore.NewUsefulnessScorer(controlscore.DefaultUsefulnessWeights())
-
-	// partitionWasteScorer prepares the default shared waste weights for
-	// repeated partition controller projections. A high score remains a
-	// diagnostic signal, not a trim command.
-	partitionWasteScorer = controlscore.NewWasteScorer(controlscore.DefaultWasteWeights())
-)
-
 // PoolPartitionScoreComponent explains one normalized score contribution.
 type PoolPartitionScoreComponent struct {
 	// Name identifies the signal in diagnostics and test output.
@@ -101,19 +89,7 @@ func NewPoolPartitionScores(
 	budget PartitionBudgetSnapshot,
 	pressure PartitionPressureSnapshot,
 ) PoolPartitionScores {
-	signals := newPartitionScoreSignals(rates, ewma)
-	budgetScore := newPoolPartitionBudgetScore(budget)
-	pressureScore := newPoolPartitionPressureScore(pressure)
-	activityScore := newPoolPartitionActivityScore(signals)
-	riskScore := newPoolPartitionRiskScore(rates)
-	return PoolPartitionScores{
-		Usefulness: newPoolPartitionUsefulnessScore(signals, activityScore, rates),
-		Waste:      newPoolPartitionWasteScore(signals, budgetScore, pressureScore, activityScore, rates),
-		Budget:     budgetScore,
-		Pressure:   pressureScore,
-		Activity:   activityScore,
-		Risk:       riskScore,
-	}
+	return defaultPoolPartitionScoreEvaluator.Scores(rates, ewma, budget, pressure)
 }
 
 // partitionScoreSignals holds the rate source selected for score formulas.
@@ -135,9 +111,6 @@ type partitionScoreSignals struct {
 	// retainRatio is the selected retained-return signal.
 	retainRatio float64
 
-	// dropRatio is the selected dropped-return signal.
-	dropRatio float64
-
 	// getsPerSecond is the selected acquisition throughput signal.
 	getsPerSecond float64
 
@@ -148,12 +121,15 @@ type partitionScoreSignals struct {
 	allocationsPerSecond float64
 }
 
-// newPartitionScoreSignals chooses raw rates or smoothed rates for scoring.
+// newPartitionScoreSignals chooses raw rates or smoothed rates for reuse and
+// activity scoring.
 //
 // A zero-value EWMA state means no previous controller window has been
 // smoothed yet, so the current window rates are used directly. Once EWMA is
 // initialized, score formulas consume smoothed values to avoid reacting only to
-// one noisy window.
+// one noisy window. Drop ratio is intentionally excluded: partition usefulness
+// and waste scoring use the current-window drop ratio as immediate
+// admission/pressure feedback.
 func newPartitionScoreSignals(rates PoolPartitionWindowRates, ewma PoolPartitionEWMAState) partitionScoreSignals {
 	if ewma.Initialized {
 		return partitionScoreSignals{
@@ -161,7 +137,6 @@ func newPartitionScoreSignals(rates PoolPartitionWindowRates, ewma PoolPartition
 			missRatio:            ewma.MissRatio,
 			allocationRatio:      ewma.AllocationRatio,
 			retainRatio:          ewma.RetainRatio,
-			dropRatio:            ewma.DropRatio,
 			getsPerSecond:        ewma.GetsPerSecond,
 			putsPerSecond:        ewma.PutsPerSecond,
 			allocationsPerSecond: ewma.AllocationsPerSecond,
@@ -172,53 +147,9 @@ func newPartitionScoreSignals(rates PoolPartitionWindowRates, ewma PoolPartition
 		missRatio:            rates.MissRatio,
 		allocationRatio:      rates.AllocationRatio,
 		retainRatio:          rates.RetainRatio,
-		dropRatio:            rates.DropRatio,
 		getsPerSecond:        rates.GetsPerSecond,
 		putsPerSecond:        rates.PutsPerSecond,
 		allocationsPerSecond: rates.AllocationsPerSecond,
-	}
-}
-
-// newPoolPartitionUsefulnessScore adapts shared usefulness scoring to partitions.
-//
-// Allocation avoidance is represented as the inverse of allocation ratio. Drop
-// ratio remains a penalty because frequent drops mean retained storage is less
-// useful even if hit and retain ratios are otherwise high.
-func newPoolPartitionUsefulnessScore(signals partitionScoreSignals, activity PoolPartitionActivityScore, rates PoolPartitionWindowRates) PoolPartitionUsefulnessScore {
-	score := partitionUsefulnessScorer.Score(controlscore.UsefulnessInput{
-		HitRatio:            signals.hitRatio,
-		RetainRatio:         signals.retainRatio,
-		AllocationAvoidance: controlnumeric.Invert01(signals.allocationRatio),
-		ActivityScore:       activity.Value,
-		DropPenalty:         rates.DropRatio,
-	})
-	return PoolPartitionUsefulnessScore{
-		Value:      score.Value,
-		Components: poolPartitionScoreComponents(score.Components),
-	}
-}
-
-// newPoolPartitionWasteScore adapts shared waste scoring to partitions.
-//
-// Waste combines cold/ineffective workload signals with memory pressure. The
-// retained-pressure input uses the stronger of budget utilization and pressure
-// severity so either policy boundary can explain a high waste score.
-func newPoolPartitionWasteScore(
-	signals partitionScoreSignals,
-	budget PoolPartitionBudgetScore,
-	pressure PoolPartitionPressureScore,
-	activity PoolPartitionActivityScore,
-	rates PoolPartitionWindowRates,
-) PoolPartitionWasteScore {
-	score := partitionWasteScorer.Score(controlscore.WasteInput{
-		LowHitScore:      controlnumeric.Invert01(signals.hitRatio),
-		RetainedPressure: controlnumeric.Clamp01(maxFloat64(budget.Value, pressure.Value)),
-		LowActivityScore: controlnumeric.Invert01(activity.Value),
-		DropScore:        rates.DropRatio,
-	})
-	return PoolPartitionWasteScore{
-		Value:      score.Value,
-		Components: poolPartitionScoreComponents(score.Components),
 	}
 }
 

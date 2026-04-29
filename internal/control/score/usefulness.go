@@ -25,7 +25,9 @@ type UsefulnessInput struct {
 // Usefulness measures whether retained memory is helping avoid allocation. It
 // is not a pressure score, not a safety score, and not a grow command. Root
 // adapters should combine it with pressure, waste, risk, and stability guards
-// before any future policy decision.
+// before any future policy decision. The zero value is valid but disabled:
+// Score returns a zero-value WeightedScore and ScoreValue returns zero until a
+// scorer is constructed with NewUsefulnessScorer.
 type UsefulnessScorer struct {
 	weights UsefulnessWeights
 }
@@ -37,17 +39,26 @@ func NewUsefulnessScorer(weights UsefulnessWeights) UsefulnessScorer {
 
 // Score returns an explainable usefulness score with copied components.
 func (s UsefulnessScorer) Score(input UsefulnessInput) WeightedScore {
+	if s.weights == (UsefulnessWeights{}) {
+		return WeightedScore{}
+	}
 	return usefulnessWithNormalizedWeights(input, s.weights)
 }
 
 // ScoreValue returns only the scalar usefulness score without component allocation.
 func (s UsefulnessScorer) ScoreValue(input UsefulnessInput) float64 {
+	if s.weights == (UsefulnessWeights{}) {
+		return 0
+	}
 	components := usefulnessComponents(input, s.weights)
 	base := WeightedScoreValue(components[:])
 	return numeric.Clamp01(base - numeric.Clamp01(input.DropPenalty)*numeric.FiniteOrZero(s.weights.DropPenalty))
 }
 
-// Usefulness returns an initial deterministic usefulness score.
+// Usefulness is a one-off convenience wrapper over default usefulness weights.
+//
+// Repeated controller loops should construct UsefulnessScorer once and call its
+// Score or ScoreValue methods so weights are normalized once.
 //
 // The formula is intentionally simple controller scaffolding, not final
 // production tuning. DropPenalty reduces the final score after component
@@ -56,7 +67,10 @@ func Usefulness(input UsefulnessInput) WeightedScore {
 	return NewUsefulnessScorer(DefaultUsefulnessWeights()).Score(input)
 }
 
-// UsefulnessWithWeights returns a usefulness score with caller-provided weights.
+// UsefulnessWithWeights is a one-off convenience wrapper with caller-provided weights.
+//
+// Repeated controller loops should construct UsefulnessScorer once with the
+// stable weights and reuse it across windows.
 //
 // Weights are normalized through NewComponent and WeightedScoreValue, so
 // negative or non-finite values become ineffective rather than propagating
