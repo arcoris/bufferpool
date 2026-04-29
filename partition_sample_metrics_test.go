@@ -135,6 +135,63 @@ func TestPoolPartitionSampleIntoAvoidsLeaseSnapshotAllocation(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionSampleIndexesSelectsPoolSubset verifies controller sampling boundary.
+func TestPoolPartitionSampleIndexesSelectsPoolSubset(t *testing.T) {
+	partition := testNewPoolPartition(t, "alpha", "beta", "gamma")
+
+	alphaLease, err := partition.Acquire("alpha", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(alphaLease, alphaLease.Buffer()))
+
+	betaLease, err := partition.Acquire("beta", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(betaLease, betaLease.Buffer()))
+
+	var sample PoolPartitionSample
+	partition.sampleIndexesWithRuntimeAndGeneration(&sample, partition.currentRuntimeSnapshot(), partition.generation.Load(), []int{2, 0}, true)
+
+	if sample.PoolCount != 2 {
+		t.Fatalf("PoolCount = %d, want selected count 2", sample.PoolCount)
+	}
+	if len(sample.Pools) != 2 {
+		t.Fatalf("len(Pools) = %d, want 2", len(sample.Pools))
+	}
+	if sample.Pools[0].Name != "gamma" || sample.Pools[1].Name != "alpha" {
+		t.Fatalf("selected pool order = [%s %s], want [gamma alpha]", sample.Pools[0].Name, sample.Pools[1].Name)
+	}
+	if sample.PoolCounters.Gets != 1 {
+		t.Fatalf("selected Gets = %d, want only alpha activity", sample.PoolCounters.Gets)
+	}
+	if sample.PoolCounters.Puts != 1 {
+		t.Fatalf("selected Puts = %d, want only alpha activity", sample.PoolCounters.Puts)
+	}
+}
+
+// TestPoolPartitionSampleIndexesEmptyStillSamplesLeases verifies empty pool selection.
+func TestPoolPartitionSampleIndexesEmptyStillSamplesLeases(t *testing.T) {
+	partition := testNewPoolPartition(t, "alpha")
+
+	lease, err := partition.Acquire("alpha", 300)
+	requirePartitionNoError(t, err)
+	defer func() { requirePartitionNoError(t, partition.Release(lease, lease.Buffer())) }()
+
+	sample := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 4)}
+	partition.sampleIndexesWithRuntimeAndGeneration(&sample, partition.currentRuntimeSnapshot(), partition.generation.Load(), nil, true)
+
+	if sample.PoolCount != 0 {
+		t.Fatalf("PoolCount = %d, want 0 selected pools", sample.PoolCount)
+	}
+	if len(sample.Pools) != 0 {
+		t.Fatalf("len(Pools) = %d, want 0", len(sample.Pools))
+	}
+	if sample.PoolCounters.Gets != 0 {
+		t.Fatalf("selected Gets = %d, want 0", sample.PoolCounters.Gets)
+	}
+	if sample.ActiveLeases != 1 || sample.CurrentActiveBytes != lease.AcquiredCapacity() {
+		t.Fatalf("lease sample = active leases %d active bytes %d, want one active lease", sample.ActiveLeases, sample.CurrentActiveBytes)
+	}
+}
+
 // TestPoolPartitionSampleDoesNotSharePoolSliceWithCaller verifies sample copy boundaries.
 func TestPoolPartitionSampleDoesNotSharePoolSliceWithCaller(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")

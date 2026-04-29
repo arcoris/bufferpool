@@ -80,6 +80,50 @@ func TestPartitionActiveRegistryDirtySet(t *testing.T) {
 	}
 }
 
+// TestPartitionActiveRegistryGenerationSemantics verifies state-version movement.
+func TestPartitionActiveRegistryGenerationSemantics(t *testing.T) {
+	registry := newPartitionActiveRegistry([]string{"alpha", "beta"})
+	initial := registry.generationSnapshot()
+
+	requirePartitionNoError(t, registry.markActiveIndex(0))
+	if got := registry.generationSnapshot(); got != initial {
+		t.Fatalf("generation after already-active mark = %s, want %s", got, initial)
+	}
+
+	requirePartitionNoError(t, registry.markDirtyIndex(0))
+	afterDirty := registry.generationSnapshot()
+	if !afterDirty.After(initial) {
+		t.Fatalf("generation after clean->dirty = %s, want after %s", afterDirty, initial)
+	}
+
+	requirePartitionNoError(t, registry.markDirtyIndex(0))
+	if got := registry.generationSnapshot(); got != afterDirty {
+		t.Fatalf("generation after repeated dirty mark = %s, want %s", got, afterDirty)
+	}
+
+	registry.resetDirty()
+	afterReset := registry.generationSnapshot()
+	if !afterReset.After(afterDirty) {
+		t.Fatalf("generation after dirty reset = %s, want after %s", afterReset, afterDirty)
+	}
+
+	registry.resetDirty()
+	if got := registry.generationSnapshot(); got != afterReset {
+		t.Fatalf("generation after clean reset = %s, want %s", got, afterReset)
+	}
+
+	requirePartitionNoError(t, registry.markInactiveIndex(0))
+	afterInactive := registry.generationSnapshot()
+	if !afterInactive.After(afterReset) {
+		t.Fatalf("generation after active->inactive = %s, want after %s", afterInactive, afterReset)
+	}
+
+	requirePartitionNoError(t, registry.markActiveIndex(0))
+	if got := registry.generationSnapshot(); !got.After(afterInactive) {
+		t.Fatalf("generation after inactive->active = %s, want after %s", got, afterInactive)
+	}
+}
+
 // TestPartitionActiveRegistryRejectsUnknownPool verifies unknown mark errors.
 func TestPartitionActiveRegistryRejectsUnknownPool(t *testing.T) {
 	registry := newPartitionActiveRegistry([]string{"alpha"})
@@ -87,6 +131,7 @@ func TestPartitionActiveRegistryRejectsUnknownPool(t *testing.T) {
 	requirePartitionErrorIs(t, registry.markActive("missing"), ErrInvalidOptions)
 	requirePartitionErrorIs(t, registry.markDirty("missing"), ErrInvalidOptions)
 	requirePartitionErrorIs(t, registry.markActiveIndex(9), ErrInvalidOptions)
+	requirePartitionErrorIs(t, registry.markInactiveIndex(9), ErrInvalidOptions)
 	requirePartitionErrorIs(t, registry.markDirtyIndex(9), ErrInvalidOptions)
 }
 
@@ -124,5 +169,31 @@ func TestPoolPartitionMarksActivityFromAcquireReleaseAndPolicyPublish(t *testing
 	dirty = partition.activeRegistry.dirtyIndexes(dirty)
 	if len(dirty) != 1 || dirty[0] != 0 {
 		t.Fatalf("dirty after pool policy publish = %v, want [0]", dirty)
+	}
+}
+
+// TestPoolPartitionReleaseDirtyMarkingSkipsFailedReleases verifies release marker boundaries.
+func TestPoolPartitionReleaseDirtyMarkingSkipsFailedReleases(t *testing.T) {
+	partition := testNewPoolPartition(t, "alpha")
+	other := testNewPoolPartition(t, "other")
+
+	lease, err := partition.Acquire("alpha", 300)
+	requirePartitionNoError(t, err)
+	partition.activeRegistry.resetDirty()
+
+	requirePartitionErrorIs(t, other.Release(lease, lease.Buffer()), ErrInvalidLease)
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("wrong-partition release dirtied registry: %v", dirty)
+	}
+
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("successful release dirty indexes = %v, want [0]", dirty)
+	}
+
+	partition.activeRegistry.resetDirty()
+	requirePartitionErrorIs(t, partition.Release(lease, lease.Buffer()), ErrDoubleRelease)
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("double release dirtied registry: %v", dirty)
 	}
 }

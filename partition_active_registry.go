@@ -30,13 +30,15 @@ const (
 
 // partitionActiveRegistry is the partition-local active/dirty Pool set.
 //
-// This is control-plane scaffolding, not adaptive scoring. It tracks which
-// partition-owned Pools are currently eligible for controller attention and
-// which Pools have become dirty through partition-owned cold/control paths. It
-// does not own Pool storage, buffer ownership, or Pool hot-path hooks. The
-// initial implementation keeps all Pools active; future idle expiry and window
-// delta logic can reduce that set without changing Pool or LeaseRegistry
-// ownership boundaries.
+// This is control-plane scaffolding, not adaptive scoring. Active means
+// "eligible for controller attention", not "recently used". The initial
+// implementation keeps all Pools active, so it does not reduce full-scan cost by
+// itself. Future idle expiry and window-delta logic can reduce the active set
+// without changing Pool or LeaseRegistry ownership boundaries.
+//
+// Dirty is a state marker, not an activity event log. Repeated activity on an
+// already-dirty Pool intentionally does not advance generation. generation is
+// the version of active/dirty state, not a count of Pool operations.
 type partitionActiveRegistry struct {
 	// mu protects active, dirty, and generation.
 	mu sync.Mutex
@@ -53,7 +55,7 @@ type partitionActiveRegistry struct {
 	// dirty marks Pools changed by partition-owned cold/control paths.
 	dirty []bool
 
-	// generation advances when active or dirty state changes.
+	// generation advances when active or dirty marker state changes.
 	generation Generation
 }
 
@@ -75,11 +77,17 @@ func newPartitionActiveRegistry(names []string) *partitionActiveRegistry {
 
 // markActive marks a Pool active by partition-local name.
 func (r *partitionActiveRegistry) markActive(name string) error {
-	index, ok := r.index(name)
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	index, ok := r.byName[name]
 	if !ok {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryPoolMissing+": "+name)
 	}
-	return r.markActiveIndex(index)
+	r.markActiveIndexLocked(index)
+	return nil
 }
 
 // markActiveIndex marks a Pool active by immutable registry index.
@@ -92,8 +100,26 @@ func (r *partitionActiveRegistry) markActiveIndex(index int) error {
 	if !r.validIndexLocked(index) {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 	}
-	if !r.active[index] {
-		r.active[index] = true
+	r.markActiveIndexLocked(index)
+	return nil
+}
+
+// markInactiveIndex marks a Pool inactive by immutable registry index.
+//
+// The current partition does not expire idle Pools yet. This helper is the
+// future idle-expiry boundary and lets tests pin generation semantics before a
+// production idle policy exists.
+func (r *partitionActiveRegistry) markInactiveIndex(index int) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.validIndexLocked(index) {
+		return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
+	}
+	if r.active[index] {
+		r.active[index] = false
 		r.advanceLocked()
 	}
 	return nil
@@ -101,11 +127,17 @@ func (r *partitionActiveRegistry) markActiveIndex(index int) error {
 
 // markDirty marks a Pool dirty by partition-local name.
 func (r *partitionActiveRegistry) markDirty(name string) error {
-	index, ok := r.index(name)
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	index, ok := r.byName[name]
 	if !ok {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryPoolMissing+": "+name)
 	}
-	return r.markDirtyIndex(index)
+	r.markDirtyIndexLocked(index)
+	return nil
 }
 
 // markDirtyIndex marks a Pool dirty by immutable registry index.
@@ -118,10 +150,7 @@ func (r *partitionActiveRegistry) markDirtyIndex(index int) error {
 	if !r.validIndexLocked(index) {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 	}
-	if !r.dirty[index] {
-		r.dirty[index] = true
-		r.advanceLocked()
-	}
+	r.markDirtyIndexLocked(index)
 	return nil
 }
 
@@ -205,17 +234,6 @@ func (r *partitionActiveRegistry) generationSnapshot() Generation {
 	return r.generation
 }
 
-// index returns the immutable registry index for name.
-func (r *partitionActiveRegistry) index(name string) (int, bool) {
-	if r == nil {
-		return 0, false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	index, ok := r.byName[name]
-	return index, ok
-}
-
 // validIndexLocked reports whether index names a configured Pool.
 func (r *partitionActiveRegistry) validIndexLocked(index int) bool {
 	return index >= 0 && index < len(r.names)
@@ -224,4 +242,20 @@ func (r *partitionActiveRegistry) validIndexLocked(index int) bool {
 // advanceLocked advances the active-registry generation under mu.
 func (r *partitionActiveRegistry) advanceLocked() {
 	r.generation = r.generation.Next()
+}
+
+// markActiveIndexLocked marks index active under mu.
+func (r *partitionActiveRegistry) markActiveIndexLocked(index int) {
+	if !r.active[index] {
+		r.active[index] = true
+		r.advanceLocked()
+	}
+}
+
+// markDirtyIndexLocked marks index dirty under mu.
+func (r *partitionActiveRegistry) markDirtyIndexLocked(index int) {
+	if !r.dirty[index] {
+		r.dirty[index] = true
+		r.advanceLocked()
+	}
 }

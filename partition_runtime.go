@@ -36,6 +36,11 @@ func newPartitionRuntimeSnapshot(generation Generation, policy PartitionPolicy) 
 }
 
 // publishRuntimeSnapshot atomically publishes a partition policy view.
+//
+// Partition policy publication uses the runtime snapshot generation stream.
+// Dirty-state changes are tracked by partitionActiveRegistry generation. This
+// helper does not advance p.generation, which is reserved for partition-visible
+// state and controller events.
 func (p *PoolPartition) publishRuntimeSnapshot(snapshot *partitionRuntimeSnapshot) {
 	if snapshot == nil {
 		panic(errPartitionRuntimeSnapshotNil)
@@ -61,7 +66,9 @@ func (p *PoolPartition) currentRuntimeSnapshot() *partitionRuntimeSnapshot {
 // Controller publication must fail closed with errors. It normalizes and
 // validates the policy, checks standalone Pool support boundaries, checks
 // compatibility with the already-built Pool topology, and only then calls the
-// panic-on-invariant Pool publication hook.
+// panic-on-invariant Pool publication hook. Pool policy publication uses the
+// Pool runtime generation stream and dirty-state generation; it does not advance
+// the partition state/controller generation.
 func (p *PoolPartition) publishPoolRuntimeSnapshot(poolName string, generation Generation, policy Policy) error {
 	p.mustBeInitialized()
 	pool, ok := p.registry.pool(poolName)
@@ -84,6 +91,5 @@ func (p *PoolPartition) publishPoolRuntimeSnapshot(poolName string, generation G
 	if index, ok := p.registry.poolIndex(poolName); ok {
 		_ = p.activeRegistry.markDirtyIndex(index)
 	}
-	p.generation.Advance()
 	return nil
 }

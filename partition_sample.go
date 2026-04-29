@@ -33,7 +33,9 @@ type PoolPartitionSample struct {
 	// Lifecycle is the observed partition lifecycle state.
 	Lifecycle LifecycleState
 
-	// PoolCount is the number of Pools owned by the partition.
+	// PoolCount is the number of Pools represented by this sample. Public
+	// partition samples represent every owned Pool; selected-index controller
+	// samples may represent only a subset.
 	PoolCount int
 
 	// Pools contains per-Pool counter samples.
@@ -157,6 +159,55 @@ func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample,
 		}
 		poolCountersAdd(&dst.PoolCounters, poolSample.Counters)
 	}
+	p.finishSampleWithLeaseCounters(dst)
+}
+
+// sampleIndexesWithRuntimeAndGeneration samples selected Pool indexes.
+//
+// This is the controller boundary for future active-only sampling. The current
+// active registry still marks all Pools active, so ordinary TickInto remains an
+// all-Pool detailed scan. Tests and future controller code can use this helper
+// to verify that aggregation no longer assumes "every registry entry" as the
+// only possible sampling shape.
+func (p *PoolPartition) sampleIndexesWithRuntimeAndGeneration(dst *PoolPartitionSample, runtime *partitionRuntimeSnapshot, generation Generation, indexes []int, includePools bool) {
+	if dst == nil {
+		return
+	}
+	pools := dst.Pools[:0]
+	if includePools && cap(pools) < len(indexes) {
+		pools = make([]PoolPartitionPoolSample, 0, len(indexes))
+	}
+	if !includePools {
+		pools = nil
+	}
+	*dst = PoolPartitionSample{
+		Generation:       generation,
+		PolicyGeneration: runtime.Generation,
+		Lifecycle:        p.lifecycle.Load(),
+		PoolCount:        len(indexes),
+		Pools:            pools,
+	}
+	for _, index := range indexes {
+		entry := p.registry.entries[index]
+		var poolSample poolCounterSample
+		entry.pool.sampleCounters(&poolSample)
+		if includePools {
+			dst.Pools = append(dst.Pools, PoolPartitionPoolSample{
+				Name:       entry.name,
+				Generation: poolSample.Generation,
+				Lifecycle:  poolSample.Lifecycle,
+				ClassCount: poolSample.ClassCount,
+				ShardCount: poolSample.ShardCount,
+				Counters:   poolSample.Counters,
+			})
+		}
+		poolCountersAdd(&dst.PoolCounters, poolSample.Counters)
+	}
+	p.finishSampleWithLeaseCounters(dst)
+}
+
+// finishSampleWithLeaseCounters adds LeaseRegistry counters and owned-byte gauges.
+func (p *PoolPartition) finishSampleWithLeaseCounters(dst *PoolPartitionSample) {
 	var leaseSample leaseCounterSample
 	p.leases.sampleCounters(&leaseSample)
 	dst.LeaseLifecycle = leaseSample.Lifecycle

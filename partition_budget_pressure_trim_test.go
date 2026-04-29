@@ -205,6 +205,7 @@ func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	if retainedBefore == 0 {
 		t.Fatalf("test requires retained bytes before ExecuteTrim")
 	}
+	partition.activeRegistry.resetDirty()
 
 	plan := partition.PlanTrim()
 	if !plan.Enabled || plan.Reason != "policy" {
@@ -221,6 +222,9 @@ func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	retainedAfter := partition.Metrics().CurrentRetainedBytes
 	if retainedAfter != retainedBefore {
 		t.Fatalf("ExecuteTrim changed retained bytes from %d to %d", retainedBefore, retainedAfter)
+	}
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("ExecuteTrim dirtied active registry without physical trim: %v", dirty)
 	}
 
 	disabled := testNewPoolPartition(t, "secondary")

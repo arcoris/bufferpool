@@ -226,3 +226,60 @@ func TestPoolPartitionConcurrentSampleWhileAcquireRelease(t *testing.T) {
 		t.Fatalf("active gauges after sampled concurrent release = leases:%d bytes:%d, want zero", metrics.ActiveLeases, metrics.CurrentActiveBytes)
 	}
 }
+
+// TestPoolPartitionConcurrentSnapshotWhileAcquireRelease verifies diagnostic snapshots under ownership churn.
+func TestPoolPartitionConcurrentSnapshotWhileAcquireRelease(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary", "secondary")
+	poolNames := []string{"primary", "secondary"}
+
+	const workers = 4
+	const iterations = 64
+
+	var snapshotWG sync.WaitGroup
+	done := make(chan struct{})
+	snapshotWG.Add(1)
+	go func() {
+		defer snapshotWG.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				snapshot := partition.Snapshot()
+				if snapshot.PolicyGeneration.IsZero() {
+					t.Errorf("snapshot policy generation is zero")
+					return
+				}
+			}
+		}
+	}()
+
+	var workerWG sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			poolName := poolNames[worker%len(poolNames)]
+			for iteration := 0; iteration < iterations; iteration++ {
+				lease, err := partition.Acquire(poolName, 300)
+				if err != nil {
+					t.Errorf("Acquire(%q) error = %v", poolName, err)
+					return
+				}
+				if err := partition.Release(lease, lease.Buffer()); err != nil {
+					t.Errorf("Release(%q) error = %v", poolName, err)
+					return
+				}
+			}
+		}()
+	}
+	workerWG.Wait()
+	close(done)
+	snapshotWG.Wait()
+
+	metrics := partition.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.CurrentActiveBytes != 0 {
+		t.Fatalf("active gauges after snapshot concurrent release = leases:%d bytes:%d, want zero", metrics.ActiveLeases, metrics.CurrentActiveBytes)
+	}
+}

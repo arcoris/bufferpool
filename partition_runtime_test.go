@@ -39,6 +39,57 @@ func TestPartitionRuntimeSnapshotPublication(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionRuntimePublicationGenerationStreams verifies generation separation.
+func TestPoolPartitionRuntimePublicationGenerationStreams(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary", "secondary")
+	partition.activeRegistry.resetDirty()
+	beforeGeneration := partition.Sample().Generation
+	beforeActivityGeneration := partition.activeRegistry.generationSnapshot()
+
+	policy := PartitionPolicy{Budget: PartitionBudgetPolicy{MaxOwnedBytes: 64 * KiB}}
+	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(Generation(21), policy))
+
+	afterPartitionPublish := partition.Sample()
+	if afterPartitionPublish.PolicyGeneration != Generation(21) {
+		t.Fatalf("partition policy generation = %s, want 21", afterPartitionPublish.PolicyGeneration)
+	}
+	if afterPartitionPublish.Generation != beforeGeneration {
+		t.Fatalf("partition state generation advanced on policy publish: got %s want %s", afterPartitionPublish.Generation, beforeGeneration)
+	}
+	if !partition.activeRegistry.generationSnapshot().After(beforeActivityGeneration) {
+		t.Fatalf("active registry generation did not advance after dirty publication")
+	}
+	dirty := partition.activeRegistry.dirtyIndexes(nil)
+	if len(dirty) != 2 || dirty[0] != 0 || dirty[1] != 1 {
+		t.Fatalf("dirty after partition policy publish = %v, want [0 1]", dirty)
+	}
+
+	partition.activeRegistry.resetDirty()
+	beforePoolPublishGeneration := partition.Sample().Generation
+	beforeActivityGeneration = partition.activeRegistry.generationSnapshot()
+	poolPolicy := partition.config.Pools[0].Config.Policy
+	requirePartitionNoError(t, partition.publishPoolRuntimeSnapshot("primary", Generation(31), poolPolicy))
+
+	afterPoolPublish := partition.Sample()
+	if afterPoolPublish.Generation != beforePoolPublishGeneration {
+		t.Fatalf("partition state generation advanced on pool policy publish: got %s want %s", afterPoolPublish.Generation, beforePoolPublishGeneration)
+	}
+	if !partition.activeRegistry.generationSnapshot().After(beforeActivityGeneration) {
+		t.Fatalf("active registry generation did not advance after pool dirty publication")
+	}
+	dirty = partition.activeRegistry.dirtyIndexes(dirty)
+	if len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("dirty after pool policy publish = %v, want [0]", dirty)
+	}
+	metrics, ok := partition.PoolMetrics("primary")
+	if !ok {
+		t.Fatalf("missing primary pool metrics")
+	}
+	if metrics.Generation != Generation(31) {
+		t.Fatalf("pool policy generation = %s, want 31", metrics.Generation)
+	}
+}
+
 // TestPoolPartitionPolicyReturnsPublishedPolicy verifies policy accessor behavior.
 func TestPoolPartitionPolicyReturnsPublishedPolicy(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")

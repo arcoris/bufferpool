@@ -60,8 +60,9 @@ type PoolPartitionPoolSnapshot struct {
 // The snapshot is observational across Pools and the LeaseRegistry, not a
 // global transaction. Metrics are derived from one partition sample, while Pool
 // snapshots and the LeaseRegistry snapshot may reflect nearby different
-// instants under concurrent activity. Controller-facing code should use Sample
-// or SampleInto, which avoid copying active lease snapshots.
+// instants under concurrent activity. Snapshot is not controller input.
+// Controller-facing code should use Sample or SampleInto, which avoid copying
+// active lease snapshots.
 func (p *PoolPartition) Snapshot() PoolPartitionSnapshot {
 	p.mustBeInitialized()
 	runtime := p.currentRuntimeSnapshot()

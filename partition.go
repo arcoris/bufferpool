@@ -185,11 +185,7 @@ func (p *PoolPartition) Release(lease Lease, buffer []byte) error {
 	if err := p.leases.Release(lease, buffer); err != nil {
 		return err
 	}
-	if lease.record != nil {
-		if index, ok := p.registry.poolIndexForPool(lease.record.pool); ok {
-			p.markPoolActiveAndDirty(index)
-		}
-	}
+	p.markReleasedLeasePoolDirty(lease)
 	return nil
 }
 
@@ -206,6 +202,23 @@ func (p *PoolPartition) pool(name string) (*Pool, bool) {
 func (p *PoolPartition) markPoolActiveAndDirty(index int) {
 	_ = p.activeRegistry.markActiveIndex(index)
 	_ = p.activeRegistry.markDirtyIndex(index)
+}
+
+// markReleasedLeasePoolDirty records successful release activity for an owned Pool.
+//
+// Lease currently carries package-internal record metadata that identifies the
+// Pool used for acquisition. This helper isolates that direct record access so a
+// future LeaseRegistry release outcome can replace it without spreading lease
+// internals through PoolPartition. It runs only after ownership release
+// succeeds; invalid, wrong-registry, and double-release attempts must not dirty
+// partition control state.
+func (p *PoolPartition) markReleasedLeasePoolDirty(lease Lease) {
+	if lease.record == nil {
+		return
+	}
+	if index, ok := p.registry.poolIndexForPool(lease.record.pool); ok {
+		p.markPoolActiveAndDirty(index)
+	}
 }
 
 // mustBeInitialized verifies that p was constructed by NewPoolPartition.

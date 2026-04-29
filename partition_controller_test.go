@@ -34,6 +34,9 @@ func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T)
 	if !report.Generation.After(before) {
 		t.Fatalf("Tick generation = %s, want after %s", report.Generation, before)
 	}
+	if report.Generation != before.Next() {
+		t.Fatalf("Tick generation = %s, want exactly %s", report.Generation, before.Next())
+	}
 	if report.PolicyGeneration != InitialGeneration {
 		t.Fatalf("PolicyGeneration = %s, want %s", report.PolicyGeneration, InitialGeneration)
 	}
@@ -116,6 +119,26 @@ func TestPoolPartitionTickIntoNilDestinationIsNoOp(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionTickIntoDoesNotConsumeDirtyMarkers verifies observation-only semantics.
+func TestPoolPartitionTickIntoDoesNotConsumeDirtyMarkers(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	partition.activeRegistry.resetDirty()
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	defer func() { requirePartitionNoError(t, partition.Release(lease, lease.Buffer())) }()
+
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 1 {
+		t.Fatalf("dirty before TickInto = %v, want one dirty pool", dirty)
+	}
+
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("dirty after TickInto = %v, want unchanged [0]", dirty)
+	}
+}
+
 // TestPoolPartitionTickRejectsClosedPartition verifies lifecycle gating for ticks.
 func TestPoolPartitionTickRejectsClosedPartition(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))
@@ -126,6 +149,9 @@ func TestPoolPartitionTickRejectsClosedPartition(t *testing.T) {
 	requirePartitionErrorIs(t, err, ErrClosed)
 
 	err = partition.TickInto(&PartitionControllerReport{})
+	requirePartitionErrorIs(t, err, ErrClosed)
+
+	err = partition.TickInto(nil)
 	requirePartitionErrorIs(t, err, ErrClosed)
 }
 
