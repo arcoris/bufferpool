@@ -16,12 +16,14 @@
 
 package bufferpool
 
-// Tick performs one explicit group coordinator observation pass.
+// Tick performs one explicit foreground group observation pass.
 //
 // The current implementation samples group state and computes metrics, budget
-// usage, pressure, and scalar score values. It does not publish partition
-// runtime policies, redistribute budgets, execute physical trim, or start
-// background work.
+// usage, pressure, and scalar score values. Because Tick observes only one
+// sample, workload-window score inputs remain zero; callers that need
+// previous/current rate projection should use NewPoolGroupControllerEvaluation.
+// Tick does not publish partition runtime policies, redistribute budgets,
+// execute physical trim, or start background work.
 func (g *PoolGroup) Tick() (PoolGroupCoordinatorReport, error) {
 	g.mustBeInitialized()
 	var report PoolGroupCoordinatorReport
@@ -29,11 +31,12 @@ func (g *PoolGroup) Tick() (PoolGroupCoordinatorReport, error) {
 	return report, err
 }
 
-// TickInto writes one explicit group coordinator observation pass into dst.
+// TickInto writes one explicit foreground group observation pass into dst.
 //
 // TickInto reuses dst.Sample.Partitions capacity. A nil dst is a no-op after
 // receiver and lifecycle validation. This is a manual foreground call, not a
-// scheduler tick from a background goroutine.
+// scheduler tick from a background goroutine. dst must not be shared by
+// concurrent callers without external synchronization.
 func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	g.mustBeInitialized()
 	if !g.lifecycle.AllowsWork() {
@@ -49,6 +52,8 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	metrics := newPoolGroupMetrics(g.name, sample)
 	budget := newGroupBudgetSnapshot(runtime.Policy.Budget, sample)
 	pressure := newGroupPressureSnapshot(runtime.Policy.Pressure, sample)
+	// Foreground Tick has no previous sample, so workload-window components are
+	// intentionally zero. Explicit evaluation APIs own previous/current rates.
 	scores := g.scoreEvaluator.ScoreValues(PoolGroupWindowRates{}, budget, pressure)
 	*dst = PoolGroupCoordinatorReport{
 		Generation:       generation,

@@ -57,7 +57,8 @@ type PoolGroupPartitionSnapshot struct {
 // The snapshot is observational across partitions, not a global transaction.
 // Metrics are derived from one group sample, while partition snapshots may
 // reflect nearby different instants under concurrent activity. Snapshot is not
-// controller input; coordinator code should use Sample or SampleInto.
+// controller input; coordinator code should use Sample or SampleInto. Snapshot
+// is diagnostic and remains available after group close.
 func (g *PoolGroup) Snapshot() PoolGroupSnapshot {
 	g.mustBeInitialized()
 	runtime := g.currentRuntimeSnapshot()

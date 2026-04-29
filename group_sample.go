@@ -16,7 +16,7 @@
 
 package bufferpool
 
-// PoolGroupSample is an aggregate group sample for explicit coordinator ticks.
+// PoolGroupSample is an aggregate group sample for foreground observations.
 //
 // The group sample is observational across partitions. It is not a global
 // transaction: each partition sample is race-safe but may represent a nearby
@@ -83,7 +83,8 @@ type PoolGroupPartitionSample struct {
 //
 // Sample returns a value and may allocate per-partition and nested per-Pool
 // sample storage. Frequent coordinator-style callers should use SampleInto with
-// reusable destination capacity.
+// reusable destination capacity. Sampling is diagnostic and remains available
+// after group close so callers can inspect final counters and ownership state.
 func (g *PoolGroup) Sample() PoolGroupSample {
 	var sample PoolGroupSample
 	g.SampleInto(&sample)
@@ -94,7 +95,8 @@ func (g *PoolGroup) Sample() PoolGroupSample {
 //
 // dst.Partitions capacity is reused. Nested partition samples also reuse their
 // existing Pool slice capacity where possible. A nil dst is a no-op after
-// receiver validation.
+// receiver validation. dst must not be shared by concurrent callers without
+// external synchronization.
 func (g *PoolGroup) SampleInto(dst *PoolGroupSample) {
 	g.mustBeInitialized()
 	if dst == nil {
@@ -110,6 +112,11 @@ func (g *PoolGroup) sample(dst *PoolGroupSample) {
 
 // sampleWithRuntimeAndGeneration samples all group partitions against a fixed
 // group generation and runtime-policy view.
+//
+// The fixed group values keep group-level metadata internally consistent inside
+// one sample. Child partition samples are still independent observations, so a
+// concurrent workload may be reflected at slightly different instants across
+// partitions.
 func (g *PoolGroup) sampleWithRuntimeAndGeneration(dst *PoolGroupSample, runtime *groupRuntimeSnapshot, generation Generation) {
 	if dst == nil {
 		return
@@ -161,6 +168,10 @@ func reusablePartitionSample(samples []PoolGroupPartitionSample, index int) Pool
 }
 
 // addPartitionSampleToGroupAggregate folds one partition sample into dst.
+//
+// The aggregate is deliberately partition-shaped because the hardened
+// partition window, rate, budget, pressure, and score code already understands
+// that representation. The aggregate never carries per-Pool records.
 func addPartitionSampleToGroupAggregate(dst *PoolPartitionSample, src PoolPartitionSample) {
 	if dst == nil {
 		return

@@ -18,61 +18,59 @@ package bufferpool
 
 import "time"
 
-const (
-	// defaultGroupCoordinatorTickInterval is used only when future automatic
-	// group coordination is enabled by policy. Current PoolGroup exposes only
-	// manual foreground ticks.
-	defaultGroupCoordinatorTickInterval = time.Second
-)
-
 // PoolGroupPolicy defines group-level observational control behavior.
 //
 // PoolGroupPolicy describes how a group interprets aggregate partition state.
 // It does not authorize automatic policy application in the current
-// implementation. Budget and pressure are group-level projections only.
+// implementation. Budget and pressure are group-level projections over the
+// partition-shaped aggregate sample; they do not mutate child partition policy.
 type PoolGroupPolicy struct {
-	// Coordinator configures explicit tick behavior and future scheduling policy.
+	// Coordinator reserves automatic scheduling policy. Current PoolGroup only
+	// supports manual foreground observation through Tick and TickInto.
 	Coordinator PoolGroupCoordinatorPolicy
 
-	// Budget configures group-level aggregate retained, active, and owned limits.
+	// Budget configures partition-shaped aggregate retained, active, and owned limits.
 	Budget PartitionBudgetPolicy
 
-	// Pressure maps aggregate group-owned bytes into pressure levels.
+	// Pressure maps partition-shaped aggregate owned bytes into pressure levels.
 	Pressure PartitionPressurePolicy
 
 	// Score configures group-level score projection.
 	Score PoolGroupScoreEvaluatorConfig
 }
 
-// PoolGroupCoordinatorPolicy defines explicit group coordinator tick behavior.
+// PoolGroupCoordinatorPolicy reserves future automatic coordination settings.
 //
-// Enabled reserves policy space for future automatic/background scheduling. The
-// current PoolGroup implementation does not start goroutines; manual Tick
-// remains foreground-only.
+// The current PoolGroup implementation does not start goroutines, timers, or
+// tickers. Validate rejects enabled or scheduled coordinator policy until a
+// real automatic coordinator exists.
 type PoolGroupCoordinatorPolicy struct {
-	// Enabled reserves policy space for future automatic coordination.
+	// Enabled is reserved for future automatic coordination and is rejected today.
 	Enabled bool
 
-	// TickInterval is the future automatic scheduling cadence.
+	// TickInterval is reserved for a future automatic scheduling cadence.
 	TickInterval time.Duration
 }
 
 // DefaultPoolGroupPolicy returns the default observational group policy.
 func DefaultPoolGroupPolicy() PoolGroupPolicy { return PoolGroupPolicy{} }
 
-// Normalize returns p with unset coordinator defaults completed.
+// Normalize returns p unchanged.
 func (p PoolGroupPolicy) Normalize() PoolGroupPolicy {
-	if p.Coordinator.Enabled && p.Coordinator.TickInterval == 0 {
-		p.Coordinator.TickInterval = defaultGroupCoordinatorTickInterval
-	}
 	return p
 }
 
 // Validate validates group policy values.
 func (p PoolGroupPolicy) Validate() error {
 	p = p.Normalize()
-	if p.Coordinator.Enabled && p.Coordinator.TickInterval <= 0 {
-		return newError(ErrInvalidPolicy, "bufferpool.PoolGroupPolicy: coordinator tick interval must be positive")
+	if p.Coordinator.TickInterval < 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PoolGroupPolicy: coordinator tick interval must not be negative")
+	}
+	if p.Coordinator.Enabled {
+		return newError(ErrInvalidPolicy, "bufferpool.PoolGroupPolicy: automatic coordinator is not supported")
+	}
+	if p.Coordinator.TickInterval != 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PoolGroupPolicy: coordinator tick interval is not supported without automatic coordination")
 	}
 	if err := p.Budget.Validate(); err != nil {
 		return err

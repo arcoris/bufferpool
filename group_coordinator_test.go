@@ -60,3 +60,47 @@ func TestPoolGroupTickDoesNotMutatePolicies(t *testing.T) {
 		t.Fatalf("Tick mutated policy: before=%#v after=%#v", before, after)
 	}
 }
+
+// TestPoolGroupTickIntoIsObservationOnly verifies Tick has no window rates.
+func TestPoolGroupTickIntoIsObservationOnly(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	requireGroupNoError(t, err)
+	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+
+	var report PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&report))
+	if report.Scores.Activity != 0 {
+		t.Fatalf("TickInto activity score = %v, want zero without a previous sample", report.Scores.Activity)
+	}
+	if report.Sample.Aggregate.LeaseCounters.Acquisitions != 1 || report.Sample.Aggregate.LeaseCounters.Releases != 1 {
+		t.Fatalf("TickInto sample counters = %+v, want real observation", report.Sample.Aggregate.LeaseCounters)
+	}
+}
+
+// TestPoolGroupTickIntoDoesNotMutatePartitionPolicies verifies observation only.
+func TestPoolGroupTickIntoDoesNotMutatePartitionPolicies(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha", "beta")
+	before := make(map[string]PartitionPolicy)
+	for _, name := range group.PartitionNames() {
+		partition, ok := group.partition(name)
+		if !ok {
+			t.Fatalf("missing partition %q", name)
+		}
+		before[name] = partition.Policy()
+	}
+
+	_, err := group.Tick()
+	requireGroupNoError(t, err)
+
+	for _, name := range group.PartitionNames() {
+		partition, ok := group.partition(name)
+		if !ok {
+			t.Fatalf("missing partition %q", name)
+		}
+		after := partition.Policy()
+		if !reflect.DeepEqual(before[name], after) {
+			t.Fatalf("Tick mutated partition %q policy: before=%#v after=%#v", name, before[name], after)
+		}
+	}
+}

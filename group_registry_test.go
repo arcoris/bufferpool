@@ -60,4 +60,9 @@ func TestGroupRegistryRejectsInvalidInputs(t *testing.T) {
 	if _, err := newGroupRegistry([]GroupPartitionConfig{testGroupPartitionConfig("alpha"), testGroupPartitionConfig("alpha")}); err == nil {
 		t.Fatalf("newGroupRegistry(duplicate) error = nil")
 	}
+	mismatched := testGroupPartitionConfig("alpha")
+	mismatched.Config.Name = "backend"
+	if _, err := newGroupRegistry([]GroupPartitionConfig{mismatched}); err == nil {
+		t.Fatalf("newGroupRegistry(mismatched partition name) error = nil")
+	}
 }

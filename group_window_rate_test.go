@@ -51,6 +51,60 @@ func TestPoolGroupWindowResetReusesPartitionSlice(t *testing.T) {
 	}
 }
 
+// TestPoolGroupWindowResetReusesNestedPoolCapacity verifies deep sample reuse.
+func TestPoolGroupWindowResetReusesNestedPoolCapacity(t *testing.T) {
+	current := PoolGroupSample{
+		Partitions: []PoolGroupPartitionSample{{
+			Name:   "alpha",
+			Sample: PoolPartitionSample{Pools: []PoolPartitionPoolSample{{Name: "alpha-pool"}}},
+		}},
+		Aggregate: PoolPartitionSample{Pools: []PoolPartitionPoolSample{{Name: "aggregate-pool"}}},
+	}
+	window := PoolGroupWindow{
+		Current: PoolGroupSample{
+			Partitions: []PoolGroupPartitionSample{{
+				Sample: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 4)},
+			}},
+			Aggregate: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 4)},
+		},
+	}
+	partitionCap := cap(window.Current.Partitions[0].Sample.Pools)
+	aggregateCap := cap(window.Current.Aggregate.Pools)
+
+	window.Reset(PoolGroupSample{}, current)
+	if cap(window.Current.Partitions[0].Sample.Pools) != partitionCap {
+		t.Fatalf("nested partition Pools cap = %d, want %d", cap(window.Current.Partitions[0].Sample.Pools), partitionCap)
+	}
+	if cap(window.Current.Aggregate.Pools) != aggregateCap {
+		t.Fatalf("aggregate Pools cap = %d, want %d", cap(window.Current.Aggregate.Pools), aggregateCap)
+	}
+}
+
+// TestPoolGroupWindowOwnsCopiedSamples verifies Reset detaches caller storage.
+func TestPoolGroupWindowOwnsCopiedSamples(t *testing.T) {
+	current := PoolGroupSample{
+		Partitions: []PoolGroupPartitionSample{{
+			Name:   "alpha",
+			Sample: PoolPartitionSample{Pools: []PoolPartitionPoolSample{{Name: "alpha-pool"}}},
+		}},
+		Aggregate: PoolPartitionSample{Pools: []PoolPartitionPoolSample{{Name: "aggregate-pool"}}},
+	}
+	window := NewPoolGroupWindow(PoolGroupSample{}, current)
+
+	current.Partitions[0].Name = "changed"
+	current.Partitions[0].Sample.Pools[0].Name = "changed-pool"
+	current.Aggregate.Pools[0].Name = "changed-aggregate"
+	if window.Current.Partitions[0].Name != "alpha" {
+		t.Fatalf("window partition name changed to %q", window.Current.Partitions[0].Name)
+	}
+	if window.Current.Partitions[0].Sample.Pools[0].Name != "alpha-pool" {
+		t.Fatalf("window nested pool name changed to %q", window.Current.Partitions[0].Sample.Pools[0].Name)
+	}
+	if window.Current.Aggregate.Pools[0].Name != "aggregate-pool" {
+		t.Fatalf("window aggregate pool name changed to %q", window.Current.Aggregate.Pools[0].Name)
+	}
+}
+
 func TestPoolGroupTimedRatesMatchAggregatePartitionRates(t *testing.T) {
 	previous := testGroupSampleWithCounters(Generation(1), PoolCountersSnapshot{Gets: 10, Hits: 6, Misses: 4, Puts: 5, Retains: 3, Drops: 2}, LeaseCountersSnapshot{Acquisitions: 2, Releases: 1})
 	current := testGroupSampleWithCounters(Generation(2), PoolCountersSnapshot{Gets: 20, Hits: 14, Misses: 6, Puts: 9, Retains: 6, Drops: 3}, LeaseCountersSnapshot{Acquisitions: 5, Releases: 3})
@@ -62,5 +116,15 @@ func TestPoolGroupTimedRatesMatchAggregatePartitionRates(t *testing.T) {
 	}
 	if rates.Aggregate.LeaseOpsPerSecond != 2.5 {
 		t.Fatalf("LeaseOpsPerSecond = %v, want 2.5", rates.Aggregate.LeaseOpsPerSecond)
+	}
+}
+
+// TestPoolGroupTimedRatesNonPositiveElapsedLeavesThroughputZero locks rate gating.
+func TestPoolGroupTimedRatesNonPositiveElapsedLeavesThroughputZero(t *testing.T) {
+	previous := testGroupSampleWithCounters(Generation(1), PoolCountersSnapshot{Gets: 10, Puts: 10}, LeaseCountersSnapshot{Acquisitions: 10, Releases: 10})
+	current := testGroupSampleWithCounters(Generation(2), PoolCountersSnapshot{Gets: 20, Puts: 20}, LeaseCountersSnapshot{Acquisitions: 20, Releases: 20})
+	rates := NewPoolGroupTimedWindowRates(NewPoolGroupWindow(previous, current), 0)
+	if rates.Aggregate.GetsPerSecond != 0 || rates.Aggregate.PutsPerSecond != 0 || rates.Aggregate.LeaseOpsPerSecond != 0 {
+		t.Fatalf("throughput rates = %+v, want zero without positive elapsed", rates.Aggregate)
 	}
 }

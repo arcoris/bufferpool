@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestPoolGroupSampleAggregatesPartitions(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
@@ -45,6 +48,25 @@ func TestPoolGroupSampleIntoReusesPartitionSlice(t *testing.T) {
 	}
 	if len(dst.Partitions) != 2 {
 		t.Fatalf("len(dst.Partitions) = %d, want 2", len(dst.Partitions))
+	}
+}
+
+// TestPoolGroupSampleIntoReusesNestedPartitionSamples verifies nested slice reuse.
+func TestPoolGroupSampleIntoReusesNestedPartitionSamples(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+	dst := PoolGroupSample{
+		Partitions: []PoolGroupPartitionSample{{
+			Sample: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 4)},
+		}},
+	}
+	beforeCap := cap(dst.Partitions[0].Sample.Pools)
+
+	group.SampleInto(&dst)
+	if cap(dst.Partitions[0].Sample.Pools) != beforeCap {
+		t.Fatalf("nested Pools cap = %d, want %d", cap(dst.Partitions[0].Sample.Pools), beforeCap)
+	}
+	if len(dst.Partitions[0].Sample.Pools) != 1 {
+		t.Fatalf("len nested Pools = %d, want 1", len(dst.Partitions[0].Sample.Pools))
 	}
 }
 
@@ -80,5 +102,78 @@ func TestAddPartitionSampleToGroupAggregate(t *testing.T) {
 	}
 	if aggregate.CurrentOwnedBytes != 320 {
 		t.Fatalf("CurrentOwnedBytes = %d, want 320", aggregate.CurrentOwnedBytes)
+	}
+}
+
+// TestPoolGroupSampleAggregatesRealPartitionActivity verifies real lease folding.
+func TestPoolGroupSampleAggregatesRealPartitionActivity(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha", "beta")
+	alphaLease, err := group.Acquire("alpha", "alpha-pool", 128)
+	requireGroupNoError(t, err)
+	betaLease, err := group.Acquire("beta", "beta-pool", 256)
+	requireGroupNoError(t, err)
+	betaReleased := false
+	defer func() {
+		if !betaReleased {
+			requireGroupNoError(t, group.Release("beta", betaLease, betaLease.Buffer()))
+		}
+	}()
+
+	requireGroupNoError(t, group.Release("alpha", alphaLease, alphaLease.Buffer()))
+	sample := group.Sample()
+	if sample.Aggregate.LeaseCounters.Acquisitions != 2 {
+		t.Fatalf("Acquisitions = %d, want 2", sample.Aggregate.LeaseCounters.Acquisitions)
+	}
+	if sample.Aggregate.LeaseCounters.Releases != 1 {
+		t.Fatalf("Releases = %d, want 1", sample.Aggregate.LeaseCounters.Releases)
+	}
+	if sample.Aggregate.ActiveLeases != 1 {
+		t.Fatalf("ActiveLeases = %d, want 1", sample.Aggregate.ActiveLeases)
+	}
+	if sample.CurrentRetainedBytes == 0 || sample.CurrentActiveBytes == 0 {
+		t.Fatalf("sample bytes retained=%d active=%d, want both non-zero", sample.CurrentRetainedBytes, sample.CurrentActiveBytes)
+	}
+	if sample.CurrentOwnedBytes != poolSaturatingAdd(sample.CurrentRetainedBytes, sample.CurrentActiveBytes) {
+		t.Fatalf("CurrentOwnedBytes = %d, want retained+active", sample.CurrentOwnedBytes)
+	}
+
+	requireGroupNoError(t, group.Release("beta", betaLease, betaLease.Buffer()))
+	betaReleased = true
+}
+
+// TestPoolGroupSampleSaturatesOwnedBytes verifies integer and byte saturation.
+func TestPoolGroupSampleSaturatesOwnedBytes(t *testing.T) {
+	var aggregate PoolPartitionSample
+	addPartitionSampleToGroupAggregate(&aggregate, PoolPartitionSample{
+		TotalPoolCount:       math.MaxInt,
+		SampledPoolCount:     math.MaxInt,
+		PoolCount:            math.MaxInt,
+		CurrentRetainedBytes: math.MaxUint64 - 1,
+	})
+	addPartitionSampleToGroupAggregate(&aggregate, PoolPartitionSample{
+		TotalPoolCount:     1,
+		SampledPoolCount:   1,
+		PoolCount:          1,
+		CurrentActiveBytes: 8,
+		LeaseCounters:      LeaseCountersSnapshot{ActiveBytes: 8},
+	})
+	if aggregate.TotalPoolCount != math.MaxInt || aggregate.SampledPoolCount != math.MaxInt || aggregate.PoolCount != math.MaxInt {
+		t.Fatalf("pool counts did not saturate: total=%d sampled=%d pool=%d", aggregate.TotalPoolCount, aggregate.SampledPoolCount, aggregate.PoolCount)
+	}
+	if aggregate.CurrentOwnedBytes != math.MaxUint64 {
+		t.Fatalf("CurrentOwnedBytes = %d, want MaxUint64", aggregate.CurrentOwnedBytes)
+	}
+}
+
+// TestPoolGroupSamplePreservesDeterministicPartitionOrder verifies registry order.
+func TestPoolGroupSamplePreservesDeterministicPartitionOrder(t *testing.T) {
+	group := testNewPoolGroup(t, "gamma", "alpha", "beta")
+	sample := group.Sample()
+	got := []string{sample.Partitions[0].Name, sample.Partitions[1].Name, sample.Partitions[2].Name}
+	want := []string{"gamma", "alpha", "beta"}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("partition order = %#v, want %#v", got, want)
+		}
 	}
 }

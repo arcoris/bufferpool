@@ -82,6 +82,10 @@ func clonePoolGroupSample(sample PoolGroupSample) PoolGroupSample {
 }
 
 // copyPoolGroupSampleInto copies src into dst while reusing destination capacity.
+//
+// Reuse includes the nested PoolPartitionSample.Pools slices inside each
+// partition sample and Aggregate. That keeps Reset allocation-conscious while
+// still owning all copied sample storage.
 func copyPoolGroupSampleInto(dst, src PoolGroupSample) PoolGroupSample {
 	partitions := dst.Partitions[:0]
 	if src.Partitions != nil {
@@ -91,14 +95,16 @@ func copyPoolGroupSampleInto(dst, src PoolGroupSample) PoolGroupSample {
 			partitions = partitions[:len(src.Partitions)]
 		}
 		for index, partition := range src.Partitions {
+			previousSample := partitions[index].Sample
 			partitions[index] = partition
-			partitions[index].Sample = clonePoolPartitionSample(partition.Sample)
+			partitions[index].Sample = copyPoolPartitionSampleInto(previousSample, partition.Sample)
 		}
 	} else {
 		partitions = nil
 	}
+	aggregate := copyPoolPartitionSampleInto(dst.Aggregate, src.Aggregate)
 	dst = src
 	dst.Partitions = partitions
-	dst.Aggregate = clonePoolPartitionSample(src.Aggregate)
+	dst.Aggregate = aggregate
 	return dst
 }

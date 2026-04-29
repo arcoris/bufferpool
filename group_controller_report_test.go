@@ -37,6 +37,24 @@ func TestNewPoolGroupControllerEvaluation(t *testing.T) {
 	}
 }
 
+// TestPoolGroupControllerEvaluationUsesWindowRates verifies explicit evaluation.
+func TestPoolGroupControllerEvaluationUsesWindowRates(t *testing.T) {
+	previous := testGroupSampleWithCounters(Generation(1), PoolCountersSnapshot{Gets: 10, Hits: 5, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 1, Releases: 1})
+	current := testGroupSampleWithCounters(Generation(2), PoolCountersSnapshot{Gets: 110, Hits: 105, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 101, Releases: 101})
+	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
+
+	evaluation := NewPoolGroupControllerEvaluation(previous, current, time.Second, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{}, evaluator)
+	if evaluation.Rates.Aggregate.GetsPerSecond != 100 {
+		t.Fatalf("GetsPerSecond = %v, want 100", evaluation.Rates.Aggregate.GetsPerSecond)
+	}
+	if evaluation.Rates.Aggregate.LeaseOpsPerSecond != 200 {
+		t.Fatalf("LeaseOpsPerSecond = %v, want 200", evaluation.Rates.Aggregate.LeaseOpsPerSecond)
+	}
+	if evaluation.Scores.Activity == 0 {
+		t.Fatalf("Scores.Activity = 0, want window-derived activity")
+	}
+}
+
 func TestPoolGroupCoordinatorReportZeroValue(t *testing.T) {
 	var report PoolGroupCoordinatorReport
 	if report.Scores.IsZero() != true {

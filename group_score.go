@@ -16,19 +16,6 @@
 
 package bufferpool
 
-// PoolGroupScores contains scalar group score values and optional per-partition
-// score values.
-//
-// The first PoolGroup layer intentionally exposes scalar score values only.
-// Diagnostic score components remain partition-level concerns for now.
-type PoolGroupScores struct {
-	// Values contains aggregate group score values.
-	Values PoolGroupScoreValues
-
-	// PartitionScores contains optional per-partition scalar score values.
-	PartitionScores []PoolGroupPartitionScore
-}
-
 // PoolGroupScoreValues contains scalar group score values.
 //
 // These values are advisory projections. They are not decisions and must not be
@@ -52,15 +39,6 @@ type PoolGroupScoreValues struct {
 
 	// Risk is the aggregate ownership and return-path risk score.
 	Risk float64
-}
-
-// PoolGroupPartitionScore ties a group-local partition name to scalar scores.
-type PoolGroupPartitionScore struct {
-	// Name is the group-local partition name.
-	Name string
-
-	// Scores contains scalar partition score values.
-	Scores PoolPartitionScoreValues
 }
 
 // IsZero reports whether all group score values are zero.

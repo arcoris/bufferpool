@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 const (
 	// errNilPoolGroup reports nil or zero-value PoolGroup receivers.
@@ -59,6 +62,13 @@ const (
 type PoolGroup struct {
 	// lifecycle gates group-level foreground work and hard close.
 	lifecycle AtomicLifecycle
+
+	// runtimeMu serializes group-routed acquisition and release with hard close.
+	// It is not a Pool hot-path lock: callers that already use PoolPartition or
+	// Pool directly do not take it. The lock only protects the group ownership
+	// boundary so Close cannot publish Closed before in-flight group-routed work
+	// has finished entering the child partition.
+	runtimeMu sync.RWMutex
 
 	// generation tracks group-visible state and explicit coordinator events.
 	generation AtomicGeneration
@@ -136,6 +146,10 @@ func (g *PoolGroup) PartitionNames() []string {
 }
 
 // PartitionSnapshot returns a diagnostic snapshot for one group-owned partition.
+//
+// PartitionSnapshot is diagnostic and remains available after group close. It
+// does not expose the raw partition pointer and does not authorize data-plane
+// work after shutdown begins.
 func (g *PoolGroup) PartitionSnapshot(name string) (PoolPartitionSnapshot, bool) {
 	g.mustBeInitialized()
 	partition, ok := g.registry.partition(name)
@@ -146,6 +160,9 @@ func (g *PoolGroup) PartitionSnapshot(name string) (PoolPartitionSnapshot, bool)
 }
 
 // PartitionMetrics returns diagnostic metrics for one group-owned partition.
+//
+// PartitionMetrics is diagnostic and remains available after group close. It
+// reads through the owned PoolPartition without exposing it.
 func (g *PoolGroup) PartitionMetrics(name string) (PoolPartitionMetrics, bool) {
 	g.mustBeInitialized()
 	partition, ok := g.registry.partition(name)
@@ -155,7 +172,72 @@ func (g *PoolGroup) PartitionMetrics(name string) (PoolPartitionMetrics, bool) {
 	return partition.Metrics(), true
 }
 
+// Acquire obtains an ownership lease through a group-owned partition.
+//
+// Acquire is the minimal group data-plane routing boundary. It validates the
+// group lifecycle, resolves the group-local partition name, and delegates to
+// PoolPartition.Acquire so checked-out ownership remains in the partition-owned
+// LeaseRegistry. It does not expose raw *PoolPartition or *Pool access, and it
+// returns ErrClosed once group close has started.
+func (g *PoolGroup) Acquire(partitionName string, poolName string, size int) (Lease, error) {
+	g.mustBeInitialized()
+	g.runtimeMu.RLock()
+	defer g.runtimeMu.RUnlock()
+
+	if !g.lifecycle.AllowsWork() {
+		return Lease{}, newError(ErrClosed, errGroupClosed)
+	}
+	partition, ok := g.registry.partition(partitionName)
+	if !ok {
+		return Lease{}, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+partitionName)
+	}
+	return partition.Acquire(poolName, size)
+}
+
+// AcquireSize is the Size-typed form of Acquire.
+//
+// The lifecycle, partition lookup, and LeaseRegistry ownership semantics are
+// identical to Acquire.
+func (g *PoolGroup) AcquireSize(partitionName string, poolName string, size Size) (Lease, error) {
+	g.mustBeInitialized()
+	g.runtimeMu.RLock()
+	defer g.runtimeMu.RUnlock()
+
+	if !g.lifecycle.AllowsWork() {
+		return Lease{}, newError(ErrClosed, errGroupClosed)
+	}
+	partition, ok := g.registry.partition(partitionName)
+	if !ok {
+		return Lease{}, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+partitionName)
+	}
+	return partition.AcquireSize(poolName, size)
+}
+
+// Release releases a lease through a group-owned partition.
+//
+// Release intentionally routes to PoolPartition.Release instead of calling
+// Lease.Release directly. That preserves partition dirty marking and keeps the
+// LeaseRegistry ownership boundary partition-local. Release remains available
+// after group close starts so checked-out ownership can complete diagnostically,
+// matching PoolPartition release semantics. Callers must provide the same
+// group-local partition name that acquired the lease.
+func (g *PoolGroup) Release(partitionName string, lease Lease, buffer []byte) error {
+	g.mustBeInitialized()
+	g.runtimeMu.RLock()
+	defer g.runtimeMu.RUnlock()
+
+	partition, ok := g.registry.partition(partitionName)
+	if !ok {
+		return newError(ErrInvalidOptions, errGroupPartitionMissing+": "+partitionName)
+	}
+	return partition.Release(lease, buffer)
+}
+
 // partition returns a raw group-owned partition for internal group code only.
+//
+// This helper must stay unexported. Public callers route data-plane work
+// through PoolGroup Acquire/Release and diagnostics through snapshot/metrics
+// methods so partition ownership and lease accounting remain intact.
 func (g *PoolGroup) partition(name string) (*PoolPartition, bool) {
 	return g.registry.partition(name)
 }

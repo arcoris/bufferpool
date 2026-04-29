@@ -81,6 +81,12 @@ func newGroupRegistry(configs []GroupPartitionConfig) (groupRegistry, error) {
 			err := newError(ErrInvalidOptions, errGroupRegistryDuplicatePartition+": "+normalized.Name)
 			return groupRegistry{}, multierr.Append(err, registry.closeAll())
 		}
+		// Registry construction can be called directly by tests or future
+		// internal code, so keep the same name invariant enforced by config
+		// validation before allocating the child partition.
+		if err := validateGroupPartitionNameMatch(normalized); err != nil {
+			return groupRegistry{}, multierr.Append(err, registry.closeAll())
+		}
 		partition, err := NewPoolPartition(normalized.Config)
 		if err != nil {
 			return groupRegistry{}, multierr.Append(err, registry.closeAll())

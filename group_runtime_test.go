@@ -19,25 +19,25 @@ package bufferpool
 import "testing"
 
 func TestGroupRuntimeSnapshotNormalize(t *testing.T) {
-	snapshot := newGroupRuntimeSnapshot(Generation(7), PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true}})
+	snapshot := newGroupRuntimeSnapshot(Generation(7), PoolGroupPolicy{Budget: PartitionBudgetPolicy{MaxRetainedBytes: MiB}})
 	if snapshot.Generation != Generation(7) {
 		t.Fatalf("Generation = %v, want 7", snapshot.Generation)
 	}
-	if snapshot.Policy.Coordinator.TickInterval != defaultGroupCoordinatorTickInterval {
-		t.Fatalf("TickInterval not normalized")
+	if snapshot.Policy.Budget.MaxRetainedBytes != MiB {
+		t.Fatalf("Budget not preserved")
 	}
 }
 
 func TestPoolGroupPublishRuntimeSnapshot(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
-	snapshot := newGroupRuntimeSnapshot(Generation(9), PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true}})
+	snapshot := newGroupRuntimeSnapshot(Generation(9), PoolGroupPolicy{Budget: PartitionBudgetPolicy{MaxRetainedBytes: MiB}})
 	group.publishRuntimeSnapshot(snapshot)
 	current := group.currentRuntimeSnapshot()
 	if current.Generation != Generation(9) {
 		t.Fatalf("Generation = %v, want 9", current.Generation)
 	}
-	if current.Policy.Coordinator.TickInterval != defaultGroupCoordinatorTickInterval {
-		t.Fatalf("published policy was not normalized")
+	if current.Policy.Budget.MaxRetainedBytes != MiB {
+		t.Fatalf("published policy was not preserved")
 	}
 }
 

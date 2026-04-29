@@ -106,6 +106,10 @@ type PoolGroupMetrics struct {
 }
 
 // Metrics returns an aggregate group metrics projection.
+//
+// Metrics is diagnostic and remains available after group close. It is derived
+// from one non-transactional group sample and should not be used as a
+// workload-window score input.
 func (g *PoolGroup) Metrics() PoolGroupMetrics {
 	g.mustBeInitialized()
 	var sample PoolGroupSample

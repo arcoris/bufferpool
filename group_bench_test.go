@@ -39,6 +39,22 @@ func benchmarkPoolGroup(b *testing.B, partitions int) *PoolGroup {
 	return group
 }
 
+// seedPoolGroupActivity creates real retained and lease counters before benchmarks.
+func seedPoolGroupActivity(b *testing.B, group *PoolGroup, partitions int) {
+	b.Helper()
+	for index := 0; index < partitions; index++ {
+		partitionName := "partition-" + string(rune('a'+index))
+		poolName := partitionName + "-pool"
+		lease, err := group.Acquire(partitionName, poolName, 256)
+		if err != nil {
+			b.Fatalf("PoolGroup.Acquire() error = %v", err)
+		}
+		if err := group.Release(partitionName, lease, lease.Buffer()); err != nil {
+			b.Fatalf("PoolGroup.Release() error = %v", err)
+		}
+	}
+}
+
 func BenchmarkPoolGroupSample(b *testing.B) {
 	for _, partitions := range []int{1, 4, 16} {
 		b.Run(fmt.Sprintf("partitions_%d", partitions), func(b *testing.B) {
@@ -67,8 +83,22 @@ func BenchmarkPoolGroupSampleInto(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupSampleIntoAfterActivity measures reusable sampling with counters.
+func BenchmarkPoolGroupSampleIntoAfterActivity(b *testing.B) {
+	group := benchmarkPoolGroup(b, 4)
+	seedPoolGroupActivity(b, group, 4)
+	var sample PoolGroupSample
+	group.SampleInto(&sample)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		group.SampleInto(&sample)
+	}
+}
+
 func BenchmarkPoolGroupMetrics(b *testing.B) {
 	group := benchmarkPoolGroup(b, 4)
+	seedPoolGroupActivity(b, group, 4)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -89,11 +119,48 @@ func BenchmarkPoolGroupTickInto(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupAcquireRelease measures group routing over partition leases.
+func BenchmarkPoolGroupAcquireRelease(b *testing.B) {
+	group := benchmarkPoolGroup(b, 1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lease, err := group.Acquire("partition-a", "partition-a-pool", 256)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := group.Release("partition-a", lease, lease.Buffer()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkPoolGroupScoreEvaluatorScoreValues(b *testing.B) {
 	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
 	rates := PoolGroupWindowRates{Aggregate: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, LeaseOpsPerSecond: 100}}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = evaluator.ScoreValues(rates, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	}
+}
+
+// BenchmarkPoolGroupWindowReset measures deep-copy reuse for group samples.
+func BenchmarkPoolGroupWindowReset(b *testing.B) {
+	previous := testGroupSampleWithCounters(Generation(1), PoolCountersSnapshot{Gets: 10, Hits: 5, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 1, Releases: 1})
+	current := testGroupSampleWithCounters(Generation(2), PoolCountersSnapshot{Gets: 20, Hits: 15, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 5, Releases: 3})
+	previous.Partitions = []PoolGroupPartitionSample{{
+		Name:   "alpha",
+		Sample: PoolPartitionSample{Pools: []PoolPartitionPoolSample{{Name: "alpha-pool"}}},
+	}}
+	current.Partitions = []PoolGroupPartitionSample{{
+		Name:   "alpha",
+		Sample: PoolPartitionSample{Pools: []PoolPartitionPoolSample{{Name: "alpha-pool"}}},
+	}}
+	var window PoolGroupWindow
+	window.Reset(previous, current)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		window.Reset(previous, current)
 	}
 }

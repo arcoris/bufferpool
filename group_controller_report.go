@@ -18,7 +18,7 @@ package bufferpool
 
 import "time"
 
-// PoolGroupCoordinatorReport describes one explicit group coordinator tick.
+// PoolGroupCoordinatorReport describes one explicit foreground group observation.
 //
 // The report is an observational projection. It is not an applied decision and
 // must not be interpreted as permission to mutate partition policies, apply

@@ -41,6 +41,9 @@ const (
 
 	// errGroupConfigInvalidPartition wraps invalid owned partition construction config.
 	errGroupConfigInvalidPartition = "bufferpool.PoolGroupConfig: invalid partition config"
+
+	// errGroupConfigPartitionNameMismatch rejects divergent group and partition names.
+	errGroupConfigPartitionNameMismatch = "bufferpool.PoolGroupConfig: partition config name must match group partition name"
 )
 
 // PoolGroupConfig configures one PoolGroup.
@@ -113,6 +116,10 @@ func (c PoolGroupConfig) Validate() error {
 			continue
 		}
 		seen[partitionConfig.Name] = struct{}{}
+		if nameErr := validateGroupPartitionNameMatch(partitionConfig); nameErr != nil {
+			multierr.AppendInto(&err, nameErr)
+			continue
+		}
 		if partitionErr := partitionConfig.Config.Validate(); partitionErr != nil {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, partitionErr, errGroupConfigInvalidPartition+": "+partitionConfig.Name))
 		}
@@ -138,6 +145,14 @@ func (p GroupPartitionConfig) Normalize() GroupPartitionConfig {
 	normalized.Config = partitionConfig.Normalize()
 
 	return normalized
+}
+
+// validateGroupPartitionNameMatch rejects divergent group-local and diagnostic names.
+func validateGroupPartitionNameMatch(config GroupPartitionConfig) error {
+	if config.Name == "" || config.Config.Name == "" || config.Config.Name == config.Name {
+		return nil
+	}
+	return newError(ErrInvalidOptions, errGroupConfigPartitionNameMismatch+": "+config.Name+" != "+config.Config.Name)
 }
 
 // normalizeGroupName applies the group diagnostic-name default.

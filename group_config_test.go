@@ -39,6 +39,21 @@ func TestPoolGroupConfigNormalize(t *testing.T) {
 	}
 }
 
+// TestPoolGroupPartitionConfigNormalizeReplacesDefaultPartitionName verifies naming.
+func TestPoolGroupPartitionConfigNormalizeReplacesDefaultPartitionName(t *testing.T) {
+	config := GroupPartitionConfig{
+		Name: "alpha",
+		Config: PoolPartitionConfig{
+			Name:  DefaultPartitionName,
+			Pools: []PartitionPoolConfig{testGroupPoolConfig("pool")},
+		},
+	}
+	normalized := config.Normalize()
+	if normalized.Config.Name != "alpha" {
+		t.Fatalf("Config.Name = %q, want alpha", normalized.Config.Name)
+	}
+}
+
 func TestPoolGroupConfigValidateRejectsNoPartitions(t *testing.T) {
 	err := DefaultPoolGroupConfig().Validate()
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
@@ -55,6 +70,23 @@ func TestPoolGroupConfigValidateRejectsInvalidPartition(t *testing.T) {
 	config.Partitions = []GroupPartitionConfig{{Name: "broken", Config: PoolPartitionConfig{Name: "broken"}}}
 	err := config.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+// TestPoolGroupConfigValidateRejectsPartitionNameMismatch verifies strict names.
+func TestPoolGroupConfigValidateRejectsPartitionNameMismatch(t *testing.T) {
+	config := testGroupConfig("alpha")
+	config.Partitions[0].Config.Name = "backend"
+
+	err := config.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+// TestPoolGroupConfigValidateAcceptsMatchingPartitionName verifies explicit match.
+func TestPoolGroupConfigValidateAcceptsMatchingPartitionName(t *testing.T) {
+	config := testGroupConfig("alpha")
+	config.Partitions[0].Config.Name = "alpha"
+
+	requireGroupNoError(t, config.Validate())
 }
 
 func TestCloneGroupConfigDefensiveCopy(t *testing.T) {

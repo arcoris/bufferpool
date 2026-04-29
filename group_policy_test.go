@@ -22,17 +22,37 @@ import (
 )
 
 func TestPoolGroupPolicyNormalize(t *testing.T) {
-	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true}}
+	policy := PoolGroupPolicy{Budget: PartitionBudgetPolicy{MaxRetainedBytes: MiB}}
 	normalized := policy.Normalize()
-	if normalized.Coordinator.TickInterval != defaultGroupCoordinatorTickInterval {
-		t.Fatalf("TickInterval = %v, want %v", normalized.Coordinator.TickInterval, defaultGroupCoordinatorTickInterval)
+	if normalized != policy {
+		t.Fatalf("Normalize() = %#v, want unchanged %#v", normalized, policy)
 	}
 }
 
-func TestPoolGroupPolicyValidateRejectsNegativeCoordinatorInterval(t *testing.T) {
-	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true, TickInterval: -time.Second}}
+// TestPoolGroupPolicyValidateRejectsEnabledCoordinator rejects no-op automation.
+func TestPoolGroupPolicyValidateRejectsEnabledCoordinator(t *testing.T) {
+	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true}}
 	err := policy.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+}
+
+// TestPoolGroupPolicyValidateRejectsCoordinatorInterval rejects inert cadence.
+func TestPoolGroupPolicyValidateRejectsCoordinatorInterval(t *testing.T) {
+	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{TickInterval: time.Second}}
+	err := policy.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+}
+
+// TestPoolGroupPolicyValidateRejectsNegativeCoordinatorInterval locks validation.
+func TestPoolGroupPolicyValidateRejectsNegativeCoordinatorInterval(t *testing.T) {
+	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{TickInterval: -time.Second}}
+	err := policy.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+}
+
+// TestPoolGroupPolicyValidateAcceptsDefault keeps the zero policy usable.
+func TestPoolGroupPolicyValidateAcceptsDefault(t *testing.T) {
+	requireGroupNoError(t, DefaultPoolGroupPolicy().Validate())
 }
 
 func TestPoolGroupPolicyIsZero(t *testing.T) {
