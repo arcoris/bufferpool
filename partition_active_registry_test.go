@@ -133,6 +133,37 @@ func TestPartitionActiveRegistryRejectsUnknownPool(t *testing.T) {
 	requirePartitionErrorIs(t, registry.markActiveIndex(9), ErrInvalidOptions)
 	requirePartitionErrorIs(t, registry.markInactiveIndex(9), ErrInvalidOptions)
 	requirePartitionErrorIs(t, registry.markDirtyIndex(9), ErrInvalidOptions)
+	requirePartitionErrorIs(t, registry.deactivateCleanIndexes([]int{9}), ErrInvalidOptions)
+}
+
+// TestPartitionActiveRegistryIdleExpiryScaffolding verifies clean inactive candidates.
+func TestPartitionActiveRegistryIdleExpiryScaffolding(t *testing.T) {
+	registry := newPartitionActiveRegistry([]string{"alpha", "beta", "gamma"})
+
+	requirePartitionNoError(t, registry.markDirtyIndex(1))
+	before := registry.generationSnapshot()
+	requirePartitionNoError(t, registry.deactivateCleanIndexes([]int{0, 1, 2}))
+	after := registry.generationSnapshot()
+	if !after.After(before) {
+		t.Fatalf("generation after clean deactivation = %s, want after %s", after, before)
+	}
+
+	active := registry.activeIndexes(nil)
+	if len(active) != 1 || active[0] != 1 {
+		t.Fatalf("active after deactivating clean candidates = %v, want dirty beta only", active)
+	}
+
+	registry.resetDirty()
+	requirePartitionNoError(t, registry.deactivateCleanIndexes([]int{1}))
+	if active = registry.activeIndexes(active); len(active) != 0 {
+		t.Fatalf("active after dirty reset and clean deactivation = %v, want empty", active)
+	}
+
+	requirePartitionNoError(t, registry.markActiveIndex(2))
+	active = registry.activeIndexes(active)
+	if len(active) != 1 || active[0] != 2 {
+		t.Fatalf("active after markActiveIndex(2) = %v, want [2]", active)
+	}
 }
 
 // TestPoolPartitionMarksActivityFromAcquireReleaseAndPolicyPublish verifies integration markers.
@@ -169,6 +200,48 @@ func TestPoolPartitionMarksActivityFromAcquireReleaseAndPolicyPublish(t *testing
 	dirty = partition.activeRegistry.dirtyIndexes(dirty)
 	if len(dirty) != 1 || dirty[0] != 0 {
 		t.Fatalf("dirty after pool policy publish = %v, want [0]", dirty)
+	}
+}
+
+// TestPoolPartitionDirtyConsumptionBoundaryIsExplicit verifies controller dirty helpers.
+func TestPoolPartitionDirtyConsumptionBoundaryIsExplicit(t *testing.T) {
+	partition := testNewPoolPartition(t, "alpha")
+	partition.markDirtyProcessed()
+	before := partition.activeRegistry.generationSnapshot()
+	if dirty := partition.controllerDirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("dirty after explicit reset = %v, want empty", dirty)
+	}
+
+	partition.markDirtyProcessed()
+	if got := partition.activeRegistry.generationSnapshot(); got != before {
+		t.Fatalf("generation after clean dirty reset = %s, want %s", got, before)
+	}
+
+	lease, err := partition.Acquire("alpha", 300)
+	requirePartitionNoError(t, err)
+	if dirty := partition.controllerDirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("dirty after Acquire = %v, want [0]", dirty)
+	}
+
+	partition.markDirtyProcessed()
+	afterReset := partition.activeRegistry.generationSnapshot()
+	if !afterReset.After(before) {
+		t.Fatalf("generation after dirty reset = %s, want after %s", afterReset, before)
+	}
+	if dirty := partition.controllerDirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("dirty after explicit consumption = %v, want empty", dirty)
+	}
+
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	if dirty := partition.controllerDirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("dirty after Release = %v, want [0]", dirty)
+	}
+
+	partition.markDirtyProcessed()
+	policy := partition.Policy()
+	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(Generation(7), policy))
+	if dirty := partition.controllerDirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("dirty after policy publish = %v, want [0]", dirty)
 	}
 }
 

@@ -38,11 +38,36 @@ type PoolPartitionCounterDelta struct {
 	// Puts is the Pool return-attempt delta.
 	Puts uint64
 
+	// ReturnedBytes is the returned-buffer capacity delta.
+	ReturnedBytes uint64
+
 	// Retains is the retained-return delta.
 	Retains uint64
 
+	// RetainedBytes is the retained capacity delta. It is a monotonic accepted
+	// byte counter, not the current retained-byte gauge.
+	RetainedBytes uint64
+
 	// Drops is the dropped-return delta.
 	Drops uint64
+
+	// DroppedBytes is the dropped returned-capacity delta.
+	DroppedBytes uint64
+
+	// ClosedPoolDrops is the owner-side closed-Pool drop reason delta.
+	ClosedPoolDrops uint64
+
+	// ReturnedBuffersDisabledDrops is the owner-side disabled-return drop delta.
+	ReturnedBuffersDisabledDrops uint64
+
+	// OversizedDrops is the owner-side oversized-buffer drop reason delta.
+	OversizedDrops uint64
+
+	// UnsupportedClassDrops is the owner-side unsupported-class drop reason delta.
+	UnsupportedClassDrops uint64
+
+	// InvalidPolicyDrops is the owner-side invalid-policy drop reason delta.
+	InvalidPolicyDrops uint64
 
 	// LeaseAcquisitions is the lease-acquisition delta.
 	LeaseAcquisitions uint64
@@ -67,6 +92,12 @@ type PoolPartitionCounterDelta struct {
 
 	// LeasePoolReturnFailures is the failed post-release Pool handoff delta.
 	LeasePoolReturnFailures uint64
+
+	// LeasePoolReturnClosedFailures is the closed-Pool handoff failure delta.
+	LeasePoolReturnClosedFailures uint64
+
+	// LeasePoolReturnAdmissionFailures is the non-closed handoff failure delta.
+	LeasePoolReturnAdmissionFailures uint64
 }
 
 // IsZero reports whether d contains no observed counter movement.
@@ -76,8 +107,16 @@ func (d PoolPartitionCounterDelta) IsZero() bool {
 		d.Misses == 0 &&
 		d.Allocations == 0 &&
 		d.Puts == 0 &&
+		d.ReturnedBytes == 0 &&
 		d.Retains == 0 &&
+		d.RetainedBytes == 0 &&
 		d.Drops == 0 &&
+		d.DroppedBytes == 0 &&
+		d.ClosedPoolDrops == 0 &&
+		d.ReturnedBuffersDisabledDrops == 0 &&
+		d.OversizedDrops == 0 &&
+		d.UnsupportedClassDrops == 0 &&
+		d.InvalidPolicyDrops == 0 &&
 		d.LeaseAcquisitions == 0 &&
 		d.LeaseReleases == 0 &&
 		d.LeaseInvalidReleases == 0 &&
@@ -85,7 +124,9 @@ func (d PoolPartitionCounterDelta) IsZero() bool {
 		d.LeaseOwnershipViolations == 0 &&
 		d.LeasePoolReturnAttempts == 0 &&
 		d.LeasePoolReturnSuccesses == 0 &&
-		d.LeasePoolReturnFailures == 0
+		d.LeasePoolReturnFailures == 0 &&
+		d.LeasePoolReturnClosedFailures == 0 &&
+		d.LeasePoolReturnAdmissionFailures == 0
 }
 
 // PoolPartitionWindow captures two partition samples and their counter delta.
@@ -114,25 +155,48 @@ type PoolPartitionWindow struct {
 
 // NewPoolPartitionWindow returns a window from previous to current.
 func NewPoolPartitionWindow(previous, current PoolPartitionSample) PoolPartitionWindow {
-	return PoolPartitionWindow{
-		Generation:       current.Generation,
-		PolicyGeneration: current.PolicyGeneration,
-		Previous:         clonePoolPartitionSample(previous),
-		Current:          clonePoolPartitionSample(current),
-		Delta:            newPoolPartitionCounterDelta(previous, current),
+	var window PoolPartitionWindow
+	window.Reset(previous, current)
+	return window
+}
+
+// Reset rebuilds w from previous to current while reusing stored sample slices.
+//
+// Reset owns copies of Previous and Current so caller mutations after Reset do
+// not affect the window. It allocates only when the existing stored Pool sample
+// capacity is too small for the input samples.
+func (w *PoolPartitionWindow) Reset(previous, current PoolPartitionSample) {
+	if w == nil {
+		return
 	}
+	w.Generation = current.Generation
+	w.PolicyGeneration = current.PolicyGeneration
+	w.Previous = copyPoolPartitionSampleInto(w.Previous, previous)
+	w.Current = copyPoolPartitionSampleInto(w.Current, current)
+	w.Delta = newPoolPartitionCounterDelta(previous, current)
 }
 
 // newPoolPartitionCounterDelta computes raw counter movement between samples.
 func newPoolPartitionCounterDelta(previous, current PoolPartitionSample) PoolPartitionCounterDelta {
 	return PoolPartitionCounterDelta{
-		Gets:                     partitionCounterDelta(previous.PoolCounters.Gets, current.PoolCounters.Gets),
-		Hits:                     partitionCounterDelta(previous.PoolCounters.Hits, current.PoolCounters.Hits),
-		Misses:                   partitionCounterDelta(previous.PoolCounters.Misses, current.PoolCounters.Misses),
-		Allocations:              partitionCounterDelta(previous.PoolCounters.Allocations, current.PoolCounters.Allocations),
-		Puts:                     partitionCounterDelta(previous.PoolCounters.Puts, current.PoolCounters.Puts),
-		Retains:                  partitionCounterDelta(previous.PoolCounters.Retains, current.PoolCounters.Retains),
-		Drops:                    partitionCounterDelta(previous.PoolCounters.Drops, current.PoolCounters.Drops),
+		Gets:            partitionCounterDelta(previous.PoolCounters.Gets, current.PoolCounters.Gets),
+		Hits:            partitionCounterDelta(previous.PoolCounters.Hits, current.PoolCounters.Hits),
+		Misses:          partitionCounterDelta(previous.PoolCounters.Misses, current.PoolCounters.Misses),
+		Allocations:     partitionCounterDelta(previous.PoolCounters.Allocations, current.PoolCounters.Allocations),
+		Puts:            partitionCounterDelta(previous.PoolCounters.Puts, current.PoolCounters.Puts),
+		ReturnedBytes:   partitionCounterDelta(previous.PoolCounters.ReturnedBytes, current.PoolCounters.ReturnedBytes),
+		Retains:         partitionCounterDelta(previous.PoolCounters.Retains, current.PoolCounters.Retains),
+		RetainedBytes:   partitionCounterDelta(previous.PoolCounters.RetainedBytes, current.PoolCounters.RetainedBytes),
+		Drops:           partitionCounterDelta(previous.PoolCounters.Drops, current.PoolCounters.Drops),
+		DroppedBytes:    partitionCounterDelta(previous.PoolCounters.DroppedBytes, current.PoolCounters.DroppedBytes),
+		ClosedPoolDrops: partitionCounterDelta(previous.PoolCounters.DropReasons.ClosedPool, current.PoolCounters.DropReasons.ClosedPool),
+		ReturnedBuffersDisabledDrops: partitionCounterDelta(
+			previous.PoolCounters.DropReasons.ReturnedBuffersDisabled,
+			current.PoolCounters.DropReasons.ReturnedBuffersDisabled,
+		),
+		OversizedDrops:           partitionCounterDelta(previous.PoolCounters.DropReasons.Oversized, current.PoolCounters.DropReasons.Oversized),
+		UnsupportedClassDrops:    partitionCounterDelta(previous.PoolCounters.DropReasons.UnsupportedClass, current.PoolCounters.DropReasons.UnsupportedClass),
+		InvalidPolicyDrops:       partitionCounterDelta(previous.PoolCounters.DropReasons.InvalidPolicy, current.PoolCounters.DropReasons.InvalidPolicy),
 		LeaseAcquisitions:        partitionCounterDelta(previous.LeaseCounters.Acquisitions, current.LeaseCounters.Acquisitions),
 		LeaseReleases:            partitionCounterDelta(previous.LeaseCounters.Releases, current.LeaseCounters.Releases),
 		LeaseInvalidReleases:     partitionCounterDelta(previous.LeaseCounters.InvalidReleases, current.LeaseCounters.InvalidReleases),
@@ -141,6 +205,14 @@ func newPoolPartitionCounterDelta(previous, current PoolPartitionSample) PoolPar
 		LeasePoolReturnAttempts:  partitionCounterDelta(previous.LeaseCounters.PoolReturnAttempts, current.LeaseCounters.PoolReturnAttempts),
 		LeasePoolReturnSuccesses: partitionCounterDelta(previous.LeaseCounters.PoolReturnSuccesses, current.LeaseCounters.PoolReturnSuccesses),
 		LeasePoolReturnFailures:  partitionCounterDelta(previous.LeaseCounters.PoolReturnFailures, current.LeaseCounters.PoolReturnFailures),
+		LeasePoolReturnClosedFailures: partitionCounterDelta(
+			previous.LeaseCounters.PoolReturnClosedFailures,
+			current.LeaseCounters.PoolReturnClosedFailures,
+		),
+		LeasePoolReturnAdmissionFailures: partitionCounterDelta(
+			previous.LeaseCounters.PoolReturnAdmissionFailures,
+			current.LeaseCounters.PoolReturnAdmissionFailures,
+		),
 	}
 }
 
@@ -154,8 +226,23 @@ func partitionCounterDelta(previous, current uint64) uint64 {
 
 // clonePoolPartitionSample returns a sample copy with owned per-Pool slice storage.
 func clonePoolPartitionSample(sample PoolPartitionSample) PoolPartitionSample {
-	if sample.Pools != nil {
-		sample.Pools = append([]PoolPartitionPoolSample(nil), sample.Pools...)
+	return copyPoolPartitionSampleInto(PoolPartitionSample{}, sample)
+}
+
+// copyPoolPartitionSampleInto copies src into dst while reusing dst.Pools capacity.
+func copyPoolPartitionSampleInto(dst, src PoolPartitionSample) PoolPartitionSample {
+	pools := dst.Pools[:0]
+	if src.Pools != nil {
+		if cap(pools) < len(src.Pools) {
+			pools = make([]PoolPartitionPoolSample, len(src.Pools))
+		} else {
+			pools = pools[:len(src.Pools)]
+		}
+		copy(pools, src.Pools)
+	} else {
+		pools = nil
 	}
-	return sample
+	dst = src
+	dst.Pools = pools
+	return dst
 }

@@ -16,6 +16,24 @@
 
 package bufferpool
 
+// PoolPartitionSampleScope describes which Pool set contributed retained-storage
+// counters to a partition sample.
+type PoolPartitionSampleScope uint8
+
+const (
+	// PoolPartitionSampleScopeUnset is the zero value for hand-built samples.
+	PoolPartitionSampleScopeUnset PoolPartitionSampleScope = iota
+
+	// PoolPartitionSampleScopePartition means the sample represents every
+	// Pool owned by the partition.
+	PoolPartitionSampleScopePartition
+
+	// PoolPartitionSampleScopeSelectedPools means retained-storage counters
+	// were collected from a selected Pool index set. LeaseRegistry counters are
+	// still partition-wide until per-Pool lease accounting exists.
+	PoolPartitionSampleScopeSelectedPools
+)
+
 // PoolPartitionSample is an aggregate partition sample for explicit controller
 // ticks.
 //
@@ -33,9 +51,21 @@ type PoolPartitionSample struct {
 	// Lifecycle is the observed partition lifecycle state.
 	Lifecycle LifecycleState
 
+	// Scope identifies whether retained-storage counters came from the full
+	// partition or from selected Pool indexes.
+	Scope PoolPartitionSampleScope
+
+	// TotalPoolCount is the number of Pools owned by the partition.
+	TotalPoolCount int
+
+	// SampledPoolCount is the number of Pools represented in PoolCounters and
+	// Pools. For full partition samples it equals TotalPoolCount.
+	SampledPoolCount int
+
 	// PoolCount is the number of Pools represented by this sample. Public
 	// partition samples represent every owned Pool; selected-index controller
-	// samples may represent only a subset.
+	// samples may represent only a subset. It is retained as a compatibility
+	// alias for SampledPoolCount.
 	PoolCount int
 
 	// Pools contains per-Pool counter samples.
@@ -57,13 +87,17 @@ type PoolPartitionSample struct {
 	// ActiveLeases is the current active lease count.
 	ActiveLeases int
 
-	// CurrentRetainedBytes is retained storage currently owned by Pools.
+	// CurrentRetainedBytes is retained storage currently owned by sampled Pools.
 	CurrentRetainedBytes uint64
 
-	// CurrentActiveBytes is checked-out capacity currently owned by leases.
+	// CurrentActiveBytes is checked-out capacity currently owned by all
+	// partition leases. Selected-Pool samples cannot scope this value until
+	// per-Pool lease accounting exists.
 	CurrentActiveBytes uint64
 
 	// CurrentOwnedBytes is retained plus active bytes, with saturating addition.
+	// For selected-Pool samples this combines selected retained bytes with
+	// partition-wide active bytes, so it is not a selected-Pool ownership total.
 	CurrentOwnedBytes uint64
 }
 
@@ -124,7 +158,7 @@ func (p *PoolPartition) sampleSummary(dst *PoolPartitionSample) {
 	p.sampleWithRuntimeAndGeneration(dst, p.currentRuntimeSnapshot(), p.generation.Load(), false)
 }
 
-// sampleWithRuntimeAndGeneration samples Pools and leases against a fixed
+// sampleWithRuntimeAndGeneration samples all Pools and leases against a fixed
 // partition generation and runtime-policy view.
 func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample, runtime *partitionRuntimeSnapshot, generation Generation, includePools bool) {
 	if dst == nil {
@@ -141,6 +175,9 @@ func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample,
 		Generation:       generation,
 		PolicyGeneration: runtime.Generation,
 		Lifecycle:        p.lifecycle.Load(),
+		Scope:            PoolPartitionSampleScopePartition,
+		TotalPoolCount:   p.registry.len(),
+		SampledPoolCount: p.registry.len(),
 		PoolCount:        p.registry.len(),
 		Pools:            pools,
 	}
@@ -169,6 +206,10 @@ func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample,
 // all-Pool detailed scan. Tests and future controller code can use this helper
 // to verify that aggregation no longer assumes "every registry entry" as the
 // only possible sampling shape.
+//
+// indexes must come from partition registry order, usually activeRegistry. An
+// invalid index is an internal caller bug. LeaseRegistry counters in the result
+// are partition-wide, not scoped to the selected Pools.
 func (p *PoolPartition) sampleIndexesWithRuntimeAndGeneration(dst *PoolPartitionSample, runtime *partitionRuntimeSnapshot, generation Generation, indexes []int, includePools bool) {
 	if dst == nil {
 		return
@@ -184,6 +225,9 @@ func (p *PoolPartition) sampleIndexesWithRuntimeAndGeneration(dst *PoolPartition
 		Generation:       generation,
 		PolicyGeneration: runtime.Generation,
 		Lifecycle:        p.lifecycle.Load(),
+		Scope:            PoolPartitionSampleScopeSelectedPools,
+		TotalPoolCount:   p.registry.len(),
+		SampledPoolCount: len(indexes),
 		PoolCount:        len(indexes),
 		Pools:            pools,
 	}

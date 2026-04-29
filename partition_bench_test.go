@@ -34,6 +34,12 @@ var (
 	// partitionBenchmarkReportSink prevents tick benchmark results being optimized away.
 	partitionBenchmarkReportSink PartitionControllerReport
 
+	// partitionBenchmarkWindowSink prevents window benchmark results being optimized away.
+	partitionBenchmarkWindowSink PoolPartitionWindow
+
+	// partitionBenchmarkRatesSink prevents rate benchmark results being optimized away.
+	partitionBenchmarkRatesSink PoolPartitionWindowRates
+
 	// partitionBenchmarkIndexSink prevents active-registry indexes being optimized away.
 	partitionBenchmarkIndexSink []int
 
@@ -254,6 +260,47 @@ func BenchmarkPoolPartitionSampleSelectedIndexes(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolPartitionWindow measures safe owning window construction. It may
+// allocate to copy per-Pool sample slices.
+func BenchmarkPoolPartitionWindow(b *testing.B) {
+	previous, current := partitionBenchmarkWindowSamples(16)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkWindowSink = NewPoolPartitionWindow(previous, current)
+	}
+}
+
+// BenchmarkPoolPartitionWindowReset measures reusable window construction with
+// preallocated stored sample slices.
+func BenchmarkPoolPartitionWindowReset(b *testing.B) {
+	previous, current := partitionBenchmarkWindowSamples(16)
+	window := PoolPartitionWindow{
+		Previous: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, len(previous.Pools))},
+		Current:  PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, len(current.Pools))},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		window.Reset(previous, current)
+	}
+	partitionBenchmarkWindowSink = window
+}
+
+// BenchmarkPoolPartitionWindowRates measures window-derived ratio projection.
+func BenchmarkPoolPartitionWindowRates(b *testing.B) {
+	previous, current := partitionBenchmarkWindowSamples(16)
+	window := NewPoolPartitionWindow(previous, current)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkRatesSink = NewPoolPartitionWindowRates(window)
+	}
+}
+
 // BenchmarkPoolPartitionDrain measures bounded graceful close with no active leases.
 //
 // Each iteration constructs a fresh partition because successful drain closes the
@@ -324,4 +371,64 @@ func partitionBenchmarkReleaseAll(b *testing.B, partition *PoolPartition, leases
 			b.Fatalf("Release() returned error: %v", err)
 		}
 	}
+}
+
+// partitionBenchmarkWindowSamples builds synthetic samples with per-Pool entries.
+func partitionBenchmarkWindowSamples(poolCount int) (PoolPartitionSample, PoolPartitionSample) {
+	previous := PoolPartitionSample{
+		Generation:       Generation(1),
+		PolicyGeneration: Generation(1),
+		Scope:            PoolPartitionSampleScopePartition,
+		TotalPoolCount:   poolCount,
+		SampledPoolCount: poolCount,
+		PoolCount:        poolCount,
+		Pools:            make([]PoolPartitionPoolSample, poolCount),
+		PoolCounters: PoolCountersSnapshot{
+			Gets:          100,
+			Hits:          80,
+			Misses:        20,
+			Allocations:   20,
+			Puts:          90,
+			ReturnedBytes: 90 * 512,
+			Retains:       70,
+			RetainedBytes: 70 * 512,
+			Drops:         20,
+			DroppedBytes:  20 * 512,
+			DropReasons: PoolDropReasonCounters{
+				Oversized: 3,
+			},
+		},
+		LeaseCounters: LeaseCountersSnapshot{
+			Acquisitions:        100,
+			Releases:            90,
+			PoolReturnAttempts:  90,
+			PoolReturnSuccesses: 88,
+			PoolReturnFailures:  2,
+		},
+	}
+	current := previous
+	current.Generation = Generation(2)
+	current.Pools = make([]PoolPartitionPoolSample, poolCount)
+	current.PoolCounters.Gets += 40
+	current.PoolCounters.Hits += 30
+	current.PoolCounters.Misses += 10
+	current.PoolCounters.Allocations += 10
+	current.PoolCounters.Puts += 36
+	current.PoolCounters.ReturnedBytes += 36 * 512
+	current.PoolCounters.Retains += 30
+	current.PoolCounters.RetainedBytes += 30 * 512
+	current.PoolCounters.Drops += 6
+	current.PoolCounters.DroppedBytes += 6 * 512
+	current.PoolCounters.DropReasons.Oversized += 1
+	current.LeaseCounters.Acquisitions += 40
+	current.LeaseCounters.Releases += 36
+	current.LeaseCounters.PoolReturnAttempts += 36
+	current.LeaseCounters.PoolReturnSuccesses += 35
+	current.LeaseCounters.PoolReturnFailures += 1
+	for index := 0; index < poolCount; index++ {
+		name := "pool_" + strconv.Itoa(index)
+		previous.Pools[index] = PoolPartitionPoolSample{Name: name, Generation: Generation(1), Lifecycle: LifecycleActive}
+		current.Pools[index] = PoolPartitionPoolSample{Name: name, Generation: Generation(1), Lifecycle: LifecycleActive}
+	}
+	return previous, current
 }

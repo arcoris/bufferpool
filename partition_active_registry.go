@@ -36,9 +36,11 @@ const (
 // itself. Future idle expiry and window-delta logic can reduce the active set
 // without changing Pool or LeaseRegistry ownership boundaries.
 //
-// Dirty is a state marker, not an activity event log. Repeated activity on an
-// already-dirty Pool intentionally does not advance generation. generation is
-// the version of active/dirty state, not a count of Pool operations.
+// Dirty is a state marker, not an activity event log. Marking dirty does not by
+// itself imply active; partition operations that observe real activity mark both
+// active and dirty. Repeated activity on an already-dirty Pool intentionally
+// does not advance generation. generation is the version of active/dirty state,
+// not a count of Pool operations.
 type partitionActiveRegistry struct {
 	// mu protects active, dirty, and generation.
 	mu sync.Mutex
@@ -120,6 +122,34 @@ func (r *partitionActiveRegistry) markInactiveIndex(index int) error {
 	}
 	if r.active[index] {
 		r.active[index] = false
+		r.advanceLocked()
+	}
+	return nil
+}
+
+// deactivateCleanIndexes marks clean candidate Pools inactive.
+//
+// This is idle-expiry scaffolding only. There is no wall-clock timer, EWMA, or
+// adaptive scoring here. A future controller can pass indexes selected from
+// window-delta analysis; dirty candidates are skipped so pending state changes
+// are not hidden from controller attention.
+func (r *partitionActiveRegistry) deactivateCleanIndexes(indexes []int) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := false
+	for _, index := range indexes {
+		if !r.validIndexLocked(index) {
+			return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
+		}
+		if r.active[index] && !r.dirty[index] {
+			r.active[index] = false
+			changed = true
+		}
+	}
+	if changed {
 		r.advanceLocked()
 	}
 	return nil
@@ -232,6 +262,21 @@ func (r *partitionActiveRegistry) generationSnapshot() Generation {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.generation
+}
+
+// controllerDirtyIndexes appends current dirty indexes for controller code.
+func (p *PoolPartition) controllerDirtyIndexes(dst []int) []int {
+	p.mustBeInitialized()
+	return p.activeRegistry.dirtyIndexes(dst)
+}
+
+// markDirtyProcessed explicitly consumes dirty markers after controller work.
+//
+// TickInto does not call this helper. Dirty consumption is an explicit
+// controller boundary so observation-only ticks cannot hide pending state.
+func (p *PoolPartition) markDirtyProcessed() {
+	p.mustBeInitialized()
+	p.activeRegistry.resetDirty()
 }
 
 // validIndexLocked reports whether index names a configured Pool.

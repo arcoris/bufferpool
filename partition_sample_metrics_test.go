@@ -29,6 +29,12 @@ func TestPoolPartitionSampleIncludesPoolAndLeaseState(t *testing.T) {
 	if sample.PoolCount != 2 {
 		t.Fatalf("PoolCount = %d, want 2", sample.PoolCount)
 	}
+	if sample.Scope != PoolPartitionSampleScopePartition {
+		t.Fatalf("Scope = %d, want partition", sample.Scope)
+	}
+	if sample.TotalPoolCount != 2 || sample.SampledPoolCount != 2 || sample.PoolCount != sample.SampledPoolCount {
+		t.Fatalf("pool counts = total %d sampled %d alias %d, want 2/2/2", sample.TotalPoolCount, sample.SampledPoolCount, sample.PoolCount)
+	}
 	if sample.PolicyGeneration != InitialGeneration {
 		t.Fatalf("PolicyGeneration = %s, want %s", sample.PolicyGeneration, InitialGeneration)
 	}
@@ -84,6 +90,9 @@ func TestPoolPartitionSampleIntoReusesPoolStorage(t *testing.T) {
 	}
 	if dst.PolicyGeneration != InitialGeneration {
 		t.Fatalf("PolicyGeneration = %s, want %s", dst.PolicyGeneration, InitialGeneration)
+	}
+	if dst.Scope != PoolPartitionSampleScopePartition || dst.TotalPoolCount != 2 || dst.SampledPoolCount != 2 {
+		t.Fatalf("SampleInto scope/counts = scope %d total %d sampled %d, want partition 2/2", dst.Scope, dst.TotalPoolCount, dst.SampledPoolCount)
 	}
 	if dst.ActiveLeases != 1 {
 		t.Fatalf("ActiveLeases = %d, want 1", dst.ActiveLeases)
@@ -146,10 +155,19 @@ func TestPoolPartitionSampleIndexesSelectsPoolSubset(t *testing.T) {
 	betaLease, err := partition.Acquire("beta", 300)
 	requirePartitionNoError(t, err)
 	requirePartitionNoError(t, partition.Release(betaLease, betaLease.Buffer()))
+	activeLease, err := partition.Acquire("beta", 300)
+	requirePartitionNoError(t, err)
+	defer func() { requirePartitionNoError(t, partition.Release(activeLease, activeLease.Buffer())) }()
 
 	var sample PoolPartitionSample
 	partition.sampleIndexesWithRuntimeAndGeneration(&sample, partition.currentRuntimeSnapshot(), partition.generation.Load(), []int{2, 0}, true)
 
+	if sample.Scope != PoolPartitionSampleScopeSelectedPools {
+		t.Fatalf("Scope = %d, want selected-pools", sample.Scope)
+	}
+	if sample.TotalPoolCount != 3 || sample.SampledPoolCount != 2 || sample.PoolCount != sample.SampledPoolCount {
+		t.Fatalf("selected counts = total %d sampled %d alias %d, want 3/2/2", sample.TotalPoolCount, sample.SampledPoolCount, sample.PoolCount)
+	}
 	if sample.PoolCount != 2 {
 		t.Fatalf("PoolCount = %d, want selected count 2", sample.PoolCount)
 	}
@@ -165,6 +183,16 @@ func TestPoolPartitionSampleIndexesSelectsPoolSubset(t *testing.T) {
 	if sample.PoolCounters.Puts != 1 {
 		t.Fatalf("selected Puts = %d, want only alpha activity", sample.PoolCounters.Puts)
 	}
+	if sample.LeaseCounters.Acquisitions != 3 {
+		t.Fatalf("selected Lease acquisitions = %d, want partition-wide count 3", sample.LeaseCounters.Acquisitions)
+	}
+	if sample.ActiveLeases != 1 || sample.CurrentActiveBytes != activeLease.AcquiredCapacity() {
+		t.Fatalf("selected active lease values = leases %d bytes %d, want partition-wide active lease", sample.ActiveLeases, sample.CurrentActiveBytes)
+	}
+	wantOwned := poolSaturatingAdd(sample.CurrentRetainedBytes, sample.CurrentActiveBytes)
+	if sample.CurrentOwnedBytes != wantOwned {
+		t.Fatalf("selected owned bytes = %d, want selected retained + partition active %d", sample.CurrentOwnedBytes, wantOwned)
+	}
 }
 
 // TestPoolPartitionSampleIndexesEmptyStillSamplesLeases verifies empty pool selection.
@@ -178,6 +206,12 @@ func TestPoolPartitionSampleIndexesEmptyStillSamplesLeases(t *testing.T) {
 	sample := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 4)}
 	partition.sampleIndexesWithRuntimeAndGeneration(&sample, partition.currentRuntimeSnapshot(), partition.generation.Load(), nil, true)
 
+	if sample.Scope != PoolPartitionSampleScopeSelectedPools {
+		t.Fatalf("Scope = %d, want selected-pools", sample.Scope)
+	}
+	if sample.TotalPoolCount != 1 || sample.SampledPoolCount != 0 || sample.PoolCount != sample.SampledPoolCount {
+		t.Fatalf("empty selected counts = total %d sampled %d alias %d, want 1/0/0", sample.TotalPoolCount, sample.SampledPoolCount, sample.PoolCount)
+	}
 	if sample.PoolCount != 0 {
 		t.Fatalf("PoolCount = %d, want 0 selected pools", sample.PoolCount)
 	}
@@ -189,6 +223,26 @@ func TestPoolPartitionSampleIndexesEmptyStillSamplesLeases(t *testing.T) {
 	}
 	if sample.ActiveLeases != 1 || sample.CurrentActiveBytes != lease.AcquiredCapacity() {
 		t.Fatalf("lease sample = active leases %d active bytes %d, want one active lease", sample.ActiveLeases, sample.CurrentActiveBytes)
+	}
+}
+
+// TestPoolPartitionSampleIndexesFromActiveRegistry verifies selected-index input safety.
+func TestPoolPartitionSampleIndexesFromActiveRegistry(t *testing.T) {
+	partition := testNewPoolPartition(t, "alpha", "beta", "gamma")
+	requirePartitionNoError(t, partition.activeRegistry.markInactiveIndex(1))
+
+	indexes := partition.activeRegistry.activeIndexes(nil)
+	var sample PoolPartitionSample
+	partition.sampleIndexesWithRuntimeAndGeneration(&sample, partition.currentRuntimeSnapshot(), partition.generation.Load(), indexes, true)
+
+	if sample.Scope != PoolPartitionSampleScopeSelectedPools {
+		t.Fatalf("Scope = %d, want selected-pools", sample.Scope)
+	}
+	if sample.TotalPoolCount != 3 || sample.SampledPoolCount != 2 {
+		t.Fatalf("active selected counts = total %d sampled %d, want 3/2", sample.TotalPoolCount, sample.SampledPoolCount)
+	}
+	if len(sample.Pools) != 2 || sample.Pools[0].Name != "alpha" || sample.Pools[1].Name != "gamma" {
+		t.Fatalf("active selected pools = %+v, want alpha/gamma", sample.Pools)
 	}
 }
 
@@ -214,6 +268,9 @@ func TestPoolPartitionMetricsProjectsRatiosFromRawCounters(t *testing.T) {
 		Lifecycle:            LifecycleActive,
 		Generation:           InitialGeneration,
 		PolicyGeneration:     Generation(7),
+		Scope:                PoolPartitionSampleScopePartition,
+		TotalPoolCount:       2,
+		SampledPoolCount:     2,
 		PoolCount:            2,
 		CurrentRetainedBytes: 75,
 		CurrentActiveBytes:   25,
@@ -260,6 +317,31 @@ func TestPoolPartitionMetricsProjectsRatiosFromRawCounters(t *testing.T) {
 	if metrics.RetainedMemoryRatio != PolicyRatioFromBasisPoints(7500) {
 		t.Fatalf("RetainedMemoryRatio = %d, want 7500", metrics.RetainedMemoryRatio)
 	}
+}
+
+// TestPoolPartitionWindowRatesDifferFromLifetimeMetrics verifies bounded-window semantics.
+func TestPoolPartitionWindowRatesDifferFromLifetimeMetrics(t *testing.T) {
+	previous := PoolPartitionSample{
+		PoolCounters: PoolCountersSnapshot{
+			Hits:   8,
+			Misses: 0,
+		},
+	}
+	current := PoolPartitionSample{
+		PoolCounters: PoolCountersSnapshot{
+			Hits:   9,
+			Misses: 1,
+		},
+	}
+
+	metrics := newPoolPartitionMetrics("partition", current)
+	window := NewPoolPartitionWindow(previous, current)
+	rates := NewPoolPartitionWindowRates(window)
+
+	if metrics.HitRatio != PolicyRatioFromBasisPoints(9000) {
+		t.Fatalf("lifetime HitRatio = %d, want 9000", metrics.HitRatio)
+	}
+	requirePartitionFloat64(t, rates.HitRatio, 0.5)
 }
 
 // TestPoolPartitionOwnedBytesProjectionUsesSaturatingAdd verifies owned-byte overflow safety.

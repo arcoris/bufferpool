@@ -20,11 +20,11 @@ package bufferpool
 // counters.
 //
 // Ratios are lifetime-derived diagnostics. Future adaptive controller scoring
-// should use delta samples and windowed rates rather than treating these
-// lifetime ratios as workload scores. Old history must not directly drive
-// budget publication or trim decisions; controller code should compare bounded
-// samples from explicit windows. Raw counters stay in lower layers; derived
-// metrics are computed from samples.
+// should use PoolPartitionWindow and PoolPartitionWindowRates rather than
+// treating these lifetime ratios as workload scores. Old history must not
+// directly drive budget publication or trim decisions; controller code should
+// compare bounded samples from explicit windows. Raw counters stay in lower
+// layers; derived metrics are computed from samples.
 type PoolPartitionMetrics struct {
 	// Name is diagnostic partition metadata.
 	Name string
