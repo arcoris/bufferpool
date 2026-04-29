@@ -47,6 +47,7 @@ type Scorer struct {
 	weights          Weights
 	returnWeights    ReturnFailureWeights
 	ownershipWeights OwnershipWeights
+	misuseWeights    MisuseWeights
 }
 
 // DefaultScorer returns a scorer with conservative default risk weights.
@@ -55,17 +56,37 @@ func DefaultScorer() Scorer {
 }
 
 // NewScorer returns a prepared scorer with sanitized stable weights.
+//
+// Misuse scoring uses DefaultMisuseWeights so existing callers can keep the
+// compact constructor. Use NewScorerWithMisuseWeights when caller-misuse
+// weighting is part of a stable controller configuration.
 func NewScorer(weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Scorer {
+	return NewScorerWithMisuseWeights(weights, returnWeights, ownershipWeights, DefaultMisuseWeights())
+}
+
+// NewScorerWithMisuseWeights returns a prepared scorer with explicit misuse
+// weights.
+//
+// Keeping misuse weights explicit is useful for controller experiments where
+// invalid-release noise and double-release severity should be tuned separately
+// without changing return-failure or ownership weighting.
+func NewScorerWithMisuseWeights(
+	weights Weights,
+	returnWeights ReturnFailureWeights,
+	ownershipWeights OwnershipWeights,
+	misuseWeights MisuseWeights,
+) Scorer {
 	return Scorer{
 		weights:          normalizeWeights(weights),
 		returnWeights:    normalizeReturnFailureWeights(returnWeights),
 		ownershipWeights: normalizeOwnershipWeights(ownershipWeights),
+		misuseWeights:    normalizeMisuseWeights(misuseWeights),
 	}
 }
 
 // Score returns the normalized risk score for input.
 func (s Scorer) Score(input Input) Score {
-	return newScoreWithNormalizedWeights(input, s.weights, s.returnWeights, s.ownershipWeights)
+	return newScoreWithNormalizedWeights(input, s.weights, s.returnWeights, s.ownershipWeights, s.misuseWeights)
 }
 
 // NewScore returns a generic safety risk score.
@@ -83,13 +104,34 @@ func NewScoreWithWeights(input Input, weights Weights, returnWeights ReturnFailu
 	return NewScorer(weights, returnWeights, ownershipWeights).Score(input)
 }
 
+// NewScoreWithMisuseWeights returns a risk score with explicit caller-misuse
+// weights while keeping the other risk weight groups caller-provided.
+func NewScoreWithMisuseWeights(
+	input Input,
+	weights Weights,
+	returnWeights ReturnFailureWeights,
+	ownershipWeights OwnershipWeights,
+	misuseWeights MisuseWeights,
+) Score {
+	return NewScorerWithMisuseWeights(weights, returnWeights, ownershipWeights, misuseWeights).Score(input)
+}
+
 // newScoreWithNormalizedWeights evaluates risk after Scorer has sanitized all
 // configured weights.
 //
-// Double release contributes to both ownership and misuse components. That is
-// intentional: it is both a checked ownership-boundary signal and caller API
-// misuse.
-func newScoreWithNormalizedWeights(input Input, weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Score {
+// Double release intentionally contributes to both ownership and misuse
+// components. It is an ownership-boundary signal because the same lease is
+// released more than once, and it is also caller API misuse because the caller
+// violated the release contract. Keeping both contributions visible makes the
+// aggregate risk score explainable while still allowing weights to tune the
+// relative severity.
+func newScoreWithNormalizedWeights(
+	input Input,
+	weights Weights,
+	returnWeights ReturnFailureWeights,
+	ownershipWeights OwnershipWeights,
+	misuseWeights MisuseWeights,
+) Score {
 	returnComponent := ReturnFailureRiskWithWeights(
 		input.PoolReturnFailureRatio,
 		input.PoolReturnAdmissionRatio,
@@ -97,7 +139,7 @@ func newScoreWithNormalizedWeights(input Input, weights Weights, returnWeights R
 		returnWeights,
 	)
 	ownershipComponent := OwnershipRiskWithWeights(input.OwnershipViolationRatio, input.DoubleReleaseRatio, ownershipWeights)
-	misuseComponent := numeric.Clamp01(input.InvalidReleaseRatio*0.5 + input.DoubleReleaseRatio*0.5)
+	misuseComponent := MisuseRiskWithWeights(input.InvalidReleaseRatio, input.DoubleReleaseRatio, misuseWeights)
 	value := numeric.WeightedAverage([]numeric.WeightedValue{
 		{Value: returnComponent, Weight: weights.ReturnFailure},
 		{Value: ownershipComponent, Weight: weights.Ownership},

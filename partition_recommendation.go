@@ -47,6 +47,12 @@ const (
 	// DefaultRecommendationMinimumActionConfidence keeps observe/no-op as the
 	// default when signals are too weak for actionable advice.
 	DefaultRecommendationMinimumActionConfidence = 0.55
+
+	// recommendationPressureWasteConfidenceSignalCount documents that trim
+	// confidence uses the arithmetic mean of exactly two independent signals:
+	// pressure and waste. The pair average avoids letting one high signal hide a
+	// weak companion signal before recommending trim planning.
+	recommendationPressureWasteConfidenceSignalCount = 2
 )
 
 // PoolPartitionRecommendationKind identifies a partition-local recommendation.
@@ -110,11 +116,11 @@ func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRec
 	}
 	if scores.Pressure.Value >= DefaultRecommendationHighPressureThreshold &&
 		scores.Waste.Value >= DefaultRecommendationHighWasteThreshold &&
-		(scores.Pressure.Value+scores.Waste.Value)/2 >= DefaultRecommendationMinimumActionConfidence {
+		pressureWasteConfidence(scores) >= DefaultRecommendationMinimumActionConfidence {
 		return newPoolPartitionRecommendation(
 			PoolPartitionRecommendationTrim,
 			controldecision.KindTrim,
-			(scores.Pressure.Value+scores.Waste.Value)/2,
+			pressureWasteConfidence(scores),
 			"pressure_waste",
 			scores,
 		)
@@ -147,6 +153,17 @@ func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRec
 		"observe",
 		scores,
 	)
+}
+
+// pressureWasteConfidence returns the paired-signal confidence used for trim
+// recommendations.
+//
+// Trim planning should require both memory pressure and waste. Averaging the
+// two normalized scores is a structural pair operation, not a tunable scoring
+// coefficient; recommendation thresholds still control whether the averaged
+// signal becomes actionable.
+func pressureWasteConfidence(scores PoolPartitionScores) float64 {
+	return (scores.Pressure.Value + scores.Waste.Value) / recommendationPressureWasteConfidenceSignalCount
 }
 
 // newPoolPartitionRecommendation maps a generic decision to a root recommendation.

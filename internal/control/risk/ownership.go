@@ -3,6 +3,10 @@ package risk
 import "arcoris.dev/bufferpool/internal/control/numeric"
 
 // OwnershipRisk returns a high-severity score for ownership violations or double releases.
+//
+// Ownership risk measures checked-out ownership boundary failures. It does not
+// attempt recovery and does not mutate registry state; root adapters can use it
+// to suppress growth recommendations or raise diagnostics.
 func OwnershipRisk(ownershipViolationRatio, doubleReleaseRatio float64) float64 {
 	return OwnershipRiskWithWeights(ownershipViolationRatio, doubleReleaseRatio, DefaultOwnershipWeights())
 }

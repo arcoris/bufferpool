@@ -46,6 +46,18 @@ func BenchmarkControlNumericNormalizeWeights(b *testing.B) {
 	}
 }
 
+func BenchmarkControlNumericWeightedAverage(b *testing.B) {
+	values := []WeightedValue{
+		{Value: 0.1, Weight: 1},
+		{Value: 0.8, Weight: 3},
+		{Value: 0.4, Weight: 2},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = WeightedAverage(values)
+	}
+}
+
 func BenchmarkControlNumericNormalizeWeightsInto(b *testing.B) {
 	weights := []float64{1, 2, 3, -1, 4}
 	dst := make([]float64, 0, len(weights))

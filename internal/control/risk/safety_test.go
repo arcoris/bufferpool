@@ -44,6 +44,55 @@ func TestRiskScore(t *testing.T) {
 	}
 }
 
+func TestRiskScorerDefaultMisuseWeights(t *testing.T) {
+	scorer := DefaultScorer()
+	got := scorer.Score(Input{InvalidReleaseRatio: 1})
+	if got.MisuseComponent != DefaultMisuseInvalidReleaseWeight {
+		t.Fatalf("default misuse component = %v, want %v", got.MisuseComponent, DefaultMisuseInvalidReleaseWeight)
+	}
+	if got.Value == 0 {
+		t.Fatalf("default misuse weights should contribute to aggregate risk: %+v", got)
+	}
+}
+
+func TestRiskScorerCustomMisuseWeights(t *testing.T) {
+	scorer := NewScorerWithMisuseWeights(
+		Weights{Misuse: 1},
+		ReturnFailureWeights{},
+		OwnershipWeights{},
+		MisuseWeights{InvalidRelease: 1},
+	)
+	if got := scorer.Score(Input{InvalidReleaseRatio: 1, DoubleReleaseRatio: 1}); got.Value != 1 || got.MisuseComponent != 1 {
+		t.Fatalf("custom invalid-release misuse risk = %+v, want value and component 1", got)
+	}
+	if got := scorer.Score(Input{DoubleReleaseRatio: 1}); got.Value != 0 || got.MisuseComponent != 0 {
+		t.Fatalf("custom misuse weights should ignore double release: %+v", got)
+	}
+}
+
+func TestRiskScorerDoubleReleaseContributesToOwnershipAndMisuse(t *testing.T) {
+	score := NewScore(Input{DoubleReleaseRatio: 1})
+	if score.OwnershipComponent == 0 {
+		t.Fatalf("double release should contribute to ownership risk: %+v", score)
+	}
+	if score.MisuseComponent == 0 {
+		t.Fatalf("double release should contribute to misuse risk: %+v", score)
+	}
+	if score.Value == 0 {
+		t.Fatalf("double release should contribute to aggregate risk: %+v", score)
+	}
+}
+
+func TestRiskScorerInvalidReleaseContributesOnlyToMisuse(t *testing.T) {
+	score := NewScore(Input{InvalidReleaseRatio: 1})
+	if score.MisuseComponent == 0 {
+		t.Fatalf("invalid release should contribute to misuse risk: %+v", score)
+	}
+	if score.OwnershipComponent != 0 {
+		t.Fatalf("invalid release should not contribute to ownership risk: %+v", score)
+	}
+}
+
 func BenchmarkControlRiskScore(b *testing.B) {
 	input := Input{
 		PoolReturnFailureRatio:   0.1,
@@ -69,6 +118,27 @@ func BenchmarkControlRiskScorer(b *testing.B) {
 		OwnershipViolationRatio:  0.03,
 	}
 	scorer := DefaultScorer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = scorer.Score(input)
+	}
+}
+
+func BenchmarkControlRiskScorerCustomMisuseWeights(b *testing.B) {
+	input := Input{
+		PoolReturnFailureRatio:   0.1,
+		PoolReturnAdmissionRatio: 0.2,
+		PoolReturnClosedRatio:    0.05,
+		InvalidReleaseRatio:      0.01,
+		DoubleReleaseRatio:       0.02,
+		OwnershipViolationRatio:  0.03,
+	}
+	scorer := NewScorerWithMisuseWeights(
+		DefaultWeights(),
+		DefaultReturnFailureWeights(),
+		DefaultOwnershipWeights(),
+		MisuseWeights{InvalidRelease: 3, DoubleRelease: 1},
+	)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = scorer.Score(input)

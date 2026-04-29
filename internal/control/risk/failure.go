@@ -3,6 +3,11 @@ package risk
 import "arcoris.dev/bufferpool/internal/control/numeric"
 
 // ReturnFailureRisk scores Pool handoff failure ratios.
+//
+// This component is about return-path reliability, not retained-memory
+// usefulness. It separates admission/runtime failures from close-related
+// failures so shutdown noise can remain lower severity than failures that may
+// indicate pressure or policy admission problems.
 func ReturnFailureRisk(failureRatio, admissionRatio, closedRatio float64) float64 {
 	return ReturnFailureRiskWithWeights(failureRatio, admissionRatio, closedRatio, DefaultReturnFailureWeights())
 }
