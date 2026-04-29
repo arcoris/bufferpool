@@ -63,11 +63,12 @@ type PoolGroup struct {
 	// lifecycle gates group-level foreground work and hard close.
 	lifecycle AtomicLifecycle
 
-	// runtimeMu serializes group-routed acquisition and release with hard close.
-	// It is not a Pool hot-path lock: callers that already use PoolPartition or
-	// Pool directly do not take it. The lock only protects the group ownership
-	// boundary so Close cannot publish Closed before in-flight group-routed work
-	// has finished entering the child partition.
+	// runtimeMu serializes group-routed foreground operations with hard close:
+	// Acquire, AcquireSize, Release, and TickInto take the read side; Close takes
+	// the write side. It is not a Pool hot-path lock, is not taken by direct
+	// PoolPartition or Pool users, and does not make diagnostics transactional.
+	// The lock protects only the group ownership boundary so Close cannot close
+	// child partitions while group-routed work is inside that boundary.
 	runtimeMu sync.RWMutex
 
 	// generation tracks group-visible state and explicit coordinator events.

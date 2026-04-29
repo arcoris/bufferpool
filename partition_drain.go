@@ -93,7 +93,8 @@ type PoolPartitionDrainResult struct {
 // leases. On timeout, the partition remains closing with the LeaseRegistry
 // closed to new acquisitions; callers may retry CloseGracefully or call Close
 // for hard shutdown. Already-closed partitions return Attempted=false because no
-// new drain attempt starts.
+// new drain attempt starts. Final Pool cleanup is serialized with hard Close so
+// concurrent graceful and hard shutdown paths cannot close child Pools twice.
 func (p *PoolPartition) CloseGracefully(policy PoolPartitionDrainPolicy) (PoolPartitionDrainResult, error) {
 	p.mustBeInitialized()
 	policy = policy.Normalize()
@@ -123,6 +124,13 @@ func (p *PoolPartition) CloseGracefully(policy PoolPartitionDrainPolicy) (PoolPa
 		active := p.activeLeaseCount()
 		result.ActiveLeasesAfter = active
 		if active == 0 {
+			p.closeMu.Lock()
+			defer p.closeMu.Unlock()
+
+			if p.lifecycle.IsClosed() {
+				result.Completed = true
+				return result, err
+			}
 			if closeErr := p.registry.closeAll(); closeErr != nil {
 				multierr.AppendInto(&err, closeErr)
 			}

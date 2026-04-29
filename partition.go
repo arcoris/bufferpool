@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 const (
 	// errNilPoolPartition reports nil or zero-value PoolPartition receivers.
@@ -35,6 +38,11 @@ const (
 type PoolPartition struct {
 	// lifecycle gates partition-level work and hard close.
 	lifecycle AtomicLifecycle
+
+	// closeMu serializes hard cleanup across Close and the successful
+	// CloseGracefully completion path. It lets hard Close finish a previous
+	// graceful timeout while preventing duplicate LeaseRegistry/Pool cleanup.
+	closeMu sync.Mutex
 
 	// generation tracks partition-visible state and controller events.
 	generation AtomicGeneration

@@ -36,17 +36,26 @@ func (p *PoolPartition) IsClosed() bool { p.mustBeInitialized(); return p.lifecy
 // ownership after registry close; if Pools are already closed, Lease.Release
 // records Pool handoff failure diagnostically.
 //
-// This is not a graceful drain controller. It does not wait for active leases,
-// does not run background trim, and does not coordinate with PoolGroup. Future
-// PoolPartition shutdown modes may add a drain phase before closing Pools.
+// Close serializes hard shutdown with closeMu before publishing Closing. That
+// makes BeginClose the hard-close cleanup ownership gate for concurrent Close
+// callers. If a previous CloseGracefully timed out and left the partition in
+// Closing, Close completes the hard cleanup under the same closeMu gate.
+//
+// This is not a graceful drain controller. It does not wait for active leases
+// beyond any previous CloseGracefully attempt, does not run background trim, and
+// does not coordinate with PoolGroup.
 func (p *PoolPartition) Close() error {
 	p.mustBeInitialized()
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+
+	if !p.lifecycle.BeginClose() && p.lifecycle.IsClosed() {
+		return nil
+	}
 	if p.lifecycle.IsClosed() {
 		return nil
 	}
-	if !p.lifecycle.IsClosing() {
-		p.lifecycle.BeginClose()
-	}
+
 	var err error
 	if closeErr := p.leases.Close(); closeErr != nil {
 		multierr.AppendInto(&err, closeErr)

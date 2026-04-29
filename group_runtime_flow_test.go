@@ -17,6 +17,7 @@
 package bufferpool
 
 import (
+	"errors"
 	"sync"
 	"testing"
 )
@@ -110,6 +111,52 @@ func TestPoolGroupReleaseAfterCloseCompletesLease(t *testing.T) {
 	}
 }
 
+// TestPoolGroupReleaseAfterBeginCloseBeforeClosed verifies cleanup-stage release.
+func TestPoolGroupReleaseAfterBeginCloseBeforeClosed(t *testing.T) {
+	group, err := NewPoolGroup(testGroupConfig("alpha"))
+	requireGroupNoError(t, err)
+
+	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	requireGroupNoError(t, err)
+	if !group.lifecycle.BeginClose() {
+		t.Fatalf("BeginClose did not start group close")
+	}
+
+	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+	metrics := group.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.LeaseReleases != 1 {
+		t.Fatalf("metrics after closing release = active %d releases %d, want 0/1", metrics.ActiveLeases, metrics.LeaseReleases)
+	}
+
+	requireGroupNoError(t, group.Close())
+}
+
+// TestPoolGroupReleaseWrongExistingPartitionRejected verifies lease ownership routing.
+func TestPoolGroupReleaseWrongExistingPartitionRejected(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha", "beta")
+
+	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	requireGroupNoError(t, err)
+	err = group.Release("beta", lease, lease.Buffer())
+	if !errors.Is(err, ErrInvalidLease) {
+		t.Fatalf("Release through wrong group partition error = %v, want ErrInvalidLease", err)
+	}
+
+	alpha, ok := group.PartitionMetrics("alpha")
+	if !ok {
+		t.Fatalf("missing alpha metrics")
+	}
+	if alpha.ActiveLeases != 1 {
+		t.Fatalf("alpha ActiveLeases = %d, want 1 after wrong-partition release", alpha.ActiveLeases)
+	}
+
+	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+	metrics := group.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.LeaseReleases != 1 {
+		t.Fatalf("final group metrics = active %d releases %d, want 0/1", metrics.ActiveLeases, metrics.LeaseReleases)
+	}
+}
+
 // TestPoolGroupAcquireReleaseUpdatesMetrics verifies real counters reach group metrics.
 func TestPoolGroupAcquireReleaseUpdatesMetrics(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
@@ -156,6 +203,96 @@ func TestPoolGroupAcquireReleaseUpdatesMetrics(t *testing.T) {
 	}
 	if metrics.ActiveLeases != 0 || metrics.CurrentActiveBytes != 0 {
 		t.Fatalf("metrics active = leases %d bytes %d, want zero", metrics.ActiveLeases, metrics.CurrentActiveBytes)
+	}
+}
+
+// TestPoolGroupAcquireConcurrentWithClose exercises routing during shutdown.
+func TestPoolGroupAcquireConcurrentWithClose(t *testing.T) {
+	group, err := NewPoolGroup(testGroupConfig("alpha"))
+	requireGroupNoError(t, err)
+
+	const workers = 4
+	const iterations = 64
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for iteration := 0; iteration < iterations; iteration++ {
+				lease, err := group.Acquire("alpha", "alpha-pool", 128)
+				if err != nil {
+					if errors.Is(err, ErrClosed) {
+						return
+					}
+					errs <- err
+					return
+				}
+				if err := group.Release("alpha", lease, lease.Buffer()); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	requireGroupNoError(t, group.Close())
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requireGroupNoError(t, err)
+	}
+}
+
+// TestPoolGroupReleaseConcurrentWithClose verifies active leases can finish.
+func TestPoolGroupReleaseConcurrentWithClose(t *testing.T) {
+	group, err := NewPoolGroup(testGroupConfig("alpha"))
+	requireGroupNoError(t, err)
+
+	const leases = 16
+	acquired := make([]Lease, leases)
+	for index := range acquired {
+		lease, err := group.Acquire("alpha", "alpha-pool", 128)
+		requireGroupNoError(t, err)
+		acquired[index] = lease
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, leases+1)
+	var wg sync.WaitGroup
+	for _, lease := range acquired {
+		lease := lease
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := group.Release("alpha", lease, lease.Buffer()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := group.Close(); err != nil {
+			errs <- err
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requireGroupNoError(t, err)
+	}
+
+	metrics := group.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.LeaseReleases != leases {
+		t.Fatalf("metrics after release/close race = active %d releases %d, want 0/%d", metrics.ActiveLeases, metrics.LeaseReleases, leases)
 	}
 }
 

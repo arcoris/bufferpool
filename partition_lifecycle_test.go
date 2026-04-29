@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,6 +40,128 @@ func TestPoolPartitionLifecycleStartsActiveAndCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("partition should be closed after Close")
 	}
 	requirePartitionNoError(t, partition.Close())
+}
+
+// TestPoolPartitionCloseConcurrent verifies one hard cleanup under racing Close.
+func TestPoolPartitionCloseConcurrent(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary", "secondary"))
+	requirePartitionNoError(t, err)
+
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- partition.Close()
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+	if !partition.IsClosed() {
+		t.Fatalf("partition should be closed")
+	}
+	for _, name := range partition.PoolNames() {
+		snapshot, ok := partition.PoolSnapshot(name)
+		if !ok {
+			t.Fatalf("missing pool snapshot for %q", name)
+		}
+		if snapshot.Lifecycle != LifecycleClosed {
+			t.Fatalf("pool %q lifecycle = %s, want closed", name, snapshot.Lifecycle)
+		}
+	}
+}
+
+// TestPoolPartitionCloseIdempotentAfterConcurrentClose verifies post-race close.
+func TestPoolPartitionCloseIdempotentAfterConcurrentClose(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			requirePartitionNoError(t, partition.Close())
+		}()
+	}
+	wg.Wait()
+
+	requirePartitionNoError(t, partition.Close())
+	if !partition.IsClosed() {
+		t.Fatalf("partition should remain closed")
+	}
+}
+
+// TestPoolPartitionCloseDoesNotDuplicateCleanupGeneration verifies one close event.
+func TestPoolPartitionCloseDoesNotDuplicateCleanupGeneration(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	before := partition.Sample().Generation
+	requirePartitionNoError(t, partition.Close())
+	after := partition.Sample().Generation
+	requirePartitionNoError(t, partition.Close())
+	repeated := partition.Sample().Generation
+
+	if after != before.Next() {
+		t.Fatalf("generation after close = %s, want %s", after, before.Next())
+	}
+	if repeated != after {
+		t.Fatalf("generation after repeated close = %s, want %s", repeated, after)
+	}
+}
+
+// TestPoolPartitionAcquireConcurrentWithClose exercises acquisition during shutdown.
+func TestPoolPartitionAcquireConcurrentWithClose(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	const workers = 4
+	const iterations = 64
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for iteration := 0; iteration < iterations; iteration++ {
+				lease, err := partition.Acquire("primary", 128)
+				if err != nil {
+					if errors.Is(err, ErrClosed) {
+						return
+					}
+					errs <- err
+					return
+				}
+				if err := partition.Release(lease, lease.Buffer()); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	requirePartitionNoError(t, partition.Close())
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+	if !partition.IsClosed() {
+		t.Fatalf("partition should be closed")
+	}
 }
 
 // TestPoolPartitionAcquireAfterCloseIsRejected verifies hard-close acquisition gating.
@@ -87,6 +210,93 @@ func TestPoolPartitionCloseAllowsActiveLeaseRelease(t *testing.T) {
 	err = partition.Release(lease, buffer)
 	if !errors.Is(err, ErrDoubleRelease) {
 		t.Fatalf("second Release error = %v, want ErrDoubleRelease", err)
+	}
+}
+
+// TestPoolPartitionReleaseAfterBeginCloseBeforeClosed verifies graceful-timeout release.
+func TestPoolPartitionReleaseAfterBeginCloseBeforeClosed(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+
+	result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{})
+	requirePartitionNoError(t, err)
+	if !result.TimedOut || partition.Lifecycle() != LifecycleClosing {
+		t.Fatalf("CloseGracefully result/lifecycle = %+v/%s, want timeout/closing", result, partition.Lifecycle())
+	}
+
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	metrics := partition.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.PoolReturnSuccesses != 1 {
+		t.Fatalf("metrics after closing release = active %d successes %d, want 0/1", metrics.ActiveLeases, metrics.PoolReturnSuccesses)
+	}
+}
+
+// TestPoolPartitionReleaseAfterClosedCompletesLease verifies hard-close release.
+func TestPoolPartitionReleaseAfterClosedCompletesLease(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Close())
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+
+	metrics := partition.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.PoolReturnFailures != 1 {
+		t.Fatalf("metrics after closed release = active %d failures %d, want 0/1", metrics.ActiveLeases, metrics.PoolReturnFailures)
+	}
+}
+
+// TestPoolPartitionReleaseConcurrentWithClose verifies active leases can finish.
+func TestPoolPartitionReleaseConcurrentWithClose(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	const leases = 16
+	acquired := make([]Lease, leases)
+	for index := range acquired {
+		lease, err := partition.Acquire("primary", 128)
+		requirePartitionNoError(t, err)
+		acquired[index] = lease
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, leases+1)
+	var wg sync.WaitGroup
+	for _, lease := range acquired {
+		lease := lease
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := partition.Release(lease, lease.Buffer()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := partition.Close(); err != nil {
+			errs <- err
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+
+	metrics := partition.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.LeaseReleases != leases {
+		t.Fatalf("metrics after release/close race = active %d releases %d, want 0/%d", metrics.ActiveLeases, metrics.LeaseReleases, leases)
 	}
 }
 

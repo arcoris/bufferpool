@@ -31,21 +31,27 @@ func (g *PoolGroup) IsClosed() bool { g.mustBeInitialized(); return g.lifecycle.
 
 // Close performs the current hard group shutdown.
 //
-// Close closes every group-owned PoolPartition and aggregates close errors. It
-// uses BeginClose as the cleanup ownership gate: only the caller that moves the
-// group into Closing closes child partitions and publishes Closed. Concurrent
-// callers that observe Closing or Closed return nil without duplicating child
-// cleanup. Close is not a graceful drain controller, does not wait beyond
-// partition Close behavior, does not coordinate physical trim, and does not
-// coordinate with a background group scheduler.
+// Close closes every group-owned PoolPartition and aggregates close errors.
+//
+// Close first owns runtimeMu so in-flight group-routed foreground operations
+// finish before Closing is published. BeginClose then gates cleanup: only the
+// caller that moves the group into Closing closes child partitions and publishes
+// Closed. Concurrent Close callers wait on runtimeMu, then return nil without
+// duplicating child cleanup. Close is not a graceful drain controller, does not
+// wait beyond partition Close behavior, does not coordinate physical trim, and
+// does not coordinate with a background group scheduler.
 func (g *PoolGroup) Close() error {
 	g.mustBeInitialized()
-	if !g.lifecycle.BeginClose() {
-		return nil
-	}
 
 	g.runtimeMu.Lock()
 	defer g.runtimeMu.Unlock()
+
+	if !g.lifecycle.BeginClose() && g.lifecycle.IsClosed() {
+		return nil
+	}
+	if g.lifecycle.IsClosed() {
+		return nil
+	}
 
 	var err error
 	if closeErr := g.registry.closeAll(); closeErr != nil {

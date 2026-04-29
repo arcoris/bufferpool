@@ -135,6 +135,49 @@ func BenchmarkPoolGroupAcquireRelease(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupAcquireReleaseVsPartitionAcquireRelease compares routing cost.
+func BenchmarkPoolGroupAcquireReleaseVsPartitionAcquireRelease(b *testing.B) {
+	b.Run("partition", func(b *testing.B) {
+		partition, err := NewPoolPartition(testPartitionConfig("partition-a-pool"))
+		if err != nil {
+			b.Fatalf("NewPoolPartition() error = %v", err)
+		}
+		b.Cleanup(func() {
+			if closeErr := partition.Close(); closeErr != nil {
+				b.Fatalf("PoolPartition.Close() error = %v", closeErr)
+			}
+		})
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			lease, err := partition.Acquire("partition-a-pool", 256)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := partition.Release(lease, lease.Buffer()); err != nil {
+				b.Fatal(err)
+			}
+			partitionBenchmarkLeaseSink = lease
+		}
+	})
+
+	b.Run("group", func(b *testing.B) {
+		group := benchmarkPoolGroup(b, 1)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			lease, err := group.Acquire("partition-a", "partition-a-pool", 256)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := group.Release("partition-a", lease, lease.Buffer()); err != nil {
+				b.Fatal(err)
+			}
+			partitionBenchmarkLeaseSink = lease
+		}
+	})
+}
+
 func BenchmarkPoolGroupScoreEvaluatorScoreValues(b *testing.B) {
 	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
 	rates := PoolGroupWindowRates{Aggregate: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, LeaseOpsPerSecond: 100}}

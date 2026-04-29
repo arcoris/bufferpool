@@ -52,16 +52,20 @@ func (r *LeaseRegistry) IsClosed() bool {
 // Owners that want clean retained-storage handoff should close the registry
 // before closing its Pools; if a Pool is closed first, ownership release still
 // completes and the failed Pool.Put handoff is recorded diagnostically.
+// Concurrent Close callers wait on the registry mutex so only one caller
+// publishes Closed and advances generation.
 func (r *LeaseRegistry) Close() error {
 	r.mustBeInitialized()
-	if !r.lifecycle.BeginClose() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.lifecycle.BeginClose() && r.lifecycle.IsClosed() {
 		return nil
 	}
-
-	r.mu.Lock()
-	r.lifecycle.MarkClosed()
-	r.generation.Advance()
-	r.mu.Unlock()
+	if !r.lifecycle.IsClosed() {
+		r.lifecycle.MarkClosed()
+		r.generation.Advance()
+	}
 
 	return nil
 }

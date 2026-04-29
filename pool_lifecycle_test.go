@@ -55,6 +55,38 @@ func TestPoolCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestPoolCloseConcurrent verifies that racing Close calls wait for Closed.
+func TestPoolCloseConcurrent(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
+
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- pool.Close()
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Close() returned error: %v", err)
+		}
+	}
+	if pool.Lifecycle() != LifecycleClosed {
+		t.Fatalf("Lifecycle() = %s, want %s", pool.Lifecycle(), LifecycleClosed)
+	}
+}
+
 // TestPoolCloseClearsRetainedStorage verifies production close cleanup.
 //
 // Close must publish Closing, wait for active operations, and then clear retained

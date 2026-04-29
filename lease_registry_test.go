@@ -153,6 +153,43 @@ func TestLeaseRegistryCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestLeaseRegistryCloseConcurrent verifies synchronous close idempotency.
+func TestLeaseRegistryCloseConcurrent(t *testing.T) {
+	t.Parallel()
+
+	registry := MustNewLeaseRegistry(DefaultLeaseConfig())
+	before := registry.Snapshot().Generation
+
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- registry.Close()
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Close() returned error: %v", err)
+		}
+	}
+	if registry.Lifecycle() != LifecycleClosed {
+		t.Fatalf("Lifecycle() = %s, want %s", registry.Lifecycle(), LifecycleClosed)
+	}
+	after := registry.Snapshot().Generation
+	if after != before.Next() {
+		t.Fatalf("generation after concurrent close = %s, want %s", after, before.Next())
+	}
+}
+
 // TestLeaseRegistryGenerationAdvancesOnStateChanges verifies that snapshot
 // generation moves when registry-visible ownership state changes.
 func TestLeaseRegistryGenerationAdvancesOnStateChanges(t *testing.T) {

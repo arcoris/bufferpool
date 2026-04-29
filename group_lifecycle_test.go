@@ -18,8 +18,10 @@ package bufferpool
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestPoolGroupClose verifies ordinary hard close and idempotent repeat close.
@@ -91,6 +93,25 @@ func TestPoolGroupCloseIdempotentAfterConcurrentClose(t *testing.T) {
 	requireGroupNoError(t, group.Close())
 	if !group.IsClosed() {
 		t.Fatalf("group should remain closed")
+	}
+}
+
+// TestPoolGroupCloseDoesNotDuplicateCleanupGeneration verifies one close event.
+func TestPoolGroupCloseDoesNotDuplicateCleanupGeneration(t *testing.T) {
+	group, err := NewPoolGroup(testGroupConfig("alpha", "beta"))
+	requireGroupNoError(t, err)
+
+	before := group.Sample().Generation
+	requireGroupNoError(t, group.Close())
+	after := group.Sample().Generation
+	requireGroupNoError(t, group.Close())
+	repeated := group.Sample().Generation
+
+	if after != before.Next() {
+		t.Fatalf("generation after close = %s, want %s", after, before.Next())
+	}
+	if repeated != after {
+		t.Fatalf("generation after repeated close = %s, want %s", repeated, after)
 	}
 }
 
@@ -168,4 +189,75 @@ func TestPoolGroupTickIntoConcurrentWithClose(t *testing.T) {
 	if !group.IsClosed() {
 		t.Fatalf("group should be closed")
 	}
+}
+
+// TestPoolGroupTickIntoSerializedWithClose verifies runtimeMu gates observation.
+func TestPoolGroupTickIntoSerializedWithClose(t *testing.T) {
+	group, err := NewPoolGroup(testGroupConfig("alpha"))
+	requireGroupNoError(t, err)
+
+	group.runtimeMu.RLock()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- group.Close() }()
+	waitForGroupRuntimeWriter(t, group)
+	assertNoGroupEvent(t, closeDone, "Close returned while read lock held")
+
+	tickDone := make(chan error, 1)
+	go func() {
+		var report PoolGroupCoordinatorReport
+		tickDone <- group.TickInto(&report)
+	}()
+	assertNoGroupEvent(t, tickDone, "TickInto returned while close was waiting for runtimeMu")
+
+	group.runtimeMu.RUnlock()
+	requireGroupNoError(t, <-closeDone)
+	requireGroupErrorIs(t, <-tickDone, ErrClosed)
+}
+
+// TestPoolGroupTickIntoDoesNotAdvanceGenerationAfterCloseStarted locks shutdown gating.
+func TestPoolGroupTickIntoDoesNotAdvanceGenerationAfterCloseStarted(t *testing.T) {
+	group, err := NewPoolGroup(testGroupConfig("alpha"))
+	requireGroupNoError(t, err)
+
+	before := group.Sample().Generation
+	if !group.lifecycle.BeginClose() {
+		t.Fatalf("BeginClose did not start group close")
+	}
+
+	var report PoolGroupCoordinatorReport
+	err = group.TickInto(&report)
+	requireGroupErrorIs(t, err, ErrClosed)
+	if after := group.Sample().Generation; after != before {
+		t.Fatalf("generation after rejected TickInto = %s, want %s", after, before)
+	}
+
+	requireGroupNoError(t, group.Close())
+}
+
+func assertNoGroupEvent[T any](t *testing.T, ch <-chan T, message string) {
+	t.Helper()
+
+	deadline := time.Now().Add(20 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ch:
+			t.Fatal(message)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func waitForGroupRuntimeWriter(t *testing.T, group *PoolGroup) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !group.runtimeMu.TryRLock() {
+			return
+		}
+		group.runtimeMu.RUnlock()
+		runtime.Gosched()
+	}
+	t.Fatalf("group Close did not wait for runtimeMu")
 }

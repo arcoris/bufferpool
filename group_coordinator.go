@@ -33,12 +33,17 @@ func (g *PoolGroup) Tick() (PoolGroupCoordinatorReport, error) {
 
 // TickInto writes one explicit foreground group observation pass into dst.
 //
-// TickInto reuses dst.Sample.Partitions capacity. A nil dst is a no-op after
-// receiver and lifecycle validation. This is a manual foreground call, not a
-// scheduler tick from a background goroutine. dst must not be shared by
-// concurrent callers without external synchronization.
+// TickInto is serialized with hard Close through runtimeMu because it advances
+// the group generation and samples through the group foreground boundary. It
+// reuses dst.Sample.Partitions capacity. A nil dst is a no-op after receiver and
+// lifecycle validation. This is a manual foreground call, not a scheduler tick
+// from a background goroutine. dst must not be shared by concurrent callers
+// without external synchronization.
 func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	g.mustBeInitialized()
+	g.runtimeMu.RLock()
+	defer g.runtimeMu.RUnlock()
+
 	if !g.lifecycle.AllowsWork() {
 		return newError(ErrClosed, errGroupClosed)
 	}
