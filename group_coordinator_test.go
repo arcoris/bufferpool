@@ -23,10 +23,11 @@ import (
 
 func TestPoolGroupTickInto(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
+	before := group.Sample().Generation
 	var report PoolGroupCoordinatorReport
 	requireGroupNoError(t, group.TickInto(&report))
-	if report.Generation == 0 {
-		t.Fatalf("Generation = 0, want advanced generation")
+	if report.Generation != before.Next() {
+		t.Fatalf("Generation = %s, want %s", report.Generation, before.Next())
 	}
 	if report.Sample.PartitionCount != 2 {
 		t.Fatalf("Sample.PartitionCount = %d, want 2", report.Sample.PartitionCount)
@@ -38,7 +39,11 @@ func TestPoolGroupTickInto(t *testing.T) {
 
 func TestPoolGroupTickIntoNilDstNoop(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
+	before := group.Sample().Generation
 	requireGroupNoError(t, group.TickInto(nil))
+	if after := group.Sample().Generation; after != before {
+		t.Fatalf("TickInto(nil) advanced generation from %s to %s", before, after)
+	}
 }
 
 func TestPoolGroupTickReturnsReport(t *testing.T) {

@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -490,6 +491,41 @@ func TestPoolPartitionHardCloseAfterGracefulTimeoutAllowsLateDiagnosticRelease(t
 	}
 }
 
+// TestPoolPartitionCloseGracefullyConcurrentHardCloseWithActiveLease verifies handoff.
+func TestPoolPartitionCloseGracefullyConcurrentHardCloseWithActiveLease(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	resultCh := make(chan partitionDrainAttempt, 1)
+	go func() {
+		result, closeErr := partition.CloseGracefully(PoolPartitionDrainPolicy{
+			Timeout:      time.Second,
+			PollInterval: time.Millisecond,
+		})
+		resultCh <- partitionDrainAttempt{result: result, err: closeErr}
+	}()
+	waitForPartitionLifecycle(t, partition, LifecycleClosing)
+
+	requirePartitionNoError(t, partition.Close())
+	if partition.Lifecycle() != LifecycleClosed {
+		t.Fatalf("Lifecycle after hard Close = %s, want closed", partition.Lifecycle())
+	}
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+
+	attempt := receivePartitionDrainAttempt(t, resultCh)
+	requirePartitionNoError(t, attempt.err)
+	if !attempt.result.Completed || attempt.result.TimedOut {
+		t.Fatalf("CloseGracefully concurrent hard close result = %+v, want completed without timeout", attempt.result)
+	}
+
+	metrics := partition.Metrics()
+	if metrics.ActiveLeases != 0 || metrics.PoolReturnFailures != 1 {
+		t.Fatalf("metrics after concurrent graceful/hard close = active %d failures %d, want 0/1", metrics.ActiveLeases, metrics.PoolReturnFailures)
+	}
+}
+
 // TestPoolPartitionCloseGracefullyAlreadyClosedDoesNotAttempt verifies closed behavior.
 func TestPoolPartitionCloseGracefullyAlreadyClosedDoesNotAttempt(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))
@@ -527,4 +563,34 @@ func TestPoolPartitionNilReceiverPanics(t *testing.T) {
 	requirePartitionPanic(t, func() { partition.SampleInto(nil) })
 	requirePartitionPanic(t, func() { _ = partition.TickInto(nil) })
 	requirePartitionPanic(t, func() { _, _ = partition.CloseGracefully(PoolPartitionDrainPolicy{}) })
+}
+
+type partitionDrainAttempt struct {
+	result PoolPartitionDrainResult
+	err    error
+}
+
+func receivePartitionDrainAttempt(t *testing.T, ch <-chan partitionDrainAttempt) partitionDrainAttempt {
+	t.Helper()
+
+	select {
+	case attempt := <-ch:
+		return attempt
+	case <-time.After(time.Second):
+		t.Fatalf("CloseGracefully did not return")
+		return partitionDrainAttempt{}
+	}
+}
+
+func waitForPartitionLifecycle(t *testing.T, partition *PoolPartition, state LifecycleState) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if partition.Lifecycle() == state {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("partition lifecycle = %s, want %s", partition.Lifecycle(), state)
 }

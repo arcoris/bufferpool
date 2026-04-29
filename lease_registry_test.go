@@ -142,14 +142,23 @@ func TestLeaseRegistryCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	registry := MustNewLeaseRegistry(DefaultLeaseConfig())
+	before := registry.Snapshot().Generation
 	if err := registry.Close(); err != nil {
 		t.Fatalf("first Close() returned error: %v", err)
 	}
+	afterFirst := registry.Snapshot().Generation
 	if err := registry.Close(); err != nil {
 		t.Fatalf("second Close() returned error: %v", err)
 	}
+	afterSecond := registry.Snapshot().Generation
 	if registry.Lifecycle() != LifecycleClosed {
 		t.Fatalf("Lifecycle() = %s, want %s", registry.Lifecycle(), LifecycleClosed)
+	}
+	if afterFirst != before.Next() {
+		t.Fatalf("generation after first Close = %s, want %s", afterFirst, before.Next())
+	}
+	if afterSecond != afterFirst {
+		t.Fatalf("generation after second Close = %s, want %s", afterSecond, afterFirst)
 	}
 }
 

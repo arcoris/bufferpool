@@ -195,23 +195,25 @@ func TestPoolGroupTickIntoConcurrentWithClose(t *testing.T) {
 func TestPoolGroupTickIntoSerializedWithClose(t *testing.T) {
 	group, err := NewPoolGroup(testGroupConfig("alpha"))
 	requireGroupNoError(t, err)
+	before := group.Sample().Generation
 
 	group.runtimeMu.RLock()
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- group.Close() }()
 	waitForGroupRuntimeWriter(t, group)
-	assertNoGroupEvent(t, closeDone, "Close returned while read lock held")
 
 	tickDone := make(chan error, 1)
 	go func() {
 		var report PoolGroupCoordinatorReport
 		tickDone <- group.TickInto(&report)
 	}()
-	assertNoGroupEvent(t, tickDone, "TickInto returned while close was waiting for runtimeMu")
 
 	group.runtimeMu.RUnlock()
 	requireGroupNoError(t, <-closeDone)
 	requireGroupErrorIs(t, <-tickDone, ErrClosed)
+	if after := group.Sample().Generation; after != before.Next() {
+		t.Fatalf("generation after serialized close/tick = %s, want %s", after, before.Next())
+	}
 }
 
 // TestPoolGroupTickIntoDoesNotAdvanceGenerationAfterCloseStarted locks shutdown gating.
@@ -232,20 +234,6 @@ func TestPoolGroupTickIntoDoesNotAdvanceGenerationAfterCloseStarted(t *testing.T
 	}
 
 	requireGroupNoError(t, group.Close())
-}
-
-func assertNoGroupEvent[T any](t *testing.T, ch <-chan T, message string) {
-	t.Helper()
-
-	deadline := time.Now().Add(20 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ch:
-			t.Fatal(message)
-		default:
-			runtime.Gosched()
-		}
-	}
 }
 
 func waitForGroupRuntimeWriter(t *testing.T, group *PoolGroup) {

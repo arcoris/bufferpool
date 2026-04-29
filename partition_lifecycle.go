@@ -39,7 +39,8 @@ func (p *PoolPartition) IsClosed() bool { p.mustBeInitialized(); return p.lifecy
 // Close serializes hard shutdown with closeMu before publishing Closing. That
 // makes BeginClose the hard-close cleanup ownership gate for concurrent Close
 // callers. If a previous CloseGracefully timed out and left the partition in
-// Closing, Close completes the hard cleanup under the same closeMu gate.
+// Closing, Close explicitly continues the already-started shutdown and
+// completes the hard cleanup under the same closeMu gate.
 //
 // This is not a graceful drain controller. It does not wait for active leases
 // beyond any previous CloseGracefully attempt, does not run background trim, and
@@ -49,10 +50,7 @@ func (p *PoolPartition) Close() error {
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 
-	if !p.lifecycle.BeginClose() && p.lifecycle.IsClosed() {
-		return nil
-	}
-	if p.lifecycle.IsClosed() {
+	if !beginOrContinueSerializedCloseCleanup(&p.lifecycle) {
 		return nil
 	}
 

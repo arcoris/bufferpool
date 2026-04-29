@@ -36,20 +36,19 @@ func (g *PoolGroup) IsClosed() bool { g.mustBeInitialized(); return g.lifecycle.
 // Close first owns runtimeMu so in-flight group-routed foreground operations
 // finish before Closing is published. BeginClose then gates cleanup: only the
 // caller that moves the group into Closing closes child partitions and publishes
-// Closed. Concurrent Close callers wait on runtimeMu, then return nil without
-// duplicating child cleanup. Close is not a graceful drain controller, does not
-// wait beyond partition Close behavior, does not coordinate physical trim, and
-// does not coordinate with a background group scheduler.
+// Closed. If Closing is already visible after runtimeMu is owned, no other
+// group Close cleanup can still be running, so this caller may finish the
+// already-started shutdown. Concurrent Close callers wait on runtimeMu, then
+// return nil without duplicating child cleanup. Close is not a graceful drain
+// controller, does not wait beyond partition Close behavior, does not coordinate
+// physical trim, and does not coordinate with a background group scheduler.
 func (g *PoolGroup) Close() error {
 	g.mustBeInitialized()
 
 	g.runtimeMu.Lock()
 	defer g.runtimeMu.Unlock()
 
-	if !g.lifecycle.BeginClose() && g.lifecycle.IsClosed() {
-		return nil
-	}
-	if g.lifecycle.IsClosed() {
+	if !beginOrContinueSerializedCloseCleanup(&g.lifecycle) {
 		return nil
 	}
 

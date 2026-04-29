@@ -142,6 +142,13 @@ func TestPoolGroupReleaseWrongExistingPartitionRejected(t *testing.T) {
 		t.Fatalf("Release through wrong group partition error = %v, want ErrInvalidLease", err)
 	}
 
+	betaSnapshot, ok := group.PartitionSnapshot("beta")
+	if !ok {
+		t.Fatalf("missing beta snapshot")
+	}
+	if betaSnapshot.Leases.Counters.InvalidReleases != 1 {
+		t.Fatalf("beta InvalidReleases = %d, want 1", betaSnapshot.Leases.Counters.InvalidReleases)
+	}
 	alpha, ok := group.PartitionMetrics("alpha")
 	if !ok {
 		t.Fatalf("missing alpha metrics")
@@ -149,11 +156,22 @@ func TestPoolGroupReleaseWrongExistingPartitionRejected(t *testing.T) {
 	if alpha.ActiveLeases != 1 {
 		t.Fatalf("alpha ActiveLeases = %d, want 1 after wrong-partition release", alpha.ActiveLeases)
 	}
+	afterWrong := group.Sample()
+	if afterWrong.Aggregate.ActiveLeases != 1 || afterWrong.Aggregate.LeaseCounters.InvalidReleases != 1 {
+		t.Fatalf("group sample after wrong release = active %d counters %+v, want active=1 invalid=1", afterWrong.Aggregate.ActiveLeases, afterWrong.Aggregate.LeaseCounters)
+	}
 
 	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
-	metrics := group.Metrics()
-	if metrics.ActiveLeases != 0 || metrics.LeaseReleases != 1 {
-		t.Fatalf("final group metrics = active %d releases %d, want 0/1", metrics.ActiveLeases, metrics.LeaseReleases)
+	err = group.Release("alpha", lease, lease.Buffer())
+	if !errors.Is(err, ErrDoubleRelease) {
+		t.Fatalf("double Release through owning partition error = %v, want ErrDoubleRelease", err)
+	}
+	final := group.Sample()
+	if final.Aggregate.ActiveLeases != 0 ||
+		final.Aggregate.LeaseCounters.Releases != 1 ||
+		final.Aggregate.LeaseCounters.InvalidReleases != 1 ||
+		final.Aggregate.LeaseCounters.DoubleReleases != 1 {
+		t.Fatalf("final group sample = active %d counters %+v, want active=0 release=1 invalid=1 double=1", final.Aggregate.ActiveLeases, final.Aggregate.LeaseCounters)
 	}
 }
 

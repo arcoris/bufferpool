@@ -53,19 +53,18 @@ func (r *LeaseRegistry) IsClosed() bool {
 // before closing its Pools; if a Pool is closed first, ownership release still
 // completes and the failed Pool.Put handoff is recorded diagnostically.
 // Concurrent Close callers wait on the registry mutex so only one caller
-// publishes Closed and advances generation.
+// publishes Closed and advances generation. If Closing is already visible after
+// the mutex is owned, Close finishes that already-started shutdown.
 func (r *LeaseRegistry) Close() error {
 	r.mustBeInitialized()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.lifecycle.BeginClose() && r.lifecycle.IsClosed() {
+	if !beginOrContinueSerializedCloseCleanup(&r.lifecycle) {
 		return nil
 	}
-	if !r.lifecycle.IsClosed() {
-		r.lifecycle.MarkClosed()
-		r.generation.Advance()
-	}
+	r.lifecycle.MarkClosed()
+	r.generation.Advance()
 
 	return nil
 }

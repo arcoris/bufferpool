@@ -102,13 +102,9 @@ func (p *PoolPartition) CloseGracefully(policy PoolPartitionDrainPolicy) (PoolPa
 		return PoolPartitionDrainResult{}, err
 	}
 
-	if p.lifecycle.IsClosed() {
+	if !p.beginOrJoinGracefulClose() {
 		active := p.activeLeaseCount()
 		return PoolPartitionDrainResult{Completed: active == 0, ActiveLeasesBefore: active, ActiveLeasesAfter: active}, nil
-	}
-
-	if !p.lifecycle.IsClosing() {
-		p.lifecycle.BeginClose()
 	}
 
 	var err error
@@ -162,4 +158,26 @@ func (p *PoolPartition) activeLeaseCount() int {
 	var sample leaseCounterSample
 	p.leases.sampleCounters(&sample)
 	return sample.ActiveCount
+}
+
+// beginOrJoinGracefulClose starts or joins the partition drain phase.
+//
+// Closing is a valid result here: another CloseGracefully call may already be
+// draining, or a hard Close may have started. Final Pool cleanup still happens
+// only under closeMu when active leases reach zero.
+func (p *PoolPartition) beginOrJoinGracefulClose() bool {
+	for {
+		switch state := p.lifecycle.Load(); state {
+		case LifecycleCreated, LifecycleActive:
+			if p.lifecycle.BeginClose() {
+				return true
+			}
+
+		case LifecycleClosing:
+			return true
+
+		case LifecycleClosed:
+			return false
+		}
+	}
 }
