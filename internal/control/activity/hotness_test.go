@@ -38,6 +38,23 @@ func TestHotness(t *testing.T) {
 	}
 }
 
+func TestDefaultHotnessWeights(t *testing.T) {
+	weights := []struct {
+		name  string
+		value float64
+	}{
+		{name: "gets", value: DefaultHotnessGetsWeight},
+		{name: "puts", value: DefaultHotnessPutsWeight},
+		{name: "bytes", value: DefaultHotnessBytesWeight},
+		{name: "lease_ops", value: DefaultHotnessLeaseOpsWeight},
+	}
+	for _, weight := range weights {
+		if weight.value <= 0 || math.IsNaN(weight.value) || math.IsInf(weight.value, 0) {
+			t.Fatalf("default hotness weight %s = %v, want positive finite weight", weight.name, weight.value)
+		}
+	}
+}
+
 func TestHotnessScorerZeroValue(t *testing.T) {
 	var scorer HotnessScorer
 	if got := scorer.Score(HotnessInput{GetsPerSecond: 10}); got != 0 {

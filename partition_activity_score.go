@@ -21,16 +21,19 @@ import controlactivity "arcoris.dev/bufferpool/internal/control/activity"
 const (
 	// defaultPartitionHighGetsPerSecond is the initial "hot" acquisition
 	// threshold for partition activity projection. It is conservative
-	// scaffolding, not production auto-tuning.
+	// scaffolding, not production auto-tuning: it makes very high get throughput
+	// visible without letting ordinary traffic saturate activity too easily.
 	defaultPartitionHighGetsPerSecond = 100_000
 
 	// defaultPartitionHighPutsPerSecond is the initial "hot" return-flow
 	// threshold. It mirrors get throughput so balanced workloads score
-	// predictably.
+	// predictably while avoiding activity inflation from modest return volume.
 	defaultPartitionHighPutsPerSecond = 100_000
 
 	// defaultPartitionHighLeaseOpsPerSecond keeps ownership operation volume
-	// visible without letting lease churn dominate buffer demand.
+	// visible without letting lease churn dominate buffer demand. It is higher
+	// than get/put thresholds because acquisitions and releases can both occur
+	// in one logical lease cycle. This is a tunable partition-domain threshold.
 	defaultPartitionHighLeaseOpsPerSecond = 200_000
 )
 

@@ -3,15 +3,23 @@ package risk
 const (
 	// DefaultRiskReturnFailureWeight keeps Pool handoff failures visible while
 	// preventing expected shutdown handoff failures from dominating safety risk.
+	// It is weaker than ownership because return failures may be operational
+	// pressure or close noise, encourages diagnostics for handoff reliability,
+	// and avoids suppressing retention solely due to shutdown paths. This is a
+	// tunable heuristic.
 	DefaultRiskReturnFailureWeight = 0.25
 
 	// DefaultRiskOwnershipWeight makes ownership safety the strongest risk
 	// component because ownership violations can indicate caller misuse or
-	// boundary corruption.
+	// boundary corruption. It encourages safety-first recommendations and avoids
+	// letting ordinary pressure or return-path failures hide ownership boundary
+	// problems. This is a tunable heuristic, not a registry invariant.
 	DefaultRiskOwnershipWeight = 0.50
 
 	// DefaultRiskMisuseWeight keeps invalid releases and double releases visible
 	// as caller-misuse signals without outweighing strict ownership violations.
+	// It encourages API-misuse diagnostics while avoiding overreaction to noisy
+	// invalid-release attempts. This is a tunable heuristic.
 	DefaultRiskMisuseWeight = 0.25
 )
 

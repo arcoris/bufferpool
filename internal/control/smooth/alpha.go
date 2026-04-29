@@ -6,8 +6,19 @@ import (
 	"time"
 )
 
-// DefaultAlpha is the default EWMA weight for new observations.
-const DefaultAlpha = 0.2
+const (
+	// DefaultAlpha is the default EWMA weight for new observations. It gives
+	// recent windows enough influence to adapt to workload changes while still
+	// dampening one-window spikes. This is a conservative smoothing heuristic,
+	// not a workload-specific optimum or correctness invariant.
+	DefaultAlpha = 0.2
+
+	// halfLifeRemainingRatio is the structural half-life decay base. After one
+	// half-life, half of the previous signal remains. This is mathematical
+	// convention for half-life conversion rather than a tunable scoring
+	// coefficient.
+	halfLifeRemainingRatio = 0.5
+)
 
 const (
 	// errAlphaInvalidRange explains an alpha outside the EWMA update interval.
@@ -42,13 +53,14 @@ func (c AlphaConfig) Validate() error {
 
 // AlphaFromHalfLife returns an EWMA alpha from elapsed time and half-life.
 //
-// The convention is alpha = 1 - pow(0.5, elapsed/halfLife). Non-positive
+// The convention is alpha = 1 - pow(halfLifeRemainingRatio,
+// elapsed/halfLife). Non-positive
 // durations return zero so callers can skip the update safely.
 func AlphaFromHalfLife(elapsed, halfLife time.Duration) float64 {
 	if elapsed <= 0 || halfLife <= 0 {
 		return 0
 	}
-	alpha := 1 - math.Pow(0.5, elapsed.Seconds()/halfLife.Seconds())
+	alpha := 1 - math.Pow(halfLifeRemainingRatio, elapsed.Seconds()/halfLife.Seconds())
 	if math.IsNaN(alpha) || math.IsInf(alpha, 0) {
 		return 0
 	}

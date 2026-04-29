@@ -12,6 +12,15 @@ func TestDefaultReturnFailureWeights(t *testing.T) {
 		weights.Closed != DefaultReturnFailureClosedWeight {
 		t.Fatalf("DefaultReturnFailureWeights() = %+v", weights)
 	}
+	for name, value := range map[string]float64{
+		"aggregate": weights.Aggregate,
+		"admission": weights.Admission,
+		"closed":    weights.Closed,
+	} {
+		if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			t.Fatalf("DefaultReturnFailureWeights()[%s] = %v, want positive finite weight", name, value)
+		}
+	}
 }
 
 func TestNormalizeReturnFailureWeights(t *testing.T) {

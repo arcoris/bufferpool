@@ -12,6 +12,15 @@ func TestDefaultRiskWeights(t *testing.T) {
 		weights.Misuse != DefaultRiskMisuseWeight {
 		t.Fatalf("DefaultWeights() = %+v", weights)
 	}
+	for name, value := range map[string]float64{
+		"return_failure": weights.ReturnFailure,
+		"ownership":      weights.Ownership,
+		"misuse":         weights.Misuse,
+	} {
+		if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			t.Fatalf("DefaultWeights()[%s] = %v, want positive finite weight", name, value)
+		}
+	}
 }
 
 func TestNormalizeRiskWeights(t *testing.T) {

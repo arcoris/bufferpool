@@ -24,28 +24,43 @@ import (
 const (
 	// DefaultRecommendationHighRiskThreshold prioritizes ownership and misuse
 	// diagnostics before retention tuning. Risk should be clearly high before it
-	// produces an investigative recommendation.
+	// produces an investigative recommendation, which avoids noisy misuse
+	// windows masking ordinary observe behavior. This is a tunable conservative
+	// threshold.
 	DefaultRecommendationHighRiskThreshold = 0.70
 
 	// DefaultRecommendationHighWasteThreshold requires a strong waste signal
-	// before recommending shrink or trim consideration.
+	// before recommending shrink or trim consideration. It encourages action
+	// only when retained capacity looks meaningfully inefficient and avoids
+	// contraction from weak low-hit or low-activity signals. This is a tunable
+	// conservative threshold.
 	DefaultRecommendationHighWasteThreshold = 0.65
 
 	// DefaultRecommendationHighPressureThreshold requires meaningful pressure
 	// before waste becomes a trim recommendation instead of ordinary shrink
-	// consideration.
+	// consideration. It encourages trim planning only when retained memory has
+	// opportunity cost and avoids trim advice from waste alone. This is a tunable
+	// conservative threshold.
 	DefaultRecommendationHighPressureThreshold = 0.70
 
 	// DefaultRecommendationHighUsefulnessThreshold avoids recommending growth
-	// from weak or ambiguous usefulness signals.
+	// from weak or ambiguous usefulness signals. It encourages growth only when
+	// reuse quality is clearly high and avoids increasing retention because of
+	// activity or admission alone. This is a tunable conservative threshold.
 	DefaultRecommendationHighUsefulnessThreshold = 0.70
 
 	// DefaultRecommendationLowPressureThreshold keeps growth recommendations out
-	// of pressure windows where retained memory has elevated opportunity cost.
+	// of pressure windows where retained memory has elevated opportunity cost. It
+	// is intentionally low so growth advice is suppressed early under pressure,
+	// avoiding larger retention budgets during constrained windows. This is a
+	// tunable conservative threshold.
 	DefaultRecommendationLowPressureThreshold = 0.33
 
 	// DefaultRecommendationMinimumActionConfidence keeps observe/no-op as the
-	// default when signals are too weak for actionable advice.
+	// default when signals are too weak for actionable advice. It encourages
+	// recommendations only from clear signals and avoids policy churn when future
+	// controllers add hysteresis and cooldown around these projections. This is a
+	// tunable conservative threshold.
 	DefaultRecommendationMinimumActionConfidence = 0.55
 
 	// recommendationPressureWasteConfidenceSignalCount documents that trim

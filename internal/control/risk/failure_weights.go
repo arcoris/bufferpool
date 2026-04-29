@@ -1,15 +1,24 @@
 package risk
 
 const (
-	// DefaultReturnFailureAggregateWeight covers general handoff reliability.
+	// DefaultReturnFailureAggregateWeight covers general handoff reliability. It
+	// is lower than admission-specific failure weight so generic failures stay
+	// visible without hiding the more actionable cause. This encourages
+	// reliability diagnostics and avoids treating all close/admission failures as
+	// equal. This is a tunable heuristic.
 	DefaultReturnFailureAggregateWeight = 0.25
 
 	// DefaultReturnFailureAdmissionWeight emphasizes admission/runtime failures
 	// because they are more relevant to adaptive policy than close-time failures.
+	// It encourages attention to pressure or policy admission problems and
+	// avoids shutdown noise dominating return-path risk. This is a tunable
+	// heuristic.
 	DefaultReturnFailureAdmissionWeight = 0.55
 
 	// DefaultReturnFailureClosedWeight keeps closed-Pool handoff failures lower
 	// severity because hard or graceful shutdown can legitimately close Pools.
+	// It preserves diagnostic visibility while avoiding poisoning normal scoring
+	// during lifecycle transitions. This is a tunable heuristic.
 	DefaultReturnFailureClosedWeight = 0.20
 )
 

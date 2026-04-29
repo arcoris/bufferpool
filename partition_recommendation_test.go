@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestPoolPartitionRecommendation verifies score-to-recommendation projection.
 func TestPoolPartitionRecommendation(t *testing.T) {
@@ -68,5 +71,27 @@ func TestPoolPartitionRecommendation(t *testing.T) {
 				t.Fatalf("confidence out of range: %+v", got)
 			}
 		})
+	}
+}
+
+func TestPoolPartitionRecommendationThresholdDefaults(t *testing.T) {
+	thresholds := []struct {
+		name  string
+		value float64
+	}{
+		{name: "high_risk", value: DefaultRecommendationHighRiskThreshold},
+		{name: "high_waste", value: DefaultRecommendationHighWasteThreshold},
+		{name: "high_pressure", value: DefaultRecommendationHighPressureThreshold},
+		{name: "high_usefulness", value: DefaultRecommendationHighUsefulnessThreshold},
+		{name: "low_pressure", value: DefaultRecommendationLowPressureThreshold},
+		{name: "minimum_action_confidence", value: DefaultRecommendationMinimumActionConfidence},
+	}
+	for _, threshold := range thresholds {
+		if threshold.value <= 0 || threshold.value > 1 || math.IsNaN(threshold.value) || math.IsInf(threshold.value, 0) {
+			t.Fatalf("default recommendation threshold %s = %v, want finite (0,1]", threshold.name, threshold.value)
+		}
+	}
+	if recommendationPressureWasteConfidenceSignalCount != 2 {
+		t.Fatalf("pressure/waste confidence signal count = %d, want structural pair count 2", recommendationPressureWasteConfidenceSignalCount)
 	}
 }

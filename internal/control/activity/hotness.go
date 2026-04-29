@@ -4,19 +4,27 @@ import "arcoris.dev/bufferpool/internal/control/numeric"
 
 const (
 	// DefaultHotnessGetsWeight gives acquisition demand the strongest activity
-	// weight because gets represent direct buffer demand.
+	// weight because gets represent direct buffer demand. It encourages active
+	// demand to keep a partition visible while avoiding a byte-only or
+	// lease-only activity model. This is a tunable heuristic, not an invariant.
 	DefaultHotnessGetsWeight = 0.35
 
 	// DefaultHotnessPutsWeight captures return flow. It is lower than gets
-	// because puts are useful only when paired with future demand.
+	// because puts are useful only when paired with future demand. It encourages
+	// balanced reuse visibility while avoiding hotness from returns that are not
+	// subsequently reused. This is a tunable heuristic.
 	DefaultHotnessPutsWeight = 0.25
 
 	// DefaultHotnessBytesWeight keeps byte movement highly visible because large
-	// buffers are more relevant to retained-memory pressure.
+	// buffers are more relevant to retained-memory pressure. It is strong but
+	// below gets so memory relevance informs activity without replacing demand.
+	// This is a tunable heuristic.
 	DefaultHotnessBytesWeight = 0.30
 
 	// DefaultHotnessLeaseOpsWeight keeps ownership activity visible but small so
-	// lease churn does not dominate actual buffer reuse demand.
+	// lease churn does not dominate actual buffer reuse demand. It encourages
+	// awareness of checked-out ownership flow while avoiding overreaction to
+	// caller lifecycle churn. This is a tunable heuristic.
 	DefaultHotnessLeaseOpsWeight = 0.10
 )
 
