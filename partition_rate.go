@@ -19,6 +19,7 @@ package bufferpool
 import (
 	"time"
 
+	controlnumeric "arcoris.dev/bufferpool/internal/control/numeric"
 	controlrate "arcoris.dev/bufferpool/internal/control/rate"
 )
 
@@ -35,13 +36,17 @@ type PoolPartitionWindowRates struct {
 	// MissRatio is delta Misses divided by delta Hits plus Misses.
 	MissRatio float64
 
-	// AllocationRatio is delta Allocations divided by delta Gets.
+	// AllocationRatio is delta Allocations divided by valid acquisition attempts.
 	AllocationRatio float64
 
-	// RetainRatio is delta Retains divided by delta Retains plus Drops.
+	// RetainRatio is delta Retains divided by valid Put attempts when available.
+	// Older or synthetic windows without Put attempts fall back to Retains plus
+	// Drops with saturating arithmetic.
 	RetainRatio float64
 
-	// DropRatio is delta Drops divided by delta Retains plus Drops.
+	// DropRatio is delta Drops divided by valid Put attempts when available.
+	// Older or synthetic windows without Put attempts fall back to Retains plus
+	// Drops with saturating arithmetic.
 	DropRatio float64
 
 	// PoolReturnFailureRatio is failed Pool handoffs divided by handoff attempts.
@@ -74,6 +79,18 @@ type PoolPartitionWindowRates struct {
 	// AllocationsPerSecond is delta Allocations divided by elapsed seconds.
 	AllocationsPerSecond float64
 
+	// LeaseAcquisitionsPerSecond is successful lease acquisitions per second.
+	LeaseAcquisitionsPerSecond float64
+
+	// LeaseReleasesPerSecond is successful lease releases per second.
+	LeaseReleasesPerSecond float64
+
+	// LeaseOpsPerSecond is successful lease acquisitions plus successful lease
+	// releases per second. Invalid, double, and ownership-violation release
+	// attempts remain risk/misuse signals and are intentionally excluded from
+	// this activity throughput field.
+	LeaseOpsPerSecond float64
+
 	// ReturnedBytesPerSecond is delta ReturnedBytes divided by elapsed seconds.
 	ReturnedBytesPerSecond float64
 
@@ -94,16 +111,19 @@ func NewPoolPartitionTimedWindowRates(window PoolPartitionWindow, elapsed time.D
 	delta := window.Delta
 	getAttempts := delta.Gets
 	if getAttempts == 0 {
-		getAttempts = delta.Hits + delta.Misses
+		getAttempts = controlnumeric.SaturatingSumUint64(delta.Hits, delta.Misses)
 	}
 	putAttempts := delta.Puts
 	if putAttempts == 0 {
-		putAttempts = delta.Retains + delta.Drops
+		putAttempts = controlnumeric.SaturatingSumUint64(delta.Retains, delta.Drops)
 	}
-	releaseAttempts := delta.LeaseReleases +
-		delta.LeaseInvalidReleases +
-		delta.LeaseDoubleReleases +
-		delta.LeaseOwnershipViolations
+	releaseAttempts := controlnumeric.SaturatingSumUint64(
+		delta.LeaseReleases,
+		delta.LeaseInvalidReleases,
+		delta.LeaseDoubleReleases,
+		delta.LeaseOwnershipViolations,
+	)
+	leaseActivityOps := controlnumeric.SaturatingSumUint64(delta.LeaseAcquisitions, delta.LeaseReleases)
 
 	rates := PoolPartitionWindowRates{
 		HitRatio:                        controlrate.HitRatio(delta.Hits, delta.Misses),
@@ -126,6 +146,9 @@ func NewPoolPartitionTimedWindowRates(window PoolPartitionWindow, elapsed time.D
 	rates.GetsPerSecond = controlrate.PerSecond(delta.Gets, elapsed)
 	rates.PutsPerSecond = controlrate.PerSecond(delta.Puts, elapsed)
 	rates.AllocationsPerSecond = controlrate.PerSecond(delta.Allocations, elapsed)
+	rates.LeaseAcquisitionsPerSecond = controlrate.PerSecond(delta.LeaseAcquisitions, elapsed)
+	rates.LeaseReleasesPerSecond = controlrate.PerSecond(delta.LeaseReleases, elapsed)
+	rates.LeaseOpsPerSecond = controlrate.PerSecond(leaseActivityOps, elapsed)
 	rates.ReturnedBytesPerSecond = controlrate.BytesPerSecond(delta.ReturnedBytes, elapsed)
 	rates.DroppedBytesPerSecond = controlrate.BytesPerSecond(delta.DroppedBytes, elapsed)
 	return rates

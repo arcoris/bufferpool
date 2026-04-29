@@ -21,6 +21,23 @@ func SaturatingAddUint64(left, right uint64) uint64 {
 	return left + right
 }
 
+// SaturatingSumUint64 returns the sum of values, capped at math.MaxUint64.
+//
+// Empty input returns zero. The helper applies the same control-plane overflow
+// contract as SaturatingAddUint64 across more than two counters: exact sums are
+// preserved when representable, and overflow saturates instead of wrapping a
+// denominator or throughput source back toward zero.
+func SaturatingSumUint64(values ...uint64) uint64 {
+	var sum uint64
+	for _, value := range values {
+		sum = SaturatingAddUint64(sum, value)
+		if sum == math.MaxUint64 {
+			return math.MaxUint64
+		}
+	}
+	return sum
+}
+
 // SafeRatio divides numerator by denominator and returns zero for denominator
 // zero or non-finite results.
 func SafeRatio(numerator, denominator uint64) float64 {

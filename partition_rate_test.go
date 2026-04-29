@@ -59,6 +59,81 @@ func TestPoolPartitionWindowRatesUseDeltaCounters(t *testing.T) {
 	requirePartitionFloat64(t, rates.LeaseOwnershipViolationRatio, 0.1)
 }
 
+// TestPoolPartitionWindowRatesFallbackDenominatorsUseSaturatingSums verifies
+// fallback denominator overflow protection for synthetic or older windows.
+func TestPoolPartitionWindowRatesFallbackDenominatorsUseSaturatingSums(t *testing.T) {
+	window := PoolPartitionWindow{
+		Delta: PoolPartitionCounterDelta{
+			Hits:        math.MaxUint64,
+			Misses:      1,
+			Allocations: math.MaxUint64,
+			Retains:     math.MaxUint64,
+			Drops:       1,
+		},
+	}
+
+	rates := NewPoolPartitionWindowRates(window)
+
+	requirePartitionFloat64(t, rates.AllocationRatio, 1)
+	requirePartitionFloat64(t, rates.RetainRatio, 1)
+	if rates.DropRatio <= 0 || math.IsInf(rates.DropRatio, 0) || math.IsNaN(rates.DropRatio) {
+		t.Fatalf("DropRatio = %v, want positive finite fallback ratio", rates.DropRatio)
+	}
+}
+
+// TestPoolPartitionWindowRatesRetainDropRatiosUsePutAttemptsWhenAvailable
+// verifies that valid Put attempts are the primary denominator.
+func TestPoolPartitionWindowRatesRetainDropRatiosUsePutAttemptsWhenAvailable(t *testing.T) {
+	window := PoolPartitionWindow{
+		Delta: PoolPartitionCounterDelta{
+			Puts:    10,
+			Retains: 2,
+			Drops:   3,
+		},
+	}
+
+	rates := NewPoolPartitionWindowRates(window)
+
+	requirePartitionFloat64(t, rates.RetainRatio, 0.2)
+	requirePartitionFloat64(t, rates.DropRatio, 0.3)
+}
+
+// TestPoolPartitionWindowRatesRetainDropRatiosFallbackToOutcomes verifies
+// retained/drop outcomes remain usable when Put attempts are unavailable.
+func TestPoolPartitionWindowRatesRetainDropRatiosFallbackToOutcomes(t *testing.T) {
+	window := PoolPartitionWindow{
+		Delta: PoolPartitionCounterDelta{
+			Retains: 2,
+			Drops:   3,
+		},
+	}
+
+	rates := NewPoolPartitionWindowRates(window)
+
+	requirePartitionFloat64(t, rates.RetainRatio, 0.4)
+	requirePartitionFloat64(t, rates.DropRatio, 0.6)
+}
+
+// TestPoolPartitionWindowRatesReleaseAttemptsUseSaturatingSum verifies release
+// attempt ratios cannot wrap when diagnostic counters are extreme.
+func TestPoolPartitionWindowRatesReleaseAttemptsUseSaturatingSum(t *testing.T) {
+	window := PoolPartitionWindow{
+		Delta: PoolPartitionCounterDelta{
+			LeaseReleases:            1,
+			LeaseInvalidReleases:     math.MaxUint64,
+			LeaseDoubleReleases:      1,
+			LeaseOwnershipViolations: 1,
+		},
+	}
+
+	rates := NewPoolPartitionWindowRates(window)
+
+	requirePartitionFloat64(t, rates.LeaseInvalidReleaseRatio, 1)
+	if math.IsInf(rates.LeaseDoubleReleaseRatio, 0) || math.IsNaN(rates.LeaseDoubleReleaseRatio) {
+		t.Fatalf("LeaseDoubleReleaseRatio = %v, want finite", rates.LeaseDoubleReleaseRatio)
+	}
+}
+
 // TestPoolPartitionWindowRatesZeroDenominators verifies empty-window behavior.
 func TestPoolPartitionWindowRatesZeroDenominators(t *testing.T) {
 	rates := NewPoolPartitionWindowRates(PoolPartitionWindow{})
@@ -72,11 +147,13 @@ func TestPoolPartitionWindowRatesZeroDenominators(t *testing.T) {
 func TestPoolPartitionTimedWindowRates(t *testing.T) {
 	window := PoolPartitionWindow{
 		Delta: PoolPartitionCounterDelta{
-			Gets:          10,
-			Puts:          6,
-			Allocations:   2,
-			ReturnedBytes: 2048,
-			DroppedBytes:  512,
+			Gets:              10,
+			Puts:              6,
+			Allocations:       2,
+			LeaseAcquisitions: 10,
+			LeaseReleases:     6,
+			ReturnedBytes:     2048,
+			DroppedBytes:      512,
 		},
 	}
 
@@ -89,8 +166,32 @@ func TestPoolPartitionTimedWindowRates(t *testing.T) {
 	requirePartitionFloat64(t, rates.GetsPerSecond, 5)
 	requirePartitionFloat64(t, rates.PutsPerSecond, 3)
 	requirePartitionFloat64(t, rates.AllocationsPerSecond, 1)
+	requirePartitionFloat64(t, rates.LeaseAcquisitionsPerSecond, 5)
+	requirePartitionFloat64(t, rates.LeaseReleasesPerSecond, 3)
+	requirePartitionFloat64(t, rates.LeaseOpsPerSecond, 8)
 	requirePartitionFloat64(t, rates.ReturnedBytesPerSecond, 1024)
 	requirePartitionFloat64(t, rates.DroppedBytesPerSecond, 256)
+}
+
+// TestPoolPartitionWindowRatesLeaseThroughput documents that lease activity
+// throughput counts successful acquisition/release operations, not invalid
+// release attempts.
+func TestPoolPartitionWindowRatesLeaseThroughput(t *testing.T) {
+	window := PoolPartitionWindow{
+		Delta: PoolPartitionCounterDelta{
+			LeaseAcquisitions:        10,
+			LeaseReleases:            6,
+			LeaseInvalidReleases:     100,
+			LeaseDoubleReleases:      100,
+			LeaseOwnershipViolations: 100,
+		},
+	}
+
+	rates := NewPoolPartitionTimedWindowRates(window, 2*time.Second)
+
+	requirePartitionFloat64(t, rates.LeaseAcquisitionsPerSecond, 5)
+	requirePartitionFloat64(t, rates.LeaseReleasesPerSecond, 3)
+	requirePartitionFloat64(t, rates.LeaseOpsPerSecond, 8)
 }
 
 // requirePartitionFloat64 compares floating-point projections with tight tolerance.

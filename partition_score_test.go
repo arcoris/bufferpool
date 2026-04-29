@@ -40,8 +40,14 @@ func TestPoolPartitionScores(t *testing.T) {
 			},
 		},
 		{
-			name:  "high usefulness",
-			rates: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, GetsPerSecond: 100_000, PutsPerSecond: 100_000},
+			name: "high usefulness",
+			rates: PoolPartitionWindowRates{
+				HitRatio:          1,
+				RetainRatio:       1,
+				GetsPerSecond:     defaultPartitionHighGetsPerSecond,
+				PutsPerSecond:     defaultPartitionHighPutsPerSecond,
+				LeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
+			},
 			check: func(t *testing.T, scores PoolPartitionScores) {
 				if scores.Usefulness.Value < 0.8 || len(scores.Usefulness.Components) == 0 {
 					t.Fatalf("usefulness score = %+v", scores.Usefulness)

@@ -53,15 +53,16 @@ func TestPoolPartitionEWMAStateWithUpdate(t *testing.T) {
 		GetsPerSecond:                10,
 		PutsPerSecond:                8,
 		AllocationsPerSecond:         2,
+		LeaseOpsPerSecond:            6,
 	}
 
 	state := (PoolPartitionEWMAState{}).WithUpdate(PoolPartitionEWMAConfig{Alpha: 0.5}, rates)
-	if !state.Initialized || state.HitRatio != 1 || state.GetsPerSecond != 10 {
+	if !state.Initialized || state.HitRatio != 1 || state.GetsPerSecond != 10 || state.LeaseOpsPerSecond != 6 {
 		t.Fatalf("first update = %+v", state)
 	}
 
-	next := state.WithUpdate(PoolPartitionEWMAConfig{Alpha: 0.5}, PoolPartitionWindowRates{HitRatio: 0, GetsPerSecond: 20})
-	if next.HitRatio != 0.5 || next.GetsPerSecond != 15 {
+	next := state.WithUpdate(PoolPartitionEWMAConfig{Alpha: 0.5}, PoolPartitionWindowRates{HitRatio: 0, GetsPerSecond: 20, LeaseOpsPerSecond: 10})
+	if next.HitRatio != 0.5 || next.GetsPerSecond != 15 || next.LeaseOpsPerSecond != 8 {
 		t.Fatalf("second update = %+v", next)
 	}
 

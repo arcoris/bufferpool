@@ -119,6 +119,9 @@ type partitionScoreSignals struct {
 
 	// allocationsPerSecond is the selected allocation throughput signal.
 	allocationsPerSecond float64
+
+	// leaseOpsPerSecond is the selected ownership operation throughput signal.
+	leaseOpsPerSecond float64
 }
 
 // newPartitionScoreSignals chooses raw rates or smoothed rates for reuse and
@@ -140,6 +143,7 @@ func newPartitionScoreSignals(rates PoolPartitionWindowRates, ewma PoolPartition
 			getsPerSecond:        ewma.GetsPerSecond,
 			putsPerSecond:        ewma.PutsPerSecond,
 			allocationsPerSecond: ewma.AllocationsPerSecond,
+			leaseOpsPerSecond:    ewma.LeaseOpsPerSecond,
 		}
 	}
 	return partitionScoreSignals{
@@ -150,6 +154,7 @@ func newPartitionScoreSignals(rates PoolPartitionWindowRates, ewma PoolPartition
 		getsPerSecond:        rates.GetsPerSecond,
 		putsPerSecond:        rates.PutsPerSecond,
 		allocationsPerSecond: rates.AllocationsPerSecond,
+		leaseOpsPerSecond:    rates.LeaseOpsPerSecond,
 	}
 }
 

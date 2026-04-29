@@ -95,6 +95,7 @@ func TestPoolPartitionScoresUseCurrentDropPenalty(t *testing.T) {
 		AllocationRatio:      0,
 		GetsPerSecond:        defaultPartitionHighGetsPerSecond,
 		PutsPerSecond:        defaultPartitionHighPutsPerSecond,
+		LeaseOpsPerSecond:    defaultPartitionHighLeaseOpsPerSecond,
 		AllocationsPerSecond: 0,
 		DropRatio:            0,
 	}

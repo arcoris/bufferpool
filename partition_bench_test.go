@@ -41,6 +41,9 @@ var (
 	// partitionBenchmarkRatesSink prevents rate benchmark results being optimized away.
 	partitionBenchmarkRatesSink PoolPartitionWindowRates
 
+	// partitionBenchmarkActivityScoreSink prevents activity scores being optimized away.
+	partitionBenchmarkActivityScoreSink PoolPartitionActivityScore
+
 	// partitionBenchmarkEWMASink prevents EWMA benchmark results being optimized away.
 	partitionBenchmarkEWMASink PoolPartitionEWMAState
 
@@ -305,6 +308,22 @@ func BenchmarkPoolPartitionWindowRates(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		partitionBenchmarkRatesSink = NewPoolPartitionWindowRates(window)
+	}
+}
+
+// BenchmarkPoolPartitionActivityScore measures the root activity adapter over
+// selected rate signals. It does not call Pool.Get/Put or mutate active state.
+func BenchmarkPoolPartitionActivityScore(b *testing.B) {
+	signals := partitionScoreSignals{
+		getsPerSecond:     defaultPartitionHighGetsPerSecond,
+		putsPerSecond:     defaultPartitionHighPutsPerSecond,
+		leaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkActivityScoreSink = newPoolPartitionActivityScore(signals)
 	}
 }
 

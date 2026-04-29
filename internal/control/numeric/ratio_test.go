@@ -44,6 +44,28 @@ func TestSaturatingAddUint64(t *testing.T) {
 	}
 }
 
+func TestSaturatingSumUint64(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []uint64
+		want   uint64
+	}{
+		{name: "nil", values: nil, want: 0},
+		{name: "empty", values: []uint64{}, want: 0},
+		{name: "normal", values: []uint64{10, 20, 30}, want: 60},
+		{name: "max boundary", values: []uint64{math.MaxUint64 - 10, 5, 5}, want: math.MaxUint64},
+		{name: "overflow", values: []uint64{math.MaxUint64 - 1, 2}, want: math.MaxUint64},
+		{name: "multi value overflow", values: []uint64{math.MaxUint64 / 2, math.MaxUint64/2 + 1, 1}, want: math.MaxUint64},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SaturatingSumUint64(tt.values...); got != tt.want {
+				t.Fatalf("SaturatingSumUint64() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func BenchmarkControlNumericSafeRatio(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -55,5 +77,12 @@ func BenchmarkControlNumericSaturatingAddUint64(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = SaturatingAddUint64(uint64(i), uint64(i+1))
+	}
+}
+
+func BenchmarkControlNumericSaturatingSumUint64(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = SaturatingSumUint64(uint64(i), uint64(i+1), uint64(i+2), uint64(i+3))
 	}
 }

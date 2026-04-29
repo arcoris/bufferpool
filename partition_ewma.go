@@ -93,6 +93,9 @@ type PoolPartitionEWMAState struct {
 
 	// AllocationsPerSecond is the smoothed allocation throughput.
 	AllocationsPerSecond float64
+
+	// LeaseOpsPerSecond is the smoothed successful lease operation throughput.
+	LeaseOpsPerSecond float64
 }
 
 // WithUpdate returns state updated with rates and config.
@@ -118,6 +121,7 @@ func (s PoolPartitionEWMAState) WithUpdate(config PoolPartitionEWMAConfig, rates
 		GetsPerSecond:                partitionEWMAValue(s.Initialized, s.GetsPerSecond, alpha, rates.GetsPerSecond),
 		PutsPerSecond:                partitionEWMAValue(s.Initialized, s.PutsPerSecond, alpha, rates.PutsPerSecond),
 		AllocationsPerSecond:         partitionEWMAValue(s.Initialized, s.AllocationsPerSecond, alpha, rates.AllocationsPerSecond),
+		LeaseOpsPerSecond:            partitionEWMAValue(s.Initialized, s.LeaseOpsPerSecond, alpha, rates.LeaseOpsPerSecond),
 	}
 }
 

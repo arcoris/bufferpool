@@ -58,10 +58,13 @@ type PoolPartitionActivityScore struct {
 // registry state; future controller work can replace the adapter inputs without
 // changing the shared activity package.
 func newPoolPartitionActivityScore(signals partitionScoreSignals) PoolPartitionActivityScore {
+	// Lease operation throughput is sampled from LeaseRegistry counters. Pool
+	// Get/Put volume is a data-plane signal and must not be inferred as
+	// ownership churn.
 	value := partitionActivityScorer.Score(controlactivity.HotnessInput{
 		GetsPerSecond:     signals.getsPerSecond,
 		PutsPerSecond:     signals.putsPerSecond,
-		LeaseOpsPerSecond: signals.getsPerSecond + signals.putsPerSecond,
+		LeaseOpsPerSecond: signals.leaseOpsPerSecond,
 	})
 	return PoolPartitionActivityScore{Value: value}
 }
