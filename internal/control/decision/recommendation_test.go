@@ -19,5 +19,18 @@ func TestRecommendation(t *testing.T) {
 		if recommendation.Confidence != 1 || recommendation.IsActionable() != tt.actionable {
 			t.Fatalf("recommendation = %+v", recommendation)
 		}
+		if !tt.kind.IsKnown() || tt.kind.String() == "unknown" {
+			t.Fatalf("kind helpers failed for %v", tt.kind)
+		}
+	}
+	if Kind(99).IsKnown() || Kind(99).String() != "unknown" {
+		t.Fatalf("unknown kind helpers failed")
+	}
+}
+
+func BenchmarkControlDecisionRecommendation(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NewRecommendation(KindGrow, 0.75, "benchmark")
 	}
 }

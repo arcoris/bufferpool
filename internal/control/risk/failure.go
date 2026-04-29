@@ -4,5 +4,18 @@ import "arcoris.dev/bufferpool/internal/control/numeric"
 
 // ReturnFailureRisk scores Pool handoff failure ratios.
 func ReturnFailureRisk(failureRatio, admissionRatio, closedRatio float64) float64 {
-	return numeric.Clamp01(failureRatio*0.30 + admissionRatio*0.50 + closedRatio*0.20)
+	return ReturnFailureRiskWithWeights(failureRatio, admissionRatio, closedRatio, DefaultReturnFailureWeights())
+}
+
+// ReturnFailureRiskWithWeights scores Pool handoff failure ratios with weights.
+//
+// Admission/runtime failures are normally more actionable for adaptive control
+// than closed-Pool failures, because close-time handoff failures can be expected
+// during hard or graceful shutdown.
+func ReturnFailureRiskWithWeights(failureRatio, admissionRatio, closedRatio float64, weights ReturnFailureWeights) float64 {
+	return numeric.WeightedAverage([]numeric.WeightedValue{
+		{Value: failureRatio, Weight: weights.Aggregate},
+		{Value: admissionRatio, Weight: weights.Admission},
+		{Value: closedRatio, Weight: weights.Closed},
+	})
 }

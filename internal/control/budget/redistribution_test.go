@@ -23,3 +23,16 @@ func TestDistributeByScore(t *testing.T) {
 		t.Fatalf("zero score distribution = %+v", zeroScores)
 	}
 }
+
+func BenchmarkControlBudgetDistributeByScore(b *testing.B) {
+	candidates := []RedistributionCandidate{
+		{Index: 1, Score: 1},
+		{Index: 2, Score: 2},
+		{Index: 3, Score: 3, Min: 10},
+		{Index: 4, Score: 4, Max: 1000},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = DistributeByScore(4096, candidates)
+	}
+}

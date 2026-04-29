@@ -26,12 +26,22 @@ type UsefulnessInput struct {
 // production tuning. DropPenalty reduces the final score after component
 // averaging and the result is clamped to [0, 1].
 func Usefulness(input UsefulnessInput) WeightedScore {
+	return UsefulnessWithWeights(input, DefaultUsefulnessWeights())
+}
+
+// UsefulnessWithWeights returns a usefulness score with caller-provided weights.
+//
+// Weights are normalized through NewComponent and WeightedScoreValue, so
+// negative or non-finite values become ineffective rather than propagating
+// invalid scores. DropPenalty is subtractive because frequent drops mean
+// retained storage is either under pressure or failing admission.
+func UsefulnessWithWeights(input UsefulnessInput, weights UsefulnessWeights) WeightedScore {
 	base := NewWeightedScore([]Component{
-		NewComponent("hit_ratio", input.HitRatio, 0.40),
-		NewComponent("retain_ratio", input.RetainRatio, 0.20),
-		NewComponent("allocation_avoidance", input.AllocationAvoidance, 0.20),
-		NewComponent("activity", input.ActivityScore, 0.20),
+		NewComponent(ComponentUsefulnessHitRatio, input.HitRatio, weights.HitRatio),
+		NewComponent(ComponentUsefulnessAllocationAvoidance, input.AllocationAvoidance, weights.AllocationAvoidance),
+		NewComponent(ComponentUsefulnessRetainRatio, input.RetainRatio, weights.RetainRatio),
+		NewComponent(ComponentUsefulnessActivity, input.ActivityScore, weights.Activity),
 	})
-	base.Value = numeric.Clamp01(base.Value - numeric.Clamp01(input.DropPenalty)*0.30)
+	base.Value = numeric.Clamp01(base.Value - numeric.Clamp01(input.DropPenalty)*numeric.FiniteOrZero(weights.DropPenalty))
 	return base
 }

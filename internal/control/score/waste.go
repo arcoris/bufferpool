@@ -17,10 +17,19 @@ type WasteInput struct {
 
 // Waste returns a score that is high for cold or ineffective retained storage.
 func Waste(input WasteInput) WeightedScore {
+	return WasteWithWeights(input, DefaultWasteWeights())
+}
+
+// WasteWithWeights returns a waste score with caller-provided weights.
+//
+// The score is a pure projection. A high value identifies inefficient retained
+// capacity, but it is not a trim command and should be combined with pressure,
+// hysteresis, cooldown, and domain policy before any future mutation.
+func WasteWithWeights(input WasteInput, weights WasteWeights) WeightedScore {
 	return NewWeightedScore([]Component{
-		NewComponent("low_hit", input.LowHitScore, 0.30),
-		NewComponent("retained_pressure", input.RetainedPressure, 0.30),
-		NewComponent("low_activity", input.LowActivityScore, 0.20),
-		NewComponent("drop", input.DropScore, 0.20),
+		NewComponent(ComponentWasteLowHit, input.LowHitScore, weights.LowHit),
+		NewComponent(ComponentWasteRetainedPressure, input.RetainedPressure, weights.RetainedPressure),
+		NewComponent(ComponentWasteLowActivity, input.LowActivityScore, weights.LowActivity),
+		NewComponent(ComponentWasteDrop, input.DropScore, weights.Drop),
 	})
 }

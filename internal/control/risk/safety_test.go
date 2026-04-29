@@ -24,4 +24,13 @@ func TestRiskScore(t *testing.T) {
 	if clamped.Value > 1 || clamped.ReturnComponent > 1 || clamped.OwnershipComponent > 1 || clamped.MisuseComponent > 1 {
 		t.Fatalf("risk should be clamped: %+v", clamped)
 	}
+	custom := NewScoreWithWeights(
+		Input{PoolReturnClosedRatio: 1},
+		Weights{ReturnFailure: 1},
+		ReturnFailureWeights{Closed: 1},
+		OwnershipWeights{},
+	)
+	if custom.Value != 1 {
+		t.Fatalf("custom risk = %+v, want 1", custom)
+	}
 }

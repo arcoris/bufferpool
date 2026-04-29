@@ -19,3 +19,16 @@ func TestTopK(t *testing.T) {
 		t.Fatalf("TopK mutated input")
 	}
 }
+
+func BenchmarkControlRankTopK(b *testing.B) {
+	candidates := []Candidate{
+		{Index: 1, Score: 0.1, TieBreak: 1},
+		{Index: 2, Score: 0.8, TieBreak: 2},
+		{Index: 3, Score: 0.5, TieBreak: 3},
+		{Index: 4, Score: 0.8, TieBreak: 0},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = TopKDescending(candidates, 2)
+	}
+}

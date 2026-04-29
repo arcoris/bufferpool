@@ -1,6 +1,9 @@
 package rate
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestRatios(t *testing.T) {
 	tests := []struct {
@@ -19,6 +22,8 @@ func TestRatios(t *testing.T) {
 		{name: "zero denominator", got: AllocationRatio(1, 0), want: 0},
 		{name: "numerator greater", got: FailureRatio(2, 1), want: 2},
 		{name: "all zero", got: HitRatio(0, 0), want: 0},
+		{name: "hit denominator overflow", got: HitRatio(math.MaxUint64, 1), want: 1},
+		{name: "miss denominator overflow", got: MissRatio(1, math.MaxUint64), want: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -26,6 +31,9 @@ func TestRatios(t *testing.T) {
 				t.Fatalf("ratio = %v, want %v", tt.got, tt.want)
 			}
 		})
+	}
+	if got := OutcomeTotal(math.MaxUint64, 1); got != math.MaxUint64 {
+		t.Fatalf("OutcomeTotal overflow = %v, want MaxUint64", got)
 	}
 }
 

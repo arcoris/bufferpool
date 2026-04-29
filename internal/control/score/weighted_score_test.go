@@ -15,6 +15,16 @@ func TestWeightedScore(t *testing.T) {
 	if dominant := score.DominantComponent(); dominant.Name != "a" {
 		t.Fatalf("DominantComponent() = %+v", dominant)
 	}
+	var dst WeightedScore
+	dst.Components = make([]Component, 0, 4)
+	fresh := []Component{NewComponent("a", 1, 3), NewComponent("b", 0, 1)}
+	into := NewWeightedScoreInto(&dst, fresh)
+	if into.Value != score.Value || cap(into.Components) != 4 {
+		t.Fatalf("NewWeightedScoreInto() = %+v", into)
+	}
+	if value := WeightedScoreValue(fresh); value != score.Value {
+		t.Fatalf("WeightedScoreValue() = %v, want %v", value, score.Value)
+	}
 	if !NewWeightedScore(nil).IsZero() {
 		t.Fatalf("empty score should be zero")
 	}
@@ -23,10 +33,18 @@ func TestWeightedScore(t *testing.T) {
 	}
 }
 
-func BenchmarkControlScoreWeighted(b *testing.B) {
+func BenchmarkControlScoreWeightedScore(b *testing.B) {
 	components := []Component{NewComponent("a", 1, 2), NewComponent("b", 0.5, 1)}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = NewWeightedScore(components)
+	}
+}
+
+func BenchmarkControlScoreWeightedScoreValue(b *testing.B) {
+	components := []Component{NewComponent("a", 1, 2), NewComponent("b", 0.5, 1)}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = WeightedScoreValue(components)
 	}
 }

@@ -3,13 +3,28 @@ package rate
 import "arcoris.dev/bufferpool/internal/control/numeric"
 
 // HitRatio returns hits divided by hits plus misses.
+//
+// The denominator uses saturating addition so an extreme or synthetic counter
+// pair cannot wrap to a small value and inflate the ratio. Ordinary windows are
+// unaffected because hits+misses is expected to fit in uint64.
 func HitRatio(hits, misses uint64) float64 {
-	return numeric.SafeRatio(hits, hits+misses)
+	return numeric.SafeRatio(hits, OutcomeTotal(hits, misses))
 }
 
 // MissRatio returns misses divided by hits plus misses.
+//
+// Like HitRatio, the denominator is saturated rather than wrapped.
 func MissRatio(hits, misses uint64) float64 {
-	return numeric.SafeRatio(misses, hits+misses)
+	return numeric.SafeRatio(misses, OutcomeTotal(hits, misses))
+}
+
+// OutcomeTotal returns successes plus failures as a saturated denominator.
+//
+// It is useful for two-outcome windows such as hits/misses and
+// successes/failures. Saturation preserves a conservative non-zero denominator
+// under overflow instead of allowing uint64 wraparound.
+func OutcomeTotal(successes, failures uint64) uint64 {
+	return numeric.SaturatingAddUint64(successes, failures)
 }
 
 // AllocationRatio returns allocations divided by gets.

@@ -3,8 +3,11 @@ package pressure
 import "testing"
 
 func TestSeverity(t *testing.T) {
-	if Severity(LevelNormal) != 0 || Severity(LevelMedium) != 0.33 || Severity(LevelHigh) != 0.66 ||
-		Severity(LevelCritical) != 1 || Severity(Level(99)) != 0 {
+	if Severity(LevelNormal) != DefaultNormalSeverity ||
+		Severity(LevelMedium) != DefaultMediumSeverity ||
+		Severity(LevelHigh) != DefaultHighSeverity ||
+		Severity(LevelCritical) != DefaultCriticalSeverity ||
+		Severity(Level(99)) != DefaultNormalSeverity {
 		t.Fatalf("Severity returned unexpected value")
 	}
 }

@@ -36,7 +36,26 @@ func WeightedAverage(values []WeightedValue) float64 {
 // Negative and non-finite input weights are treated as zero. If the usable total
 // is zero, the returned slice contains zeros and has the same length as weights.
 func NormalizeWeights(weights []float64) []float64 {
-	normalized := make([]float64, len(weights))
+	return NormalizeWeightsInto(nil, weights)
+}
+
+// NormalizeWeightsInto writes normalized weights into dst and returns the
+// resulting slice.
+//
+// The returned slice has len(weights). Existing dst capacity is reused when it
+// is large enough, and weights is never mutated. Negative and non-finite input
+// weights become zero. If the usable total is zero, the returned slice is
+// zero-filled so callers can reuse scratch storage without retaining stale
+// normalized values from an earlier window.
+func NormalizeWeightsInto(dst, weights []float64) []float64 {
+	normalized := dst
+	if cap(normalized) < len(weights) {
+		normalized = make([]float64, len(weights))
+	} else {
+		normalized = normalized[:len(weights)]
+		clear(normalized)
+	}
+
 	var total float64
 	for index, weight := range weights {
 		weight = FiniteOrZero(weight)
