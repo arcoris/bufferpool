@@ -35,6 +35,13 @@ func TestAllocation(t *testing.T) {
 func BenchmarkControlBudgetProportionalShare(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
+		_ = ProportionalShare(1<<30, float64(i%1024+1), 2048)
+	}
+}
+
+func BenchmarkControlBudgetProportionalShareByWeight(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
 		_ = ProportionalShareByWeight(1<<30, uint64(i%1024+1), 2048)
 	}
 }

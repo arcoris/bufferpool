@@ -34,6 +34,17 @@ const (
 	defaultPartitionHighLeaseOpsPerSecond = 200_000
 )
 
+var (
+	// partitionActivityScorer prepares the default hotness thresholds once for
+	// repeated partition controller evaluations. It remains an immutable value
+	// adapter; the shared activity package still has no PoolPartition knowledge.
+	partitionActivityScorer = controlactivity.NewHotnessScorer(controlactivity.HotnessConfig{
+		HighGetsPerSecond:     defaultPartitionHighGetsPerSecond,
+		HighPutsPerSecond:     defaultPartitionHighPutsPerSecond,
+		HighLeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
+	})
+)
+
 // PoolPartitionActivityScore is a normalized recent hotness projection.
 type PoolPartitionActivityScore struct {
 	// Value is normalized hotness derived from window or smoothed rates.
@@ -47,17 +58,10 @@ type PoolPartitionActivityScore struct {
 // registry state; future controller work can replace the adapter inputs without
 // changing the shared activity package.
 func newPoolPartitionActivityScore(signals partitionScoreSignals) PoolPartitionActivityScore {
-	value := controlactivity.Hotness(
-		controlactivity.HotnessInput{
-			GetsPerSecond:     signals.getsPerSecond,
-			PutsPerSecond:     signals.putsPerSecond,
-			LeaseOpsPerSecond: signals.getsPerSecond + signals.putsPerSecond,
-		},
-		controlactivity.HotnessConfig{
-			HighGetsPerSecond:     defaultPartitionHighGetsPerSecond,
-			HighPutsPerSecond:     defaultPartitionHighPutsPerSecond,
-			HighLeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
-		},
-	)
+	value := partitionActivityScorer.Score(controlactivity.HotnessInput{
+		GetsPerSecond:     signals.getsPerSecond,
+		PutsPerSecond:     signals.putsPerSecond,
+		LeaseOpsPerSecond: signals.getsPerSecond + signals.putsPerSecond,
+	})
 	return PoolPartitionActivityScore{Value: value}
 }

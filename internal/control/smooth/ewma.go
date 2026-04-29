@@ -11,6 +11,46 @@ type EWMA struct {
 	Value float64
 }
 
+// EWMASmoother is a prepared EWMA evaluator with validated stable alpha.
+//
+// Controller loops usually keep the same smoothing configuration for many
+// windows. Preparing the alpha once avoids repeated normalization and
+// validation while keeping the update path explicit and allocation-free.
+// EWMASmoother does not store moving state; callers pass and receive EWMA
+// values so ownership of state remains visible.
+type EWMASmoother struct {
+	alpha float64
+}
+
+// NewEWMASmoother returns a prepared smoother for config.
+//
+// The config is normalized before validation. A zero alpha therefore uses
+// DefaultAlpha, while invalid non-zero alpha values return an error.
+func NewEWMASmoother(config AlphaConfig) (EWMASmoother, error) {
+	config = config.Normalize()
+	if err := config.Validate(); err != nil {
+		return EWMASmoother{}, err
+	}
+	return EWMASmoother{alpha: config.Alpha}, nil
+}
+
+// MustNewEWMASmoother returns a prepared smoother or panics for invalid config.
+//
+// It is intended for package-level defaults and tests where invalid
+// configuration is a programming error.
+func MustNewEWMASmoother(config AlphaConfig) EWMASmoother {
+	smoother, err := NewEWMASmoother(config)
+	if err != nil {
+		panic(err)
+	}
+	return smoother
+}
+
+// Update returns state after observing value with the prepared alpha.
+func (s EWMASmoother) Update(state EWMA, value float64) EWMA {
+	return state.Update(s.alpha, value)
+}
+
 // Update returns a new EWMA after observing value with alpha.
 func (e EWMA) Update(alpha float64, value float64) EWMA {
 	value = numeric.FiniteOrZero(value)

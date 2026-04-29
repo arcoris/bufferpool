@@ -1,5 +1,7 @@
 package score
 
+import "arcoris.dev/bufferpool/internal/control/numeric"
+
 const (
 	// ComponentUsefulnessHitRatio names the reuse-success component. Hit ratio
 	// receives the strongest usefulness weight because it directly measures
@@ -133,4 +135,16 @@ func DefaultWasteWeights() WasteWeights {
 		LowActivity:      DefaultWasteLowActivityWeight,
 		Drop:             DefaultWasteDropWeight,
 	}
+}
+
+// usableScoreWeight normalizes optional score weights.
+//
+// Negative and non-finite weights are treated as zero so invalid configuration
+// cannot invert a score or propagate NaN into controller projections.
+func usableScoreWeight(weight float64) float64 {
+	weight = numeric.FiniteOrZero(weight)
+	if weight < 0 {
+		return 0
+	}
+	return weight
 }

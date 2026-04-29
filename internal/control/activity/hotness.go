@@ -62,6 +62,25 @@ type HotnessConfig struct {
 	LeaseOpsWeight float64
 }
 
+// HotnessScorer is a prepared activity evaluator with normalized config.
+//
+// Hotness measures recent throughput intensity. It is distinct from usefulness:
+// a workload can be hot but inefficient if it misses frequently, and it can be
+// useful but low-volume if retained buffers still avoid allocations.
+type HotnessScorer struct {
+	config HotnessConfig
+}
+
+// NewHotnessScorer returns a scorer with normalized stable thresholds/weights.
+func NewHotnessScorer(config HotnessConfig) HotnessScorer {
+	return HotnessScorer{config: config.Normalize()}
+}
+
+// Score returns the normalized hotness score for input.
+func (s HotnessScorer) Score(input HotnessInput) float64 {
+	return hotnessWithNormalizedConfig(input, s.config)
+}
+
 // Normalize fills default weights when no usable weights are configured.
 //
 // Thresholds are not defaulted here: a dimension remains disabled when its high
@@ -83,7 +102,12 @@ func (c HotnessConfig) Normalize() HotnessConfig {
 
 // Hotness returns a normalized activity score from enabled dimensions.
 func Hotness(input HotnessInput, config HotnessConfig) float64 {
-	config = config.Normalize()
+	return NewHotnessScorer(config).Score(input)
+}
+
+// hotnessWithNormalizedConfig evaluates input after HotnessScorer has
+// normalized weights.
+func hotnessWithNormalizedConfig(input HotnessInput, config HotnessConfig) float64 {
 	var values [4]numeric.WeightedValue
 	count := 0
 	count = appendNormalized(values[:], count, input.GetsPerSecond, config.HighGetsPerSecond, config.GetsWeight)
@@ -93,6 +117,10 @@ func Hotness(input HotnessInput, config HotnessConfig) float64 {
 	return numeric.WeightedAverage(values[:count])
 }
 
+// appendNormalized appends one enabled hotness dimension into values.
+//
+// Disabled dimensions, zero thresholds, and zero weights are skipped rather
+// than contributing zero-weight components to the fixed scratch array.
 func appendNormalized(values []numeric.WeightedValue, count int, value, high, weight float64) int {
 	if high <= 0 || weight <= 0 {
 		return count
@@ -104,6 +132,10 @@ func appendNormalized(values []numeric.WeightedValue, count int, value, high, we
 	return count + 1
 }
 
+// usableWeight normalizes optional activity weights.
+//
+// Negative and non-finite weights are disabled so activity scoring cannot be
+// inverted or poisoned by invalid configuration.
 func usableWeight(weight float64) float64 {
 	weight = numeric.FiniteOrZero(weight)
 	if weight < 0 {

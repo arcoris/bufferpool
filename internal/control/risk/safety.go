@@ -38,9 +38,56 @@ type Score struct {
 	MisuseComponent float64
 }
 
+// Scorer is a prepared risk evaluator with stable weights.
+//
+// Risk is a safety and misuse projection, not a retention-efficiency score.
+// Root controllers should use it to suppress risky recommendations or surface
+// diagnostics, not to mutate ownership state.
+type Scorer struct {
+	weights          Weights
+	returnWeights    ReturnFailureWeights
+	ownershipWeights OwnershipWeights
+}
+
+// DefaultScorer returns a scorer with conservative default risk weights.
+func DefaultScorer() Scorer {
+	return NewScorer(DefaultWeights(), DefaultReturnFailureWeights(), DefaultOwnershipWeights())
+}
+
+// NewScorer returns a prepared scorer with sanitized stable weights.
+func NewScorer(weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Scorer {
+	if weights == (Weights{}) {
+		weights = DefaultWeights()
+	}
+	if returnWeights == (ReturnFailureWeights{}) {
+		returnWeights = DefaultReturnFailureWeights()
+	}
+	if ownershipWeights == (OwnershipWeights{}) {
+		ownershipWeights = DefaultOwnershipWeights()
+	}
+	weights.ReturnFailure = usableRiskWeight(weights.ReturnFailure)
+	weights.Ownership = usableRiskWeight(weights.Ownership)
+	weights.Misuse = usableRiskWeight(weights.Misuse)
+	returnWeights.Aggregate = usableRiskWeight(returnWeights.Aggregate)
+	returnWeights.Admission = usableRiskWeight(returnWeights.Admission)
+	returnWeights.Closed = usableRiskWeight(returnWeights.Closed)
+	ownershipWeights.OwnershipViolation = usableRiskWeight(ownershipWeights.OwnershipViolation)
+	ownershipWeights.DoubleRelease = usableRiskWeight(ownershipWeights.DoubleRelease)
+	return Scorer{
+		weights:          weights,
+		returnWeights:    returnWeights,
+		ownershipWeights: ownershipWeights,
+	}
+}
+
+// Score returns the normalized risk score for input.
+func (s Scorer) Score(input Input) Score {
+	return newScoreWithNormalizedWeights(input, s.weights, s.returnWeights, s.ownershipWeights)
+}
+
 // NewScore returns a generic safety risk score.
 func NewScore(input Input) Score {
-	return NewScoreWithWeights(input, DefaultWeights(), DefaultReturnFailureWeights(), DefaultOwnershipWeights())
+	return DefaultScorer().Score(input)
 }
 
 // NewScoreWithWeights returns a risk score with caller-provided weights.
@@ -50,6 +97,16 @@ func NewScore(input Input) Score {
 // Ownership and misuse signals stay pure projections; they do not mutate
 // policy or attempt to repair caller behavior.
 func NewScoreWithWeights(input Input, weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Score {
+	return NewScorer(weights, returnWeights, ownershipWeights).Score(input)
+}
+
+// newScoreWithNormalizedWeights evaluates risk after Scorer has sanitized all
+// configured weights.
+//
+// Double release contributes to both ownership and misuse components. That is
+// intentional: it is both a checked ownership-boundary signal and caller API
+// misuse.
+func newScoreWithNormalizedWeights(input Input, weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Score {
 	returnComponent := ReturnFailureRiskWithWeights(
 		input.PoolReturnFailureRatio,
 		input.PoolReturnAdmissionRatio,
@@ -69,4 +126,16 @@ func NewScoreWithWeights(input Input, weights Weights, returnWeights ReturnFailu
 		OwnershipComponent: ownershipComponent,
 		MisuseComponent:    misuseComponent,
 	}
+}
+
+// usableRiskWeight normalizes optional risk weights.
+//
+// Negative and non-finite weights are treated as zero to keep risk projections
+// finite and non-inverting.
+func usableRiskWeight(weight float64) float64 {
+	weight = numeric.FiniteOrZero(weight)
+	if weight < 0 {
+		return 0
+	}
+	return weight
 }

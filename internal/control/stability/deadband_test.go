@@ -19,3 +19,10 @@ func TestDeadband(t *testing.T) {
 		t.Fatalf("non-finite values should be sanitized to zero")
 	}
 }
+
+func BenchmarkControlStabilityDeadband(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = WithinDeadband(float64(i), float64(i)+0.01, 0.1)
+	}
+}

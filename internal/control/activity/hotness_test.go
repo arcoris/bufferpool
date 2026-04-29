@@ -31,4 +31,37 @@ func TestHotness(t *testing.T) {
 	if normalized.GetsWeight != DefaultHotnessGetsWeight || normalized.PutsWeight != DefaultHotnessPutsWeight {
 		t.Fatalf("Normalize() = %+v, want defaults", normalized)
 	}
+	scorer := NewHotnessScorer(HotnessConfig{HighGetsPerSecond: 10, HighPutsPerSecond: 10})
+	input := HotnessInput{GetsPerSecond: 5, PutsPerSecond: 10}
+	if got, want := scorer.Score(input), Hotness(input, HotnessConfig{HighGetsPerSecond: 10, HighPutsPerSecond: 10}); got != want {
+		t.Fatalf("HotnessScorer.Score() = %v, want %v", got, want)
+	}
+}
+
+func BenchmarkControlActivityHotness(b *testing.B) {
+	input := HotnessInput{GetsPerSecond: 5000, PutsPerSecond: 3000, BytesPerSecond: 1 << 20, LeaseOpsPerSecond: 8000}
+	config := HotnessConfig{
+		HighGetsPerSecond:     10_000,
+		HighPutsPerSecond:     10_000,
+		HighBytesPerSecond:    2 << 20,
+		HighLeaseOpsPerSecond: 20_000,
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Hotness(input, config)
+	}
+}
+
+func BenchmarkControlActivityHotnessScorer(b *testing.B) {
+	input := HotnessInput{GetsPerSecond: 5000, PutsPerSecond: 3000, BytesPerSecond: 1 << 20, LeaseOpsPerSecond: 8000}
+	scorer := NewHotnessScorer(HotnessConfig{
+		HighGetsPerSecond:     10_000,
+		HighPutsPerSecond:     10_000,
+		HighBytesPerSecond:    2 << 20,
+		HighLeaseOpsPerSecond: 20_000,
+	})
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = scorer.Score(input)
+	}
 }

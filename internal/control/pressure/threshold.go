@@ -25,6 +25,40 @@ type Thresholds struct {
 	Critical uint64
 }
 
+// Classifier is a prepared threshold evaluator for stable pressure policy.
+//
+// Controller loops usually classify many observations against the same
+// thresholds. Preparing the classifier validates ordering once and keeps the
+// repeated classification path explicit and allocation-free.
+type Classifier struct {
+	thresholds Thresholds
+}
+
+// NewClassifier returns a prepared classifier for thresholds.
+func NewClassifier(thresholds Thresholds) (Classifier, error) {
+	if err := thresholds.Validate(); err != nil {
+		return Classifier{}, err
+	}
+	return Classifier{thresholds: thresholds}, nil
+}
+
+// MustNewClassifier returns a prepared classifier or panics for invalid thresholds.
+//
+// It is intended for tests and static defaults where invalid threshold ordering
+// is a programming error.
+func MustNewClassifier(thresholds Thresholds) Classifier {
+	classifier, err := NewClassifier(thresholds)
+	if err != nil {
+		panic(err)
+	}
+	return classifier
+}
+
+// Classify returns the highest configured pressure level exceeded by value.
+func (c Classifier) Classify(value uint64) Level {
+	return Classify(value, c.thresholds)
+}
+
 // Classify returns the highest configured pressure level exceeded by value.
 func Classify(value uint64, thresholds Thresholds) Level {
 	if thresholds.Critical != 0 && value >= thresholds.Critical {

@@ -18,6 +18,13 @@ package bufferpool
 
 import controlrisk "arcoris.dev/bufferpool/internal/control/risk"
 
+var (
+	// partitionRiskScorer prepares the default shared risk weights for repeated
+	// controller projections. It only evaluates safety and misuse signals; it
+	// never repairs ownership state or mutates partition policy.
+	partitionRiskScorer = controlrisk.DefaultScorer()
+)
+
 // PoolPartitionRiskScore explains ownership and Pool handoff risk.
 type PoolPartitionRiskScore struct {
 	// Value is the normalized total risk.
@@ -39,7 +46,7 @@ type PoolPartitionRiskScore struct {
 // separate because hard close diagnostics should not carry the same severity as
 // unexpected ownership or admission failures.
 func newPoolPartitionRiskScore(rates PoolPartitionWindowRates) PoolPartitionRiskScore {
-	score := controlrisk.NewScore(controlrisk.Input{
+	score := partitionRiskScorer.Score(controlrisk.Input{
 		PoolReturnFailureRatio:   rates.PoolReturnFailureRatio,
 		PoolReturnAdmissionRatio: rates.PoolReturnAdmissionFailureRatio,
 		PoolReturnClosedRatio:    rates.PoolReturnClosedFailureRatio,
