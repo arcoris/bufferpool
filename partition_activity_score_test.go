@@ -55,3 +55,37 @@ func TestPoolPartitionActivityDoesNotUseGetsPlusPutsAsLeaseOps(t *testing.T) {
 		t.Fatalf("activity score = %v, old inferred lease score = %v; lease ops should not be gets+puts", score.Value, oldInferredLeaseOpsScore)
 	}
 }
+
+func TestPoolPartitionActivityDefaultDisablesByteThroughput(t *testing.T) {
+	config := PoolPartitionActivityScoreConfig{}.controlConfig()
+	if config.HighBytesPerSecond != 0 {
+		t.Fatalf("default HighBytesPerSecond = %v, want byte activity disabled", config.HighBytesPerSecond)
+	}
+
+	rates := PoolPartitionWindowRates{
+		ReturnedBytesPerSecond: 1_000_000,
+		DroppedBytesPerSecond:  1_000_000,
+	}
+	scores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if scores.Activity.Value != 0 {
+		t.Fatalf("activity from byte diagnostics = %v, want zero", scores.Activity.Value)
+	}
+}
+
+func TestPoolPartitionActivityByteThroughputPolicyDocumented(t *testing.T) {
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		ActivityConfig: PoolPartitionActivityScoreConfig{
+			HighBytesPerSecond: 1,
+			BytesWeight:        1,
+		},
+	})
+	rates := PoolPartitionWindowRates{
+		ReturnedBytesPerSecond: 1,
+		DroppedBytesPerSecond:  1,
+	}
+
+	scores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if scores.Activity.Value != 0 {
+		t.Fatalf("custom byte config without byte activity adapter = %v, want zero", scores.Activity.Value)
+	}
+}

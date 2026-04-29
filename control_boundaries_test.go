@@ -38,6 +38,12 @@ var forbiddenHotPathControlImports = map[string]struct{}{
 	"arcoris.dev/bufferpool/internal/control/score":    {},
 }
 
+// hotDataPlaneFiles lists files that own Pool, shard, and bucket hot paths.
+//
+// Future group files are control-plane adapters, not data-plane hot paths, and
+// may import score, risk, activity, or decision packages when they remain
+// observational. These checks intentionally protect Pool/shard/bucket files
+// without blocking future PoolGroup evaluation files from using internal/control.
 var hotDataPlaneFiles = []string{
 	"bucket.go",
 	"bucket_trim.go",

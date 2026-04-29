@@ -65,14 +65,19 @@ decision, and must not be driven directly from lifetime metrics.
 
 `Scores` project domain-adapted rates and smoothed signals into normalized
 usefulness, waste, activity, risk, budget, and pressure values. Scores explain
-signals; they do not mutate policy.
+signals; they do not mutate policy. Partition activity currently uses gets,
+puts, and successful lease operations. Returned-byte and dropped-byte
+throughput remain diagnostics because returned bytes and dropped bytes have
+different control meanings; a future domain-owned byte activity adapter may
+define how to combine them.
 
-`Recommendations` are non-mutating proposals. They describe what a controller
-might consider, but they do not execute actions, publish runtime snapshots, or
-trim memory.
+`Recommendations` are non-mutating advisory projections. They describe what a
+future controller might consider, but they are not controller decisions and do
+not execute actions, publish runtime snapshots, mutate policy, or trim memory.
 
-Future policy decisions must sit above recommendations and add domain-specific
-guards such as hysteresis, cooldown, safety checks, and bounded change.
+Future policy application must sit above recommendations and add
+domain-specific guards such as hysteresis, cooldown, rollback, safety checks,
+verification gates, and bounded change.
 
 ## Counters And Gauges
 
@@ -104,9 +109,12 @@ Waste measures retained capacity that appears cold or inefficient. Low hit
 ratio, retained pressure, low activity, and drops can raise waste. Waste is not
 a trim command and does not identify an exact number of bytes to release.
 
-Activity and hotness measure workload intensity. Gets, puts, bytes, and lease
-operations describe demand and ownership churn. Hotness is useful for active-set
-and idle-candidate decisions, but it is not the same as usefulness or pressure.
+Activity and hotness measure workload intensity. Gets, puts, and successful
+lease operations currently describe partition demand and ownership churn. Byte
+activity is disabled by default for partitions because returned-byte throughput
+and dropped-byte throughput are preserved as separate diagnostics, not merged
+into one activity signal. Hotness is useful for active-set and idle-candidate
+evaluations, but it is not the same as usefulness or pressure.
 
 Risk measures safety and caller-misuse signals. Ownership violations, double
 releases, invalid releases, and return failures are kept separate so diagnostics
@@ -125,9 +133,10 @@ Ranking orders candidates deterministically by score and tie-break. It is a
 selection primitive, not a policy engine. Into helpers reuse caller-owned
 storage for controller loops, while owning helpers allocate by design.
 
-Recommendations are generic or domain-specific proposals. None and observe are
-non-actionable. Grow, shrink, trim, or investigate recommendations still require
-a future domain controller before any action can happen.
+Recommendations are generic or domain-specific advisory projections. None and
+observe are non-actionable. Grow, shrink, trim, or investigate recommendations
+still require a future domain controller with hysteresis, cooldown, rollback,
+and verification gates before any policy application can happen.
 
 ## Non-Goals
 

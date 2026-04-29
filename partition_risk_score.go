@@ -35,9 +35,13 @@ type PoolPartitionRiskScore struct {
 
 // PoolPartitionRiskScoreConfig configures partition ownership and handoff risk.
 //
-// Zero weight groups select shared conservative defaults. The root-domain
-// config keeps internal/control types out of the public partition API while
-// preserving one explicit evaluator boundary.
+// A zero PoolPartitionRiskScoreConfig selects shared conservative defaults. A
+// non-zero config is treated as fully explicit: partial configs do not inherit
+// per-field defaults, and fields left zero are intentionally passed as zero
+// before shared risk scorers sanitize them. This avoids hidden default merging
+// and keeps evaluator construction deterministic. The root-domain config keeps
+// internal/control types out of the public partition API while preserving one
+// explicit evaluator boundary.
 type PoolPartitionRiskScoreConfig struct {
 	// Weights configures top-level risk component aggregation.
 	Weights PoolPartitionRiskScoreWeights
@@ -121,7 +125,7 @@ func (c PoolPartitionRiskScoreConfig) controlScorer() controlrisk.Scorer {
 	if c == (PoolPartitionRiskScoreConfig{}) {
 		return controlrisk.DefaultScorer()
 	}
-	return controlrisk.NewScorerWithMisuseWeights(
+	return controlrisk.NewExplicitScorer(
 		c.Weights.controlWeights(),
 		c.ReturnWeights.controlWeights(),
 		c.OwnershipWeights.controlWeights(),
@@ -131,9 +135,6 @@ func (c PoolPartitionRiskScoreConfig) controlScorer() controlrisk.Scorer {
 
 // controlWeights maps root-domain top-level risk weights to shared weights.
 func (w PoolPartitionRiskScoreWeights) controlWeights() controlrisk.Weights {
-	if w == (PoolPartitionRiskScoreWeights{}) {
-		return controlrisk.DefaultWeights()
-	}
 	return controlrisk.Weights{
 		ReturnFailure: w.ReturnFailure,
 		Ownership:     w.Ownership,
@@ -143,9 +144,6 @@ func (w PoolPartitionRiskScoreWeights) controlWeights() controlrisk.Weights {
 
 // controlWeights maps root-domain return-failure weights to shared weights.
 func (w PoolPartitionReturnFailureRiskWeights) controlWeights() controlrisk.ReturnFailureWeights {
-	if w == (PoolPartitionReturnFailureRiskWeights{}) {
-		return controlrisk.DefaultReturnFailureWeights()
-	}
 	return controlrisk.ReturnFailureWeights{
 		Aggregate: w.Aggregate,
 		Admission: w.Admission,
@@ -155,9 +153,6 @@ func (w PoolPartitionReturnFailureRiskWeights) controlWeights() controlrisk.Retu
 
 // controlWeights maps root-domain ownership weights to shared weights.
 func (w PoolPartitionOwnershipRiskWeights) controlWeights() controlrisk.OwnershipWeights {
-	if w == (PoolPartitionOwnershipRiskWeights{}) {
-		return controlrisk.DefaultOwnershipWeights()
-	}
 	return controlrisk.OwnershipWeights{
 		OwnershipViolation: w.OwnershipViolation,
 		DoubleRelease:      w.DoubleRelease,
@@ -166,9 +161,6 @@ func (w PoolPartitionOwnershipRiskWeights) controlWeights() controlrisk.Ownershi
 
 // controlWeights maps root-domain misuse weights to shared weights.
 func (w PoolPartitionMisuseRiskWeights) controlWeights() controlrisk.MisuseWeights {
-	if w == (PoolPartitionMisuseRiskWeights{}) {
-		return controlrisk.DefaultMisuseWeights()
-	}
 	return controlrisk.MisuseWeights{
 		InvalidRelease: w.InvalidRelease,
 		DoubleRelease:  w.DoubleRelease,

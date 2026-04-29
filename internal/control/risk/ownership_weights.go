@@ -39,6 +39,13 @@ func normalizeOwnershipWeights(weights OwnershipWeights) OwnershipWeights {
 	if weights == (OwnershipWeights{}) {
 		return DefaultOwnershipWeights()
 	}
+	return sanitizeOwnershipWeights(weights)
+}
+
+// sanitizeOwnershipWeights converts invalid ownership weights to zero without
+// applying defaults. It is used when a domain adapter has already decided that
+// a config group is explicit.
+func sanitizeOwnershipWeights(weights OwnershipWeights) OwnershipWeights {
 	weights.OwnershipViolation = usableRiskWeight(weights.OwnershipViolation)
 	weights.DoubleRelease = usableRiskWeight(weights.DoubleRelease)
 	return weights

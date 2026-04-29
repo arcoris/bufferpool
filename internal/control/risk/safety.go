@@ -86,6 +86,26 @@ func NewScorerWithMisuseWeights(
 	}
 }
 
+// NewExplicitScorer returns a prepared scorer without implicit default groups.
+//
+// This constructor is for domain adapters that already distinguish an unset
+// config from an explicit config. All fields are sanitized, but an all-zero
+// weight group remains zero instead of inheriting defaults. Use DefaultScorer
+// or NewScorerWithMisuseWeights for ordinary one-off/default construction.
+func NewExplicitScorer(
+	weights Weights,
+	returnWeights ReturnFailureWeights,
+	ownershipWeights OwnershipWeights,
+	misuseWeights MisuseWeights,
+) Scorer {
+	return Scorer{
+		weights:          sanitizeWeights(weights),
+		returnWeights:    sanitizeReturnFailureWeights(returnWeights),
+		ownershipWeights: sanitizeOwnershipWeights(ownershipWeights),
+		misuseWeights:    sanitizeMisuseWeights(misuseWeights),
+	}
+}
+
 // Score returns the normalized risk score for input.
 func (s Scorer) Score(input Input) Score {
 	return newScoreWithNormalizedWeights(input, s.weights, s.returnWeights, s.ownershipWeights, s.misuseWeights)

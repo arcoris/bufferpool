@@ -50,6 +50,13 @@ func normalizeWeights(weights Weights) Weights {
 	if weights == (Weights{}) {
 		return DefaultWeights()
 	}
+	return sanitizeWeights(weights)
+}
+
+// sanitizeWeights converts invalid top-level risk weights to zero without
+// applying defaults. It supports domain adapters that distinguish "unset
+// config" from "explicit zero weight" before constructing a Scorer.
+func sanitizeWeights(weights Weights) Weights {
 	weights.ReturnFailure = usableRiskWeight(weights.ReturnFailure)
 	weights.Ownership = usableRiskWeight(weights.Ownership)
 	weights.Misuse = usableRiskWeight(weights.Misuse)

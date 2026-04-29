@@ -37,6 +37,9 @@ complete:
   used only as fallback.
 - Partition rates expose real lease throughput fields based on LeaseRegistry
   counters, not pool get/put volume.
+- Partition byte activity policy is explicit: returned-byte and dropped-byte
+  throughput stay separate diagnostics and are not automatically combined into
+  one activity signal.
 - Disabled pressure contributes zero severity even when a defensive snapshot
   carries a non-normal level.
 - PoolPartitionScoreEvaluator owns usefulness, waste, activity, and risk
@@ -63,7 +66,8 @@ introduce:
 - a coordinator evaluation report.
 
 The first group pass may aggregate partition-level observations and run pure
-evaluation. It may not apply runtime decisions.
+evaluation. It may produce advisory recommendations, but it may not apply
+runtime decisions or mutate policy.
 
 ## Forbidden First Group Scope
 
@@ -100,6 +104,14 @@ coordination boundaries remain reviewable:
 
 The first version of `group_coordinator.go` should define evaluation and report
 shape only. It must not start a background loop or mutate partition policies.
+
+## Next Implementation Request
+
+The next implementation request should create only observational PoolGroup
+infrastructure: registry, sample, window, rates, score values, snapshot,
+metrics, and coordinator evaluation report. It must explicitly exclude policy
+mutation, background goroutines, physical trim, and adaptive budget application,
+and it must run the verification gate below before and after implementation.
 
 ## Verification Gate
 

@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -93,5 +94,27 @@ func TestPoolPartitionRecommendationThresholdDefaults(t *testing.T) {
 	}
 	if recommendationPressureWasteConfidenceSignalCount != 2 {
 		t.Fatalf("pressure/waste confidence signal count = %d, want structural pair count 2", recommendationPressureWasteConfidenceSignalCount)
+	}
+}
+
+func TestPoolPartitionRecommendationDoesNotMutateScores(t *testing.T) {
+	scores := PoolPartitionScores{
+		Usefulness: PoolPartitionUsefulnessScore{
+			Value: 0.9,
+			Components: []PoolPartitionScoreComponent{
+				{Name: "hit_ratio", Value: 1, Weight: 1},
+			},
+		},
+		Pressure: PoolPartitionPressureScore{Value: 0.1},
+	}
+	original := scores
+	original.Usefulness.Components = append([]PoolPartitionScoreComponent(nil), scores.Usefulness.Components...)
+
+	recommendation := NewPoolPartitionRecommendation(scores)
+	if !reflect.DeepEqual(scores, original) {
+		t.Fatalf("scores mutated: got %+v, want %+v", scores, original)
+	}
+	if !reflect.DeepEqual(recommendation.Scores, original) {
+		t.Fatalf("recommendation scores = %+v, want original %+v", recommendation.Scores, original)
 	}
 }

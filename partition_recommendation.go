@@ -93,11 +93,13 @@ const (
 	PoolPartitionRecommendationInvestigateOwnership
 )
 
-// PoolPartitionRecommendation is a pure recommendation projection.
+// PoolPartitionRecommendation is a pure advisory recommendation projection.
 //
 // Recommendations do not mutate policies, execute trim, publish runtime
-// snapshots, or start controller loops. They are explainable outputs for future
-// controller decision code.
+// snapshots, or start controller loops. They are safe to compute during
+// observational evaluation and must not be interpreted as instructions to apply
+// runtime policy. Future policy application must add hysteresis, cooldown,
+// rollback, and verification gates.
 type PoolPartitionRecommendation struct {
 	// Kind is the partition recommendation kind.
 	Kind PoolPartitionRecommendationKind
@@ -112,12 +114,12 @@ type PoolPartitionRecommendation struct {
 	Scores PoolPartitionScores
 }
 
-// NewPoolPartitionRecommendation derives a pure recommendation from scores.
+// NewPoolPartitionRecommendation derives advisory output from scores.
 //
 // The priority order is safety first, then memory pressure, then waste, then
 // useful growth. That ordering keeps correctness diagnostics from being hidden
-// by retention-tuning signals. The result is advice only; it does not mutate
-// policies or execute trim.
+// by retention-tuning signals. The result is advice only; it is not a
+// controller decision, policy mutation, or trim execution command.
 func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRecommendation {
 	if scores.Risk.Value >= DefaultRecommendationHighRiskThreshold &&
 		scores.Risk.Value >= DefaultRecommendationMinimumActionConfidence {

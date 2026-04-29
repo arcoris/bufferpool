@@ -49,6 +49,13 @@ func normalizeReturnFailureWeights(weights ReturnFailureWeights) ReturnFailureWe
 	if weights == (ReturnFailureWeights{}) {
 		return DefaultReturnFailureWeights()
 	}
+	return sanitizeReturnFailureWeights(weights)
+}
+
+// sanitizeReturnFailureWeights converts invalid Pool handoff weights to zero
+// without applying defaults. It is used when a domain adapter has already
+// decided that a config group is explicit.
+func sanitizeReturnFailureWeights(weights ReturnFailureWeights) ReturnFailureWeights {
 	weights.Aggregate = usableRiskWeight(weights.Aggregate)
 	weights.Admission = usableRiskWeight(weights.Admission)
 	weights.Closed = usableRiskWeight(weights.Closed)

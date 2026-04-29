@@ -118,6 +118,91 @@ func TestPoolPartitionScoreEvaluatorCustomRiskConfig(t *testing.T) {
 	}
 }
 
+func TestPoolPartitionScoreEvaluatorPartialUsefulnessWeightsAreExplicit(t *testing.T) {
+	rates := PoolPartitionWindowRates{
+		HitRatio:        1,
+		RetainRatio:     1,
+		AllocationRatio: 1,
+	}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		UsefulnessWeights: PoolPartitionUsefulnessScoreWeights{HitRatio: 1},
+	})
+
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if customScores.Usefulness.Value != 1 {
+		t.Fatalf("partial usefulness weights = %v, want explicit hit-only score 1", customScores.Usefulness.Value)
+	}
+	if customScores.Usefulness.Value == defaultScores.Usefulness.Value {
+		t.Fatalf("partial usefulness weights unexpectedly matched defaults: %v", customScores.Usefulness.Value)
+	}
+	if !isFiniteUnit(customScores.Usefulness.Value) {
+		t.Fatalf("partial usefulness value = %v, want finite unit value", customScores.Usefulness.Value)
+	}
+}
+
+func TestPoolPartitionScoreEvaluatorPartialWasteWeightsAreExplicit(t *testing.T) {
+	rates := PoolPartitionWindowRates{
+		HitRatio:  1,
+		DropRatio: 1,
+	}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		WasteWeights: PoolPartitionWasteScoreWeights{Drop: 1},
+	})
+
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if customScores.Waste.Value != 1 {
+		t.Fatalf("partial waste weights = %v, want explicit drop-only score 1", customScores.Waste.Value)
+	}
+	if customScores.Waste.Value == defaultScores.Waste.Value {
+		t.Fatalf("partial waste weights unexpectedly matched defaults: %v", customScores.Waste.Value)
+	}
+	if !isFiniteUnit(customScores.Waste.Value) {
+		t.Fatalf("partial waste value = %v, want finite unit value", customScores.Waste.Value)
+	}
+}
+
+func TestPoolPartitionScoreEvaluatorPartialActivityConfigIsExplicit(t *testing.T) {
+	rates := PoolPartitionWindowRates{GetsPerSecond: 1}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		ActivityConfig: PoolPartitionActivityScoreConfig{HighGetsPerSecond: 1},
+	})
+
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if customScores.Activity.Value != 1 {
+		t.Fatalf("partial activity config = %v, want explicit get-only score 1", customScores.Activity.Value)
+	}
+	if customScores.Activity.Value == defaultScores.Activity.Value {
+		t.Fatalf("partial activity config unexpectedly matched defaults: %v", customScores.Activity.Value)
+	}
+	if !isFiniteUnit(customScores.Activity.Value) {
+		t.Fatalf("partial activity value = %v, want finite unit value", customScores.Activity.Value)
+	}
+}
+
+func TestPoolPartitionScoreEvaluatorPartialRiskConfigIsExplicit(t *testing.T) {
+	rates := PoolPartitionWindowRates{LeaseInvalidReleaseRatio: 1}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		RiskConfig: PoolPartitionRiskScoreConfig{
+			Weights: PoolPartitionRiskScoreWeights{Misuse: 1},
+		},
+	})
+
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if customScores.Risk.Value != 0 || customScores.Risk.MisuseComponent != 0 {
+		t.Fatalf("partial risk config = %+v, want explicit zero omitted misuse weights", customScores.Risk)
+	}
+	if defaultScores.Risk.Value == 0 {
+		t.Fatalf("default risk = %+v, want default misuse weights to contribute", defaultScores.Risk)
+	}
+	if !isFiniteUnit(customScores.Risk.Value) {
+		t.Fatalf("partial risk value = %v, want finite unit value", customScores.Risk.Value)
+	}
+}
+
 func TestPoolPartitionScoreEvaluatorZeroValue(t *testing.T) {
 	var evaluator PoolPartitionScoreEvaluator
 	rates := PoolPartitionWindowRates{
@@ -282,4 +367,8 @@ func BenchmarkPoolPartitionScoreEvaluatorScoreValuesCustomConfig(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		partitionScoreEvaluatorValuesSink = evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
 	}
+}
+
+func isFiniteUnit(value float64) bool {
+	return value >= 0 && value <= 1 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }

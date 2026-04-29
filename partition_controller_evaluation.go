@@ -21,8 +21,10 @@ import "time"
 // PoolPartitionControllerEvaluation is a pure controller projection.
 //
 // Evaluation turns two samples into window deltas, rates, updated EWMA, scores,
-// and a recommendation. It does not mutate PoolPartition state, publish runtime
-// policy, execute trim, or start background work.
+// and an advisory recommendation. It does not mutate PoolPartition state,
+// publish runtime policy, execute trim, or start background work. Future
+// controller decisions must wrap this projection with hysteresis, cooldown,
+// rollback, and verification gates before applying policy.
 type PoolPartitionControllerEvaluation struct {
 	// Window contains the current counter movement.
 	Window PoolPartitionWindow
@@ -36,7 +38,7 @@ type PoolPartitionControllerEvaluation struct {
 	// Scores contains pure score projections.
 	Scores PoolPartitionScores
 
-	// Recommendation is the pure recommendation derived from Scores.
+	// Recommendation is advisory output derived from Scores, not an applied decision.
 	Recommendation PoolPartitionRecommendation
 }
 

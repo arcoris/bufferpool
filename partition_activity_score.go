@@ -46,9 +46,12 @@ type PoolPartitionActivityScore struct {
 // PoolPartitionActivityScoreConfig configures partition hotness projection.
 //
 // A zero value inside PoolPartitionScoreEvaluatorConfig selects conservative
-// partition defaults. Byte throughput is disabled by default because partition
-// rates currently expose returned and dropped byte throughput separately rather
-// than one domain-owned byte activity signal.
+// partition defaults. A non-zero value is fully explicit: partial configs do
+// not inherit per-field defaults, and omitted thresholds stay disabled before
+// the shared hotness config normalizer sanitizes weights. Byte throughput is
+// disabled by default because partition rates currently expose returned and
+// dropped byte throughput separately rather than one domain-owned byte activity
+// signal.
 type PoolPartitionActivityScoreConfig struct {
 	// HighGetsPerSecond normalizes Pool acquisition throughput.
 	HighGetsPerSecond float64
@@ -86,6 +89,11 @@ func (e PoolPartitionScoreEvaluator) activityScore(signals partitionScoreSignals
 	// Lease operation throughput is sampled from LeaseRegistry counters. Pool
 	// Get/Put volume is a data-plane signal and must not be inferred as
 	// ownership churn.
+	//
+	// Byte activity is intentionally not supplied here. ReturnedBytesPerSecond
+	// and DroppedBytesPerSecond have different control meanings and remain rate
+	// diagnostics until a future domain-owned byte activity adapter defines how
+	// to combine them.
 	value := e.activity.Score(controlactivity.HotnessInput{
 		GetsPerSecond:     signals.getsPerSecond,
 		PutsPerSecond:     signals.putsPerSecond,

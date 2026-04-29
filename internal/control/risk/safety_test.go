@@ -65,6 +65,14 @@ func TestRiskScorerCustomWeights(t *testing.T) {
 	}
 }
 
+func TestRiskExplicitScorerDoesNotApplyDefaultGroups(t *testing.T) {
+	scorer := NewExplicitScorer(Weights{Misuse: 1}, ReturnFailureWeights{}, OwnershipWeights{}, MisuseWeights{})
+	got := scorer.Score(Input{InvalidReleaseRatio: 1, DoubleReleaseRatio: 1})
+	if got.Value != 0 || got.MisuseComponent != 0 || got.OwnershipComponent != 0 || got.ReturnComponent != 0 {
+		t.Fatalf("explicit scorer with omitted groups = %+v, want zero components", got)
+	}
+}
+
 func TestRiskScorerDefaultMisuseWeights(t *testing.T) {
 	scorer := DefaultScorer()
 	got := scorer.Score(Input{InvalidReleaseRatio: 1})

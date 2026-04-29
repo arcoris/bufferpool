@@ -33,8 +33,10 @@ var (
 // PoolPartitionUsefulnessScoreWeights configures partition usefulness scoring.
 //
 // A zero value inside PoolPartitionScoreEvaluatorConfig selects shared
-// conservative defaults. A non-zero value is interpreted as an explicit
-// partition-domain adapter config and is sanitized by the shared scorer.
+// conservative defaults. A non-zero value is fully explicit: partial configs do
+// not inherit per-field defaults, and omitted fields are passed as zero before
+// the shared scorer sanitizes them. This avoids hidden default merging and keeps
+// evaluator construction deterministic.
 type PoolPartitionUsefulnessScoreWeights struct {
 	// HitRatio weights direct retained-buffer reuse success.
 	HitRatio float64
@@ -55,8 +57,10 @@ type PoolPartitionUsefulnessScoreWeights struct {
 // PoolPartitionWasteScoreWeights configures partition waste scoring.
 //
 // A zero value inside PoolPartitionScoreEvaluatorConfig selects shared
-// conservative defaults. A non-zero value is interpreted as an explicit
-// partition-domain adapter config and is sanitized by the shared scorer.
+// conservative defaults. A non-zero value is fully explicit: partial configs do
+// not inherit per-field defaults, and omitted fields are passed as zero before
+// the shared scorer sanitizes them. This avoids hidden default merging and keeps
+// evaluator construction deterministic.
 type PoolPartitionWasteScoreWeights struct {
 	// LowHit weights retained capacity that is not serving reuse hits.
 	LowHit float64
@@ -73,10 +77,12 @@ type PoolPartitionWasteScoreWeights struct {
 
 // PoolPartitionScoreEvaluatorConfig configures a partition score evaluator.
 //
-// Zero weight/config groups use shared conservative defaults. This lets callers
-// create the default evaluator with PoolPartitionScoreEvaluatorConfig{} while
-// still allowing future partition policy to provide explicit domain weights and
-// thresholds.
+// Zero weight/config groups use shared conservative defaults. Non-zero groups
+// are treated as fully explicit: partial groups do not inherit per-field
+// defaults, and omitted fields are intentionally passed as zero before the
+// shared scorers/config normalizers sanitize them. This avoids hidden per-field
+// default merging while still letting callers create the default evaluator with
+// PoolPartitionScoreEvaluatorConfig{}.
 type PoolPartitionScoreEvaluatorConfig struct {
 	// UsefulnessWeights configures usefulness score composition.
 	UsefulnessWeights PoolPartitionUsefulnessScoreWeights
@@ -134,9 +140,9 @@ type PoolPartitionScoreValues struct {
 
 // NewPoolPartitionScoreEvaluator returns an immutable score evaluator.
 //
-// A zero config selects shared conservative defaults. Non-zero weight groups are
-// treated as explicit partition scoring configuration and are sanitized by the
-// internal control scorers.
+// A zero config selects shared conservative defaults. Non-zero groups are fully
+// explicit and deterministic: fields left zero stay zero until the shared
+// scorer/config normalizer sanitizes them.
 func NewPoolPartitionScoreEvaluator(config PoolPartitionScoreEvaluatorConfig) PoolPartitionScoreEvaluator {
 	return PoolPartitionScoreEvaluator{
 		usefulness: controlscore.NewUsefulnessScorer(config.UsefulnessWeights.controlWeights()),

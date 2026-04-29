@@ -92,9 +92,15 @@ type PoolPartitionWindowRates struct {
 	LeaseOpsPerSecond float64
 
 	// ReturnedBytesPerSecond is delta ReturnedBytes divided by elapsed seconds.
+	// It is a diagnostic rate and is not automatically combined into partition
+	// activity because returned and dropped bytes have different control
+	// meanings.
 	ReturnedBytesPerSecond float64
 
 	// DroppedBytesPerSecond is delta DroppedBytes divided by elapsed seconds.
+	// It is a diagnostic rate and is not automatically combined into partition
+	// activity because dropped bytes can indicate admission pressure rather than
+	// useful byte movement.
 	DroppedBytesPerSecond float64
 }
 

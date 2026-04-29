@@ -40,6 +40,13 @@ func normalizeMisuseWeights(weights MisuseWeights) MisuseWeights {
 	if weights == (MisuseWeights{}) {
 		return DefaultMisuseWeights()
 	}
+	return sanitizeMisuseWeights(weights)
+}
+
+// sanitizeMisuseWeights converts invalid caller-misuse weights to zero without
+// applying defaults. It is used when a domain adapter has already decided that
+// a config group is explicit.
+func sanitizeMisuseWeights(weights MisuseWeights) MisuseWeights {
 	weights.InvalidRelease = usableRiskWeight(weights.InvalidRelease)
 	weights.DoubleRelease = usableRiskWeight(weights.DoubleRelease)
 	return weights
