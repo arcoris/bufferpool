@@ -26,17 +26,20 @@ import (
 func TestPoolPartitionWindowRatesUseDeltaCounters(t *testing.T) {
 	window := PoolPartitionWindow{
 		Delta: PoolPartitionCounterDelta{
-			Hits:                     3,
-			Misses:                   1,
-			Allocations:              1,
-			Retains:                  2,
-			Drops:                    2,
-			LeaseReleases:            6,
-			LeaseInvalidReleases:     1,
-			LeaseDoubleReleases:      2,
-			LeaseOwnershipViolations: 1,
-			LeasePoolReturnAttempts:  5,
-			LeasePoolReturnFailures:  1,
+			Hits:                             3,
+			Misses:                           1,
+			Allocations:                      1,
+			Retains:                          2,
+			Drops:                            2,
+			LeaseReleases:                    6,
+			LeaseInvalidReleases:             1,
+			LeaseDoubleReleases:              2,
+			LeaseOwnershipViolations:         1,
+			LeasePoolReturnAttempts:          5,
+			LeasePoolReturnSuccesses:         4,
+			LeasePoolReturnFailures:          1,
+			LeasePoolReturnClosedFailures:    1,
+			LeasePoolReturnAdmissionFailures: 1,
 		},
 	}
 
@@ -48,6 +51,9 @@ func TestPoolPartitionWindowRatesUseDeltaCounters(t *testing.T) {
 	requirePartitionFloat64(t, rates.RetainRatio, 0.5)
 	requirePartitionFloat64(t, rates.DropRatio, 0.5)
 	requirePartitionFloat64(t, rates.PoolReturnFailureRatio, 0.2)
+	requirePartitionFloat64(t, rates.PoolReturnSuccessRatio, 0.8)
+	requirePartitionFloat64(t, rates.PoolReturnClosedFailureRatio, 0.2)
+	requirePartitionFloat64(t, rates.PoolReturnAdmissionFailureRatio, 0.2)
 	requirePartitionFloat64(t, rates.LeaseInvalidReleaseRatio, 0.1)
 	requirePartitionFloat64(t, rates.LeaseDoubleReleaseRatio, 0.2)
 	requirePartitionFloat64(t, rates.LeaseOwnershipViolationRatio, 0.1)

@@ -16,6 +16,8 @@
 
 package bufferpool
 
+import controlseries "arcoris.dev/bufferpool/internal/control/series"
+
 // PoolPartitionCounterDelta is the raw counter movement between two samples.
 //
 // Delta values are controller inputs. Lifetime metrics remain diagnostic, while
@@ -179,49 +181,41 @@ func (w *PoolPartitionWindow) Reset(previous, current PoolPartitionSample) {
 // newPoolPartitionCounterDelta computes raw counter movement between samples.
 func newPoolPartitionCounterDelta(previous, current PoolPartitionSample) PoolPartitionCounterDelta {
 	return PoolPartitionCounterDelta{
-		Gets:            partitionCounterDelta(previous.PoolCounters.Gets, current.PoolCounters.Gets),
-		Hits:            partitionCounterDelta(previous.PoolCounters.Hits, current.PoolCounters.Hits),
-		Misses:          partitionCounterDelta(previous.PoolCounters.Misses, current.PoolCounters.Misses),
-		Allocations:     partitionCounterDelta(previous.PoolCounters.Allocations, current.PoolCounters.Allocations),
-		Puts:            partitionCounterDelta(previous.PoolCounters.Puts, current.PoolCounters.Puts),
-		ReturnedBytes:   partitionCounterDelta(previous.PoolCounters.ReturnedBytes, current.PoolCounters.ReturnedBytes),
-		Retains:         partitionCounterDelta(previous.PoolCounters.Retains, current.PoolCounters.Retains),
-		RetainedBytes:   partitionCounterDelta(previous.PoolCounters.RetainedBytes, current.PoolCounters.RetainedBytes),
-		Drops:           partitionCounterDelta(previous.PoolCounters.Drops, current.PoolCounters.Drops),
-		DroppedBytes:    partitionCounterDelta(previous.PoolCounters.DroppedBytes, current.PoolCounters.DroppedBytes),
-		ClosedPoolDrops: partitionCounterDelta(previous.PoolCounters.DropReasons.ClosedPool, current.PoolCounters.DropReasons.ClosedPool),
-		ReturnedBuffersDisabledDrops: partitionCounterDelta(
+		Gets:            controlseries.DeltaValue(previous.PoolCounters.Gets, current.PoolCounters.Gets),
+		Hits:            controlseries.DeltaValue(previous.PoolCounters.Hits, current.PoolCounters.Hits),
+		Misses:          controlseries.DeltaValue(previous.PoolCounters.Misses, current.PoolCounters.Misses),
+		Allocations:     controlseries.DeltaValue(previous.PoolCounters.Allocations, current.PoolCounters.Allocations),
+		Puts:            controlseries.DeltaValue(previous.PoolCounters.Puts, current.PoolCounters.Puts),
+		ReturnedBytes:   controlseries.DeltaValue(previous.PoolCounters.ReturnedBytes, current.PoolCounters.ReturnedBytes),
+		Retains:         controlseries.DeltaValue(previous.PoolCounters.Retains, current.PoolCounters.Retains),
+		RetainedBytes:   controlseries.DeltaValue(previous.PoolCounters.RetainedBytes, current.PoolCounters.RetainedBytes),
+		Drops:           controlseries.DeltaValue(previous.PoolCounters.Drops, current.PoolCounters.Drops),
+		DroppedBytes:    controlseries.DeltaValue(previous.PoolCounters.DroppedBytes, current.PoolCounters.DroppedBytes),
+		ClosedPoolDrops: controlseries.DeltaValue(previous.PoolCounters.DropReasons.ClosedPool, current.PoolCounters.DropReasons.ClosedPool),
+		ReturnedBuffersDisabledDrops: controlseries.DeltaValue(
 			previous.PoolCounters.DropReasons.ReturnedBuffersDisabled,
 			current.PoolCounters.DropReasons.ReturnedBuffersDisabled,
 		),
-		OversizedDrops:           partitionCounterDelta(previous.PoolCounters.DropReasons.Oversized, current.PoolCounters.DropReasons.Oversized),
-		UnsupportedClassDrops:    partitionCounterDelta(previous.PoolCounters.DropReasons.UnsupportedClass, current.PoolCounters.DropReasons.UnsupportedClass),
-		InvalidPolicyDrops:       partitionCounterDelta(previous.PoolCounters.DropReasons.InvalidPolicy, current.PoolCounters.DropReasons.InvalidPolicy),
-		LeaseAcquisitions:        partitionCounterDelta(previous.LeaseCounters.Acquisitions, current.LeaseCounters.Acquisitions),
-		LeaseReleases:            partitionCounterDelta(previous.LeaseCounters.Releases, current.LeaseCounters.Releases),
-		LeaseInvalidReleases:     partitionCounterDelta(previous.LeaseCounters.InvalidReleases, current.LeaseCounters.InvalidReleases),
-		LeaseDoubleReleases:      partitionCounterDelta(previous.LeaseCounters.DoubleReleases, current.LeaseCounters.DoubleReleases),
-		LeaseOwnershipViolations: partitionCounterDelta(previous.LeaseCounters.OwnershipViolations, current.LeaseCounters.OwnershipViolations),
-		LeasePoolReturnAttempts:  partitionCounterDelta(previous.LeaseCounters.PoolReturnAttempts, current.LeaseCounters.PoolReturnAttempts),
-		LeasePoolReturnSuccesses: partitionCounterDelta(previous.LeaseCounters.PoolReturnSuccesses, current.LeaseCounters.PoolReturnSuccesses),
-		LeasePoolReturnFailures:  partitionCounterDelta(previous.LeaseCounters.PoolReturnFailures, current.LeaseCounters.PoolReturnFailures),
-		LeasePoolReturnClosedFailures: partitionCounterDelta(
+		OversizedDrops:           controlseries.DeltaValue(previous.PoolCounters.DropReasons.Oversized, current.PoolCounters.DropReasons.Oversized),
+		UnsupportedClassDrops:    controlseries.DeltaValue(previous.PoolCounters.DropReasons.UnsupportedClass, current.PoolCounters.DropReasons.UnsupportedClass),
+		InvalidPolicyDrops:       controlseries.DeltaValue(previous.PoolCounters.DropReasons.InvalidPolicy, current.PoolCounters.DropReasons.InvalidPolicy),
+		LeaseAcquisitions:        controlseries.DeltaValue(previous.LeaseCounters.Acquisitions, current.LeaseCounters.Acquisitions),
+		LeaseReleases:            controlseries.DeltaValue(previous.LeaseCounters.Releases, current.LeaseCounters.Releases),
+		LeaseInvalidReleases:     controlseries.DeltaValue(previous.LeaseCounters.InvalidReleases, current.LeaseCounters.InvalidReleases),
+		LeaseDoubleReleases:      controlseries.DeltaValue(previous.LeaseCounters.DoubleReleases, current.LeaseCounters.DoubleReleases),
+		LeaseOwnershipViolations: controlseries.DeltaValue(previous.LeaseCounters.OwnershipViolations, current.LeaseCounters.OwnershipViolations),
+		LeasePoolReturnAttempts:  controlseries.DeltaValue(previous.LeaseCounters.PoolReturnAttempts, current.LeaseCounters.PoolReturnAttempts),
+		LeasePoolReturnSuccesses: controlseries.DeltaValue(previous.LeaseCounters.PoolReturnSuccesses, current.LeaseCounters.PoolReturnSuccesses),
+		LeasePoolReturnFailures:  controlseries.DeltaValue(previous.LeaseCounters.PoolReturnFailures, current.LeaseCounters.PoolReturnFailures),
+		LeasePoolReturnClosedFailures: controlseries.DeltaValue(
 			previous.LeaseCounters.PoolReturnClosedFailures,
 			current.LeaseCounters.PoolReturnClosedFailures,
 		),
-		LeasePoolReturnAdmissionFailures: partitionCounterDelta(
+		LeasePoolReturnAdmissionFailures: controlseries.DeltaValue(
 			previous.LeaseCounters.PoolReturnAdmissionFailures,
 			current.LeaseCounters.PoolReturnAdmissionFailures,
 		),
 	}
-}
-
-// partitionCounterDelta returns monotonic counter movement.
-func partitionCounterDelta(previous, current uint64) uint64 {
-	if current >= previous {
-		return current - previous
-	}
-	return current
 }
 
 // clonePoolPartitionSample returns a sample copy with owned per-Pool slice storage.

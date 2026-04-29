@@ -19,6 +19,7 @@ package bufferpool
 import (
 	"strconv"
 	"testing"
+	"time"
 )
 
 var (
@@ -39,6 +40,12 @@ var (
 
 	// partitionBenchmarkRatesSink prevents rate benchmark results being optimized away.
 	partitionBenchmarkRatesSink PoolPartitionWindowRates
+
+	// partitionBenchmarkEWMASink prevents EWMA benchmark results being optimized away.
+	partitionBenchmarkEWMASink PoolPartitionEWMAState
+
+	// partitionBenchmarkEvaluationSink prevents evaluation benchmark results being optimized away.
+	partitionBenchmarkEvaluationSink PoolPartitionControllerEvaluation
 
 	// partitionBenchmarkIndexSink prevents active-registry indexes being optimized away.
 	partitionBenchmarkIndexSink []int
@@ -298,6 +305,41 @@ func BenchmarkPoolPartitionWindowRates(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		partitionBenchmarkRatesSink = NewPoolPartitionWindowRates(window)
+	}
+}
+
+// BenchmarkPoolPartitionEWMAUpdate measures pure EWMA projection over window rates.
+func BenchmarkPoolPartitionEWMAUpdate(b *testing.B) {
+	previous, current := partitionBenchmarkWindowSamples(16)
+	window := NewPoolPartitionWindow(previous, current)
+	rates := NewPoolPartitionTimedWindowRates(window, time.Second)
+	config := PoolPartitionEWMAConfig{Alpha: 0.2}
+	state := PoolPartitionEWMAState{}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state = state.WithUpdate(config, rates)
+	}
+	partitionBenchmarkEWMASink = state
+}
+
+// BenchmarkPoolPartitionControllerEvaluation measures the pure controller
+// projection from two samples. It does not mutate runtime policy or execute
+// trim; owning window construction may allocate to copy per-Pool sample slices.
+func BenchmarkPoolPartitionControllerEvaluation(b *testing.B) {
+	previous, current := partitionBenchmarkWindowSamples(16)
+	config := PoolPartitionEWMAConfig{Alpha: 0.2}
+	budget := PartitionBudgetSnapshot{MaxOwnedBytes: 1 << 20, CurrentOwnedBytes: 512 << 10}
+	pressure := PartitionPressureSnapshot{Enabled: true, Level: PressureLevelMedium}
+	state := PoolPartitionEWMAState{}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		evaluation := NewPoolPartitionControllerEvaluation(previous, current, time.Second, state, config, budget, pressure)
+		state = evaluation.EWMA
+		partitionBenchmarkEvaluationSink = evaluation
 	}
 }
 

@@ -16,7 +16,11 @@
 
 package bufferpool
 
-import "time"
+import (
+	"time"
+
+	controlrate "arcoris.dev/bufferpool/internal/control/rate"
+)
 
 // PoolPartitionWindowRates projects ratios and optional throughput from a
 // PoolPartitionWindow.
@@ -31,7 +35,7 @@ type PoolPartitionWindowRates struct {
 	// MissRatio is delta Misses divided by delta Hits plus Misses.
 	MissRatio float64
 
-	// AllocationRatio is delta Allocations divided by delta Hits plus Misses.
+	// AllocationRatio is delta Allocations divided by delta Gets.
 	AllocationRatio float64
 
 	// RetainRatio is delta Retains divided by delta Retains plus Drops.
@@ -42,6 +46,15 @@ type PoolPartitionWindowRates struct {
 
 	// PoolReturnFailureRatio is failed Pool handoffs divided by handoff attempts.
 	PoolReturnFailureRatio float64
+
+	// PoolReturnSuccessRatio is successful Pool handoffs divided by handoff attempts.
+	PoolReturnSuccessRatio float64
+
+	// PoolReturnClosedFailureRatio is closed-Pool handoff failures divided by handoff attempts.
+	PoolReturnClosedFailureRatio float64
+
+	// PoolReturnAdmissionFailureRatio is admission/runtime handoff failures divided by handoff attempts.
+	PoolReturnAdmissionFailureRatio float64
 
 	// LeaseInvalidReleaseRatio is invalid releases divided by release attempts.
 	LeaseInvalidReleaseRatio float64
@@ -79,41 +92,41 @@ func NewPoolPartitionWindowRates(window PoolPartitionWindow) PoolPartitionWindow
 // does not observe wall-clock time and does not mutate partition state.
 func NewPoolPartitionTimedWindowRates(window PoolPartitionWindow, elapsed time.Duration) PoolPartitionWindowRates {
 	delta := window.Delta
-	reuseAttempts := delta.Hits + delta.Misses
-	putOutcomes := delta.Retains + delta.Drops
+	getAttempts := delta.Gets
+	if getAttempts == 0 {
+		getAttempts = delta.Hits + delta.Misses
+	}
+	putAttempts := delta.Puts
+	if putAttempts == 0 {
+		putAttempts = delta.Retains + delta.Drops
+	}
 	releaseAttempts := delta.LeaseReleases +
 		delta.LeaseInvalidReleases +
 		delta.LeaseDoubleReleases +
 		delta.LeaseOwnershipViolations
 
 	rates := PoolPartitionWindowRates{
-		HitRatio:                     partitionWindowRatio(delta.Hits, reuseAttempts),
-		MissRatio:                    partitionWindowRatio(delta.Misses, reuseAttempts),
-		AllocationRatio:              partitionWindowRatio(delta.Allocations, reuseAttempts),
-		RetainRatio:                  partitionWindowRatio(delta.Retains, putOutcomes),
-		DropRatio:                    partitionWindowRatio(delta.Drops, putOutcomes),
-		PoolReturnFailureRatio:       partitionWindowRatio(delta.LeasePoolReturnFailures, delta.LeasePoolReturnAttempts),
-		LeaseInvalidReleaseRatio:     partitionWindowRatio(delta.LeaseInvalidReleases, releaseAttempts),
-		LeaseDoubleReleaseRatio:      partitionWindowRatio(delta.LeaseDoubleReleases, releaseAttempts),
-		LeaseOwnershipViolationRatio: partitionWindowRatio(delta.LeaseOwnershipViolations, releaseAttempts),
+		HitRatio:                        controlrate.HitRatio(delta.Hits, delta.Misses),
+		MissRatio:                       controlrate.MissRatio(delta.Hits, delta.Misses),
+		AllocationRatio:                 controlrate.AllocationRatio(delta.Allocations, getAttempts),
+		RetainRatio:                     controlrate.RetainRatio(delta.Retains, putAttempts),
+		DropRatio:                       controlrate.DropRatio(delta.Drops, putAttempts),
+		PoolReturnFailureRatio:          controlrate.FailureRatio(delta.LeasePoolReturnFailures, delta.LeasePoolReturnAttempts),
+		PoolReturnSuccessRatio:          controlrate.SuccessRatio(delta.LeasePoolReturnSuccesses, delta.LeasePoolReturnAttempts),
+		PoolReturnClosedFailureRatio:    controlrate.FailureRatio(delta.LeasePoolReturnClosedFailures, delta.LeasePoolReturnAttempts),
+		PoolReturnAdmissionFailureRatio: controlrate.FailureRatio(delta.LeasePoolReturnAdmissionFailures, delta.LeasePoolReturnAttempts),
+		LeaseInvalidReleaseRatio:        controlrate.InvalidRatio(delta.LeaseInvalidReleases, releaseAttempts),
+		LeaseDoubleReleaseRatio:         controlrate.InvalidRatio(delta.LeaseDoubleReleases, releaseAttempts),
+		LeaseOwnershipViolationRatio:    controlrate.InvalidRatio(delta.LeaseOwnershipViolations, releaseAttempts),
 	}
 	if elapsed <= 0 {
 		return rates
 	}
 
-	seconds := elapsed.Seconds()
-	rates.GetsPerSecond = float64(delta.Gets) / seconds
-	rates.PutsPerSecond = float64(delta.Puts) / seconds
-	rates.AllocationsPerSecond = float64(delta.Allocations) / seconds
-	rates.ReturnedBytesPerSecond = float64(delta.ReturnedBytes) / seconds
-	rates.DroppedBytesPerSecond = float64(delta.DroppedBytes) / seconds
+	rates.GetsPerSecond = controlrate.PerSecond(delta.Gets, elapsed)
+	rates.PutsPerSecond = controlrate.PerSecond(delta.Puts, elapsed)
+	rates.AllocationsPerSecond = controlrate.PerSecond(delta.Allocations, elapsed)
+	rates.ReturnedBytesPerSecond = controlrate.BytesPerSecond(delta.ReturnedBytes, elapsed)
+	rates.DroppedBytesPerSecond = controlrate.BytesPerSecond(delta.DroppedBytes, elapsed)
 	return rates
-}
-
-// partitionWindowRatio divides numerator by denominator with zero-denominator safety.
-func partitionWindowRatio(numerator, denominator uint64) float64 {
-	if denominator == 0 {
-		return 0
-	}
-	return float64(numerator) / float64(denominator)
 }

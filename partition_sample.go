@@ -16,22 +16,24 @@
 
 package bufferpool
 
+import controlseries "arcoris.dev/bufferpool/internal/control/series"
+
 // PoolPartitionSampleScope describes which Pool set contributed retained-storage
 // counters to a partition sample.
-type PoolPartitionSampleScope uint8
+type PoolPartitionSampleScope = controlseries.SampleScope
 
 const (
 	// PoolPartitionSampleScopeUnset is the zero value for hand-built samples.
-	PoolPartitionSampleScopeUnset PoolPartitionSampleScope = iota
+	PoolPartitionSampleScopeUnset PoolPartitionSampleScope = controlseries.SampleScopeUnset
 
 	// PoolPartitionSampleScopePartition means the sample represents every
 	// Pool owned by the partition.
-	PoolPartitionSampleScopePartition
+	PoolPartitionSampleScopePartition PoolPartitionSampleScope = controlseries.SampleScopeFull
 
 	// PoolPartitionSampleScopeSelectedPools means retained-storage counters
 	// were collected from a selected Pool index set. LeaseRegistry counters are
 	// still partition-wide until per-Pool lease accounting exists.
-	PoolPartitionSampleScopeSelectedPools
+	PoolPartitionSampleScopeSelectedPools PoolPartitionSampleScope = controlseries.SampleScopeSelected
 )
 
 // PoolPartitionSample is an aggregate partition sample for explicit controller
