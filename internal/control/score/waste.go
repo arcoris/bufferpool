@@ -64,17 +64,3 @@ func wasteComponents(input WasteInput, weights WasteWeights) [4]Component {
 		NewComponent(ComponentWasteDrop, input.DropScore, weights.Drop),
 	}
 }
-
-// normalizeWasteWeights converts invalid weights to zero and applies the
-// documented defaults when the caller leaves the entire config unset.
-func normalizeWasteWeights(weights WasteWeights) WasteWeights {
-	defaults := DefaultWasteWeights()
-	if weights == (WasteWeights{}) {
-		return defaults
-	}
-	weights.LowHit = usableScoreWeight(weights.LowHit)
-	weights.RetainedPressure = usableScoreWeight(weights.RetainedPressure)
-	weights.LowActivity = usableScoreWeight(weights.LowActivity)
-	weights.Drop = usableScoreWeight(weights.Drop)
-	return weights
-}

@@ -85,18 +85,3 @@ func usefulnessComponents(input UsefulnessInput, weights UsefulnessWeights) [4]C
 		NewComponent(ComponentUsefulnessActivity, input.ActivityScore, weights.Activity),
 	}
 }
-
-// normalizeUsefulnessWeights converts invalid weights to zero and applies the
-// documented defaults when the caller leaves the entire config unset.
-func normalizeUsefulnessWeights(weights UsefulnessWeights) UsefulnessWeights {
-	defaults := DefaultUsefulnessWeights()
-	if weights == (UsefulnessWeights{}) {
-		return defaults
-	}
-	weights.HitRatio = usableScoreWeight(weights.HitRatio)
-	weights.AllocationAvoidance = usableScoreWeight(weights.AllocationAvoidance)
-	weights.RetainRatio = usableScoreWeight(weights.RetainRatio)
-	weights.Activity = usableScoreWeight(weights.Activity)
-	weights.DropPenalty = usableScoreWeight(weights.DropPenalty)
-	return weights
-}

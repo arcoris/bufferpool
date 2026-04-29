@@ -56,27 +56,10 @@ func DefaultScorer() Scorer {
 
 // NewScorer returns a prepared scorer with sanitized stable weights.
 func NewScorer(weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Scorer {
-	if weights == (Weights{}) {
-		weights = DefaultWeights()
-	}
-	if returnWeights == (ReturnFailureWeights{}) {
-		returnWeights = DefaultReturnFailureWeights()
-	}
-	if ownershipWeights == (OwnershipWeights{}) {
-		ownershipWeights = DefaultOwnershipWeights()
-	}
-	weights.ReturnFailure = usableRiskWeight(weights.ReturnFailure)
-	weights.Ownership = usableRiskWeight(weights.Ownership)
-	weights.Misuse = usableRiskWeight(weights.Misuse)
-	returnWeights.Aggregate = usableRiskWeight(returnWeights.Aggregate)
-	returnWeights.Admission = usableRiskWeight(returnWeights.Admission)
-	returnWeights.Closed = usableRiskWeight(returnWeights.Closed)
-	ownershipWeights.OwnershipViolation = usableRiskWeight(ownershipWeights.OwnershipViolation)
-	ownershipWeights.DoubleRelease = usableRiskWeight(ownershipWeights.DoubleRelease)
 	return Scorer{
-		weights:          weights,
-		returnWeights:    returnWeights,
-		ownershipWeights: ownershipWeights,
+		weights:          normalizeWeights(weights),
+		returnWeights:    normalizeReturnFailureWeights(returnWeights),
+		ownershipWeights: normalizeOwnershipWeights(ownershipWeights),
 	}
 }
 
@@ -126,16 +109,4 @@ func newScoreWithNormalizedWeights(input Input, weights Weights, returnWeights R
 		OwnershipComponent: ownershipComponent,
 		MisuseComponent:    misuseComponent,
 	}
-}
-
-// usableRiskWeight normalizes optional risk weights.
-//
-// Negative and non-finite weights are treated as zero to keep risk projections
-// finite and non-inverting.
-func usableRiskWeight(weight float64) float64 {
-	weight = numeric.FiniteOrZero(weight)
-	if weight < 0 {
-		return 0
-	}
-	return weight
 }
