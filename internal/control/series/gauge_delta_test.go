@@ -25,3 +25,10 @@ func TestGaugeDelta(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkControlSeriesGaugeDelta(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NewGaugeDelta(uint64(i), uint64(i+1))
+	}
+}

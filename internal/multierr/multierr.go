@@ -24,7 +24,12 @@ package multierr
 
 import "strings"
 
-const errNilAppendDestination = "bufferpool.multierr: append destination must not be nil"
+const (
+	// errNilAppendDestination is used when incremental aggregation receives a
+	// nil destination pointer. That is an internal wiring bug because AppendInto
+	// must be able to replace the caller-owned error slot.
+	errNilAppendDestination = "bufferpool.multierr: append destination must not be nil"
+)
 
 // unwrapper is the standard multi-error unwrapping shape used by errors.Join
 // and by this package's aggregate type.

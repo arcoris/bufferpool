@@ -15,7 +15,19 @@ func TestUsefulness(t *testing.T) {
 	if penalized.Value >= high.Value {
 		t.Fatalf("drop penalty should reduce usefulness: %+v", penalized)
 	}
+	custom := UsefulnessWithWeights(UsefulnessInput{HitRatio: 1}, UsefulnessWeights{HitRatio: 1})
+	if custom.Value != 1 {
+		t.Fatalf("custom usefulness = %+v, want 1", custom)
+	}
 	if !Usefulness(UsefulnessInput{}).IsZero() {
 		t.Fatalf("zero usefulness should be zero")
+	}
+}
+
+func BenchmarkControlScoreUsefulness(b *testing.B) {
+	input := UsefulnessInput{HitRatio: 0.8, RetainRatio: 0.7, AllocationAvoidance: 0.9, ActivityScore: 0.6, DropPenalty: 0.1}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Usefulness(input)
 	}
 }

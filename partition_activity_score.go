@@ -18,6 +18,22 @@ package bufferpool
 
 import controlactivity "arcoris.dev/bufferpool/internal/control/activity"
 
+const (
+	// defaultPartitionHighGetsPerSecond is the initial "hot" acquisition
+	// threshold for partition activity projection. It is conservative
+	// scaffolding, not production auto-tuning.
+	defaultPartitionHighGetsPerSecond = 100_000
+
+	// defaultPartitionHighPutsPerSecond is the initial "hot" return-flow
+	// threshold. It mirrors get throughput so balanced workloads score
+	// predictably.
+	defaultPartitionHighPutsPerSecond = 100_000
+
+	// defaultPartitionHighLeaseOpsPerSecond keeps ownership operation volume
+	// visible without letting lease churn dominate buffer demand.
+	defaultPartitionHighLeaseOpsPerSecond = 200_000
+)
+
 // PoolPartitionActivityScore is a normalized recent hotness projection.
 type PoolPartitionActivityScore struct {
 	// Value is normalized hotness derived from window or smoothed rates.
@@ -38,9 +54,9 @@ func newPoolPartitionActivityScore(signals partitionScoreSignals) PoolPartitionA
 			LeaseOpsPerSecond: signals.getsPerSecond + signals.putsPerSecond,
 		},
 		controlactivity.HotnessConfig{
-			HighGetsPerSecond:     100_000,
-			HighPutsPerSecond:     100_000,
-			HighLeaseOpsPerSecond: 200_000,
+			HighGetsPerSecond:     defaultPartitionHighGetsPerSecond,
+			HighPutsPerSecond:     defaultPartitionHighPutsPerSecond,
+			HighLeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
 		},
 	)
 	return PoolPartitionActivityScore{Value: value}

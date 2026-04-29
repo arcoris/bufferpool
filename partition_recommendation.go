@@ -21,6 +21,34 @@ import (
 	controlnumeric "arcoris.dev/bufferpool/internal/control/numeric"
 )
 
+const (
+	// DefaultRecommendationHighRiskThreshold prioritizes ownership and misuse
+	// diagnostics before retention tuning. Risk should be clearly high before it
+	// produces an investigative recommendation.
+	DefaultRecommendationHighRiskThreshold = 0.70
+
+	// DefaultRecommendationHighWasteThreshold requires a strong waste signal
+	// before recommending shrink or trim consideration.
+	DefaultRecommendationHighWasteThreshold = 0.65
+
+	// DefaultRecommendationHighPressureThreshold requires meaningful pressure
+	// before waste becomes a trim recommendation instead of ordinary shrink
+	// consideration.
+	DefaultRecommendationHighPressureThreshold = 0.70
+
+	// DefaultRecommendationHighUsefulnessThreshold avoids recommending growth
+	// from weak or ambiguous usefulness signals.
+	DefaultRecommendationHighUsefulnessThreshold = 0.70
+
+	// DefaultRecommendationLowPressureThreshold keeps growth recommendations out
+	// of pressure windows where retained memory has elevated opportunity cost.
+	DefaultRecommendationLowPressureThreshold = 0.33
+
+	// DefaultRecommendationMinimumActionConfidence keeps observe/no-op as the
+	// default when signals are too weak for actionable advice.
+	DefaultRecommendationMinimumActionConfidence = 0.55
+)
+
 // PoolPartitionRecommendationKind identifies a partition-local recommendation.
 type PoolPartitionRecommendationKind uint8
 
@@ -70,7 +98,8 @@ type PoolPartitionRecommendation struct {
 // by retention-tuning signals. The result is advice only; it does not mutate
 // policies or execute trim.
 func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRecommendation {
-	if scores.Risk.Value >= 0.60 {
+	if scores.Risk.Value >= DefaultRecommendationHighRiskThreshold &&
+		scores.Risk.Value >= DefaultRecommendationMinimumActionConfidence {
 		return newPoolPartitionRecommendation(
 			PoolPartitionRecommendationInvestigateOwnership,
 			controldecision.KindInvestigate,
@@ -79,7 +108,9 @@ func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRec
 			scores,
 		)
 	}
-	if scores.Pressure.Value >= 0.66 && scores.Waste.Value >= 0.50 {
+	if scores.Pressure.Value >= DefaultRecommendationHighPressureThreshold &&
+		scores.Waste.Value >= DefaultRecommendationHighWasteThreshold &&
+		(scores.Pressure.Value+scores.Waste.Value)/2 >= DefaultRecommendationMinimumActionConfidence {
 		return newPoolPartitionRecommendation(
 			PoolPartitionRecommendationTrim,
 			controldecision.KindTrim,
@@ -88,7 +119,8 @@ func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRec
 			scores,
 		)
 	}
-	if scores.Waste.Value >= 0.75 {
+	if scores.Waste.Value >= DefaultRecommendationHighWasteThreshold &&
+		scores.Waste.Value >= DefaultRecommendationMinimumActionConfidence {
 		return newPoolPartitionRecommendation(
 			PoolPartitionRecommendationShrinkRetention,
 			controldecision.KindShrink,
@@ -97,7 +129,9 @@ func NewPoolPartitionRecommendation(scores PoolPartitionScores) PoolPartitionRec
 			scores,
 		)
 	}
-	if scores.Usefulness.Value >= 0.75 && scores.Pressure.Value < 0.33 {
+	if scores.Usefulness.Value >= DefaultRecommendationHighUsefulnessThreshold &&
+		scores.Pressure.Value < DefaultRecommendationLowPressureThreshold &&
+		scores.Usefulness.Value >= DefaultRecommendationMinimumActionConfidence {
 		return newPoolPartitionRecommendation(
 			PoolPartitionRecommendationGrowRetention,
 			controldecision.KindGrow,

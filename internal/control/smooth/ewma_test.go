@@ -21,6 +21,9 @@ func TestEWMA(t *testing.T) {
 	if got := avg.Update(0, 40).Value; got != avg.Value {
 		t.Fatalf("alpha 0 update changed value to %v", got)
 	}
+	if got := avg.Update(2, 40).Value; got != 40 {
+		t.Fatalf("alpha >1 update = %v, want 40", got)
+	}
 	if got := (EWMA{}).Update(0.2, math.NaN()).Value; got != 0 {
 		t.Fatalf("non-finite update = %v, want 0", got)
 	}
@@ -30,7 +33,7 @@ func TestEWMA(t *testing.T) {
 	}
 }
 
-func BenchmarkControlSmoothEWMA(b *testing.B) {
+func BenchmarkControlSmoothEWMAUpdate(b *testing.B) {
 	b.ReportAllocs()
 	avg := EWMA{}
 	for i := 0; i < b.N; i++ {

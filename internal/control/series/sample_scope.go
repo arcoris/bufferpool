@@ -32,3 +32,12 @@ func (s SampleScope) String() string {
 func (s SampleScope) IsKnown() bool {
 	return s == SampleScopeUnset || s == SampleScopeFull || s == SampleScopeSelected
 }
+
+// IsSpecified reports whether s names a usable non-zero sampling scope.
+//
+// Unset is a declared value and therefore IsKnown returns true for it, but it
+// is not a complete controller scope. Callers that require an actual
+// observation boundary should use IsSpecified.
+func (s SampleScope) IsSpecified() bool {
+	return s == SampleScopeFull || s == SampleScopeSelected
+}

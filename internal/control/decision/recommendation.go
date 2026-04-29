@@ -25,6 +25,36 @@ const (
 	KindInvestigate
 )
 
+// String returns a stable diagnostic name for k.
+func (k Kind) String() string {
+	switch k {
+	case KindNone:
+		return "none"
+	case KindObserve:
+		return "observe"
+	case KindGrow:
+		return "grow"
+	case KindShrink:
+		return "shrink"
+	case KindTrim:
+		return "trim"
+	case KindInvestigate:
+		return "investigate"
+	default:
+		return "unknown"
+	}
+}
+
+// IsKnown reports whether k is one of the declared recommendation kinds.
+func (k Kind) IsKnown() bool {
+	return k == KindNone ||
+		k == KindObserve ||
+		k == KindGrow ||
+		k == KindShrink ||
+		k == KindTrim ||
+		k == KindInvestigate
+}
+
 // Recommendation is a generic controller recommendation.
 type Recommendation struct {
 	// Kind is the generic recommendation kind.

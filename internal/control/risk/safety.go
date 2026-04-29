@@ -40,17 +40,28 @@ type Score struct {
 
 // NewScore returns a generic safety risk score.
 func NewScore(input Input) Score {
-	returnComponent := ReturnFailureRisk(
+	return NewScoreWithWeights(input, DefaultWeights(), DefaultReturnFailureWeights(), DefaultOwnershipWeights())
+}
+
+// NewScoreWithWeights returns a risk score with caller-provided weights.
+//
+// Closed return failures are intentionally separated from admission/runtime
+// failures so shutdown diagnostics do not poison normal adaptive scoring.
+// Ownership and misuse signals stay pure projections; they do not mutate
+// policy or attempt to repair caller behavior.
+func NewScoreWithWeights(input Input, weights Weights, returnWeights ReturnFailureWeights, ownershipWeights OwnershipWeights) Score {
+	returnComponent := ReturnFailureRiskWithWeights(
 		input.PoolReturnFailureRatio,
 		input.PoolReturnAdmissionRatio,
 		input.PoolReturnClosedRatio,
+		returnWeights,
 	)
-	ownershipComponent := OwnershipRisk(input.OwnershipViolationRatio, input.DoubleReleaseRatio)
+	ownershipComponent := OwnershipRiskWithWeights(input.OwnershipViolationRatio, input.DoubleReleaseRatio, ownershipWeights)
 	misuseComponent := numeric.Clamp01(input.InvalidReleaseRatio*0.5 + input.DoubleReleaseRatio*0.5)
 	value := numeric.WeightedAverage([]numeric.WeightedValue{
-		{Value: returnComponent, Weight: 0.30},
-		{Value: ownershipComponent, Weight: 0.45},
-		{Value: misuseComponent, Weight: 0.25},
+		{Value: returnComponent, Weight: weights.ReturnFailure},
+		{Value: ownershipComponent, Weight: weights.Ownership},
+		{Value: misuseComponent, Weight: weights.Misuse},
 	})
 	return Score{
 		Value:              value,

@@ -36,7 +36,7 @@ func TestPoolPartitionRecommendation(t *testing.T) {
 		{
 			name: "pressure waste",
 			scores: PoolPartitionScores{
-				Pressure: PoolPartitionPressureScore{Value: 0.66},
+				Pressure: PoolPartitionPressureScore{Value: DefaultRecommendationHighPressureThreshold},
 				Waste:    PoolPartitionWasteScore{Value: 0.7},
 			},
 			want: PoolPartitionRecommendationTrim,
