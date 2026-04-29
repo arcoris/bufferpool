@@ -34,8 +34,18 @@ type PoolPartitionPressureScore struct {
 //
 // The mapping is intentionally explicit instead of relying on numeric enum
 // equality, which keeps the internal pressure package independent from root
-// PressureLevel values.
+// PressureLevel values. Disabled pressure contributes zero severity even if the
+// snapshot carries a non-normal level; domain validation should normally keep
+// disabled pressure normal, but projection remains defensive.
 func newPoolPartitionPressureScore(snapshot PartitionPressureSnapshot) PoolPartitionPressureScore {
+	if !snapshot.Enabled {
+		return PoolPartitionPressureScore{
+			Value:   0,
+			Level:   snapshot.Level,
+			Enabled: false,
+		}
+	}
+
 	level := controlpressure.LevelNormal
 	switch snapshot.Level {
 	case PressureLevelMedium:

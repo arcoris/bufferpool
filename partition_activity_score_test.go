@@ -25,7 +25,8 @@ import (
 // TestPoolPartitionActivityUsesLeaseOpsRate verifies ownership churn is driven
 // by the lease throughput signal rather than inferred from Pool get/put volume.
 func TestPoolPartitionActivityUsesLeaseOpsRate(t *testing.T) {
-	score := newPoolPartitionActivityScore(partitionScoreSignals{
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{})
+	score := evaluator.activityScore(partitionScoreSignals{
 		leaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
 	})
 
@@ -37,17 +38,18 @@ func TestPoolPartitionActivityUsesLeaseOpsRate(t *testing.T) {
 // TestPoolPartitionActivityDoesNotUseGetsPlusPutsAsLeaseOps prevents Pool data
 // plane volume from being counted as ownership lease churn.
 func TestPoolPartitionActivityDoesNotUseGetsPlusPutsAsLeaseOps(t *testing.T) {
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{})
 	signals := partitionScoreSignals{
 		getsPerSecond: defaultPartitionHighGetsPerSecond,
 		putsPerSecond: defaultPartitionHighPutsPerSecond,
 	}
 
-	score := newPoolPartitionActivityScore(signals)
-	oldInferredLeaseOpsScore := partitionActivityScorer.Score(controlactivity.HotnessInput{
+	score := evaluator.activityScore(signals)
+	oldInferredLeaseOpsScore := controlactivity.Hotness(controlactivity.HotnessInput{
 		GetsPerSecond:     signals.getsPerSecond,
 		PutsPerSecond:     signals.putsPerSecond,
 		LeaseOpsPerSecond: signals.getsPerSecond + signals.putsPerSecond,
-	})
+	}, PoolPartitionActivityScoreConfig{}.controlConfig())
 
 	if score.Value >= oldInferredLeaseOpsScore {
 		t.Fatalf("activity score = %v, old inferred lease score = %v; lease ops should not be gets+puts", score.Value, oldInferredLeaseOpsScore)

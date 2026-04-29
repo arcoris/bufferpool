@@ -314,6 +314,7 @@ func BenchmarkPoolPartitionWindowRates(b *testing.B) {
 // BenchmarkPoolPartitionActivityScore measures the root activity adapter over
 // selected rate signals. It does not call Pool.Get/Put or mutate active state.
 func BenchmarkPoolPartitionActivityScore(b *testing.B) {
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{})
 	signals := partitionScoreSignals{
 		getsPerSecond:     defaultPartitionHighGetsPerSecond,
 		putsPerSecond:     defaultPartitionHighPutsPerSecond,
@@ -323,7 +324,7 @@ func BenchmarkPoolPartitionActivityScore(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		partitionBenchmarkActivityScoreSink = newPoolPartitionActivityScore(signals)
+		partitionBenchmarkActivityScoreSink = evaluator.activityScore(signals)
 	}
 }
 

@@ -17,7 +17,9 @@
 package bufferpool
 
 import (
+	controlactivity "arcoris.dev/bufferpool/internal/control/activity"
 	controlnumeric "arcoris.dev/bufferpool/internal/control/numeric"
+	controlrisk "arcoris.dev/bufferpool/internal/control/risk"
 	controlscore "arcoris.dev/bufferpool/internal/control/score"
 )
 
@@ -71,27 +73,38 @@ type PoolPartitionWasteScoreWeights struct {
 
 // PoolPartitionScoreEvaluatorConfig configures a partition score evaluator.
 //
-// Zero weight groups use shared conservative defaults. This lets callers create
-// the default evaluator with PoolPartitionScoreEvaluatorConfig{} while still
-// allowing future partition policy to provide explicit domain weights.
+// Zero weight/config groups use shared conservative defaults. This lets callers
+// create the default evaluator with PoolPartitionScoreEvaluatorConfig{} while
+// still allowing future partition policy to provide explicit domain weights and
+// thresholds.
 type PoolPartitionScoreEvaluatorConfig struct {
 	// UsefulnessWeights configures usefulness score composition.
 	UsefulnessWeights PoolPartitionUsefulnessScoreWeights
 
 	// WasteWeights configures waste score composition.
 	WasteWeights PoolPartitionWasteScoreWeights
+
+	// ActivityConfig configures partition activity scoring.
+	ActivityConfig PoolPartitionActivityScoreConfig
+
+	// RiskConfig configures partition risk scoring.
+	RiskConfig PoolPartitionRiskScoreConfig
 }
 
 // PoolPartitionScoreEvaluator is the root-domain adapter over shared scorers.
 //
 // The evaluator is immutable and safe to reuse across controller ticks. It owns
 // no runtime state, publishes no runtime policy, executes no trim, and starts no
-// background work. The zero value is valid but disabled for usefulness and waste
-// scoring; construct one with NewPoolPartitionScoreEvaluator for default or
-// custom scoring behavior.
+// background work. The zero value is valid but disabled for evaluator-owned
+// usefulness, waste, activity, and risk scoring; construct one with
+// NewPoolPartitionScoreEvaluator for default or custom scoring behavior. Budget
+// and pressure projections remain pure stateless helpers and are still
+// evaluated by a zero-value evaluator.
 type PoolPartitionScoreEvaluator struct {
 	usefulness controlscore.UsefulnessScorer
 	waste      controlscore.WasteScorer
+	activity   controlactivity.HotnessScorer
+	risk       controlrisk.Scorer
 }
 
 // PoolPartitionScoreValues contains scalar partition score values.
@@ -128,6 +141,8 @@ func NewPoolPartitionScoreEvaluator(config PoolPartitionScoreEvaluatorConfig) Po
 	return PoolPartitionScoreEvaluator{
 		usefulness: controlscore.NewUsefulnessScorer(config.UsefulnessWeights.controlWeights()),
 		waste:      controlscore.NewWasteScorer(config.WasteWeights.controlWeights()),
+		activity:   controlactivity.NewHotnessScorer(config.ActivityConfig.controlConfig()),
+		risk:       config.RiskConfig.controlScorer(),
 	}
 }
 
@@ -144,8 +159,8 @@ func (e PoolPartitionScoreEvaluator) Scores(
 	signals := newPartitionScoreSignals(rates, ewma)
 	budgetScore := newPoolPartitionBudgetScore(budget)
 	pressureScore := newPoolPartitionPressureScore(pressure)
-	activityScore := newPoolPartitionActivityScore(signals)
-	riskScore := newPoolPartitionRiskScore(rates)
+	activityScore := e.activityScore(signals)
+	riskScore := e.riskScore(rates)
 	return PoolPartitionScores{
 		Usefulness: e.usefulnessScore(signals, activityScore, rates),
 		Waste:      e.wasteScore(signals, budgetScore, pressureScore, activityScore, rates),
@@ -169,8 +184,8 @@ func (e PoolPartitionScoreEvaluator) ScoreValues(
 	signals := newPartitionScoreSignals(rates, ewma)
 	budgetScore := newPoolPartitionBudgetScore(budget)
 	pressureScore := newPoolPartitionPressureScore(pressure)
-	activityScore := newPoolPartitionActivityScore(signals)
-	riskScore := newPoolPartitionRiskScore(rates)
+	activityScore := e.activityScore(signals)
+	riskScore := e.riskScore(rates)
 	return PoolPartitionScoreValues{
 		Usefulness: e.usefulnessValue(signals, activityScore, rates),
 		Waste:      e.wasteValue(signals, budgetScore, pressureScore, activityScore, rates),

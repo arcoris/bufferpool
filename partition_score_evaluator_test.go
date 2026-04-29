@@ -22,6 +22,11 @@ import (
 	"testing"
 )
 
+var (
+	partitionScoreEvaluatorScoresSink PoolPartitionScores
+	partitionScoreEvaluatorValuesSink PoolPartitionScoreValues
+)
+
 func TestPoolPartitionScoreEvaluatorDefaultMatchesNewPoolPartitionScores(t *testing.T) {
 	rates := PoolPartitionWindowRates{
 		HitRatio:                        0.8,
@@ -51,7 +56,7 @@ func TestPoolPartitionScoreEvaluatorDefaultMatchesNewPoolPartitionScores(t *test
 	}
 }
 
-func TestPoolPartitionScoreEvaluatorCustomWeights(t *testing.T) {
+func TestPoolPartitionScoreEvaluatorCustomUsefulnessWeights(t *testing.T) {
 	rates := PoolPartitionWindowRates{
 		HitRatio:      1,
 		DropRatio:     1,
@@ -60,30 +65,127 @@ func TestPoolPartitionScoreEvaluatorCustomWeights(t *testing.T) {
 	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
 	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
 		UsefulnessWeights: PoolPartitionUsefulnessScoreWeights{HitRatio: 1},
-		WasteWeights:      PoolPartitionWasteScoreWeights{Drop: 1},
 	})
 	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
 	if customScores.Usefulness.Value <= defaultScores.Usefulness.Value {
 		t.Fatalf("custom usefulness = %v, want greater than default %v", customScores.Usefulness.Value, defaultScores.Usefulness.Value)
 	}
+}
+
+func TestPoolPartitionScoreEvaluatorCustomWasteWeights(t *testing.T) {
+	rates := PoolPartitionWindowRates{
+		DropRatio: 1,
+	}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		WasteWeights: PoolPartitionWasteScoreWeights{Drop: 1},
+	})
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
 	if customScores.Waste.Value <= defaultScores.Waste.Value {
 		t.Fatalf("custom waste = %v, want greater than default %v", customScores.Waste.Value, defaultScores.Waste.Value)
 	}
 }
 
+func TestPoolPartitionScoreEvaluatorCustomActivityConfig(t *testing.T) {
+	rates := PoolPartitionWindowRates{GetsPerSecond: 1}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		ActivityConfig: PoolPartitionActivityScoreConfig{
+			HighGetsPerSecond: 1,
+			GetsWeight:        1,
+		},
+	})
+
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if customScores.Activity.Value <= defaultScores.Activity.Value {
+		t.Fatalf("custom activity = %v, want greater than default %v", customScores.Activity.Value, defaultScores.Activity.Value)
+	}
+}
+
+func TestPoolPartitionScoreEvaluatorCustomRiskConfig(t *testing.T) {
+	rates := PoolPartitionWindowRates{LeaseInvalidReleaseRatio: 1}
+	defaultScores := NewPoolPartitionScores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		RiskConfig: PoolPartitionRiskScoreConfig{
+			Weights:       PoolPartitionRiskScoreWeights{Misuse: 1},
+			MisuseWeights: PoolPartitionMisuseRiskWeights{InvalidRelease: 1},
+		},
+	})
+
+	customScores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	if customScores.Risk.Value <= defaultScores.Risk.Value {
+		t.Fatalf("custom risk = %v, want greater than default %v", customScores.Risk.Value, defaultScores.Risk.Value)
+	}
+}
+
 func TestPoolPartitionScoreEvaluatorZeroValue(t *testing.T) {
 	var evaluator PoolPartitionScoreEvaluator
-	rates := PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, DropRatio: 1}
-	scores := evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	rates := PoolPartitionWindowRates{
+		HitRatio:                     1,
+		RetainRatio:                  1,
+		DropRatio:                    1,
+		GetsPerSecond:                defaultPartitionHighGetsPerSecond,
+		LeaseInvalidReleaseRatio:     1,
+		LeaseOwnershipViolationRatio: 1,
+	}
+	budget := PartitionBudgetSnapshot{
+		MaxOwnedBytes:     100,
+		CurrentOwnedBytes: 150,
+		OwnedOverBudget:   true,
+	}
+	pressure := PartitionPressureSnapshot{
+		Enabled: true,
+		Level:   PressureLevelCritical,
+	}
+	scores := evaluator.Scores(rates, PoolPartitionEWMAState{}, budget, pressure)
 	if scores.Usefulness.Value != 0 || len(scores.Usefulness.Components) != 0 {
 		t.Fatalf("zero evaluator usefulness = %+v, want zero", scores.Usefulness)
 	}
 	if scores.Waste.Value != 0 || len(scores.Waste.Components) != 0 {
 		t.Fatalf("zero evaluator waste = %+v, want zero", scores.Waste)
 	}
-	values := evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
-	if values.Usefulness != 0 || values.Waste != 0 {
-		t.Fatalf("zero evaluator values = %+v, want zero usefulness and waste", values)
+	if scores.Activity.Value != 0 || scores.Risk.Value != 0 {
+		t.Fatalf("zero evaluator activity/risk = %+v/%+v, want zero", scores.Activity, scores.Risk)
+	}
+	if scores.Budget.Value == 0 || scores.Pressure.Value == 0 {
+		t.Fatalf("zero evaluator budget/pressure = %+v/%+v, want pure projections preserved", scores.Budget, scores.Pressure)
+	}
+	values := evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, budget, pressure)
+	if values.Usefulness != 0 || values.Waste != 0 || values.Activity != 0 || values.Risk != 0 {
+		t.Fatalf("zero evaluator values = %+v, want zero evaluator-owned scores", values)
+	}
+	if values.Budget == 0 || values.Pressure == 0 {
+		t.Fatalf("zero evaluator values = %+v, want budget/pressure projections preserved", values)
+	}
+}
+
+func TestPoolPartitionScoreEvaluatorScoreValuesMatchesScoresValues(t *testing.T) {
+	rates := PoolPartitionWindowRates{
+		HitRatio:                        0.8,
+		RetainRatio:                     0.7,
+		AllocationRatio:                 0.2,
+		DropRatio:                       0.1,
+		GetsPerSecond:                   defaultPartitionHighGetsPerSecond,
+		PutsPerSecond:                   defaultPartitionHighPutsPerSecond,
+		LeaseOpsPerSecond:               defaultPartitionHighLeaseOpsPerSecond,
+		PoolReturnFailureRatio:          0.1,
+		PoolReturnAdmissionFailureRatio: 0.1,
+		LeaseInvalidReleaseRatio:        0.1,
+	}
+	budget := PartitionBudgetSnapshot{MaxOwnedBytes: 100, CurrentOwnedBytes: 50}
+	pressure := PartitionPressureSnapshot{Enabled: true, Level: PressureLevelHigh}
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{})
+
+	scores := evaluator.Scores(rates, PoolPartitionEWMAState{}, budget, pressure)
+	values := evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, budget, pressure)
+
+	if values.Usefulness != scores.Usefulness.Value ||
+		values.Waste != scores.Waste.Value ||
+		values.Budget != scores.Budget.Value ||
+		values.Pressure != scores.Pressure.Value ||
+		values.Activity != scores.Activity.Value ||
+		values.Risk != scores.Risk.Value {
+		t.Fatalf("ScoreValues() = %+v, Scores() = %+v", values, scores)
 	}
 }
 
@@ -132,7 +234,7 @@ func BenchmarkPoolPartitionScoreEvaluatorScores(b *testing.B) {
 	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{})
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+		partitionScoreEvaluatorScoresSink = evaluator.Scores(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
 	}
 }
 
@@ -148,6 +250,36 @@ func BenchmarkPoolPartitionScoreEvaluatorScoreValues(b *testing.B) {
 	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{})
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+		partitionScoreEvaluatorValuesSink = evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	}
+}
+
+func BenchmarkPoolPartitionScoreEvaluatorScoreValuesCustomConfig(b *testing.B) {
+	rates := PoolPartitionWindowRates{
+		HitRatio:                        0.8,
+		RetainRatio:                     0.7,
+		AllocationRatio:                 0.2,
+		DropRatio:                       0.1,
+		GetsPerSecond:                   100_000,
+		PutsPerSecond:                   80_000,
+		LeaseOpsPerSecond:               120_000,
+		PoolReturnFailureRatio:          0.1,
+		PoolReturnAdmissionFailureRatio: 0.1,
+		LeaseInvalidReleaseRatio:        0.1,
+	}
+	evaluator := NewPoolPartitionScoreEvaluator(PoolPartitionScoreEvaluatorConfig{
+		ActivityConfig: PoolPartitionActivityScoreConfig{
+			HighGetsPerSecond:     defaultPartitionHighGetsPerSecond,
+			HighPutsPerSecond:     defaultPartitionHighPutsPerSecond,
+			HighLeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
+		},
+		RiskConfig: PoolPartitionRiskScoreConfig{
+			Weights:       PoolPartitionRiskScoreWeights{Misuse: 1},
+			MisuseWeights: PoolPartitionMisuseRiskWeights{InvalidRelease: 1},
+		},
+	})
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		partitionScoreEvaluatorValuesSink = evaluator.ScoreValues(rates, PoolPartitionEWMAState{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
 	}
 }

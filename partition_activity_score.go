@@ -34,37 +34,80 @@ const (
 	defaultPartitionHighLeaseOpsPerSecond = 200_000
 )
 
-var (
-	// partitionActivityScorer prepares the default hotness thresholds once for
-	// repeated partition controller evaluations. It remains an immutable value
-	// adapter; the shared activity package still has no PoolPartition knowledge.
-	partitionActivityScorer = controlactivity.NewHotnessScorer(controlactivity.HotnessConfig{
-		HighGetsPerSecond:     defaultPartitionHighGetsPerSecond,
-		HighPutsPerSecond:     defaultPartitionHighPutsPerSecond,
-		HighLeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
-	})
-)
-
 // PoolPartitionActivityScore is a normalized recent hotness projection.
 type PoolPartitionActivityScore struct {
 	// Value is normalized hotness derived from window or smoothed rates.
 	Value float64
 }
 
-// newPoolPartitionActivityScore projects selected rate signals into hotness.
+// PoolPartitionActivityScoreConfig configures partition hotness projection.
+//
+// A zero value inside PoolPartitionScoreEvaluatorConfig selects conservative
+// partition defaults. Byte throughput is disabled by default because partition
+// rates currently expose returned and dropped byte throughput separately rather
+// than one domain-owned byte activity signal.
+type PoolPartitionActivityScoreConfig struct {
+	// HighGetsPerSecond normalizes Pool acquisition throughput.
+	HighGetsPerSecond float64
+
+	// HighPutsPerSecond normalizes Pool return throughput.
+	HighPutsPerSecond float64
+
+	// HighBytesPerSecond normalizes byte throughput when a future adapter
+	// supplies one activity byte signal.
+	HighBytesPerSecond float64
+
+	// HighLeaseOpsPerSecond normalizes successful LeaseRegistry operation throughput.
+	HighLeaseOpsPerSecond float64
+
+	// GetsWeight weights acquisition demand.
+	GetsWeight float64
+
+	// PutsWeight weights return flow.
+	PutsWeight float64
+
+	// BytesWeight weights byte throughput when enabled.
+	BytesWeight float64
+
+	// LeaseOpsWeight weights successful ownership operation churn.
+	LeaseOpsWeight float64
+}
+
+// activityScore projects selected rate signals into hotness through the evaluator.
 //
 // The current thresholds are conservative scaffolding for controller
 // evaluation. They are not adaptive policy, and they do not change active
 // registry state; future controller work can replace the adapter inputs without
 // changing the shared activity package.
-func newPoolPartitionActivityScore(signals partitionScoreSignals) PoolPartitionActivityScore {
+func (e PoolPartitionScoreEvaluator) activityScore(signals partitionScoreSignals) PoolPartitionActivityScore {
 	// Lease operation throughput is sampled from LeaseRegistry counters. Pool
 	// Get/Put volume is a data-plane signal and must not be inferred as
 	// ownership churn.
-	value := partitionActivityScorer.Score(controlactivity.HotnessInput{
+	value := e.activity.Score(controlactivity.HotnessInput{
 		GetsPerSecond:     signals.getsPerSecond,
 		PutsPerSecond:     signals.putsPerSecond,
 		LeaseOpsPerSecond: signals.leaseOpsPerSecond,
 	})
 	return PoolPartitionActivityScore{Value: value}
+}
+
+// controlConfig maps root-domain activity config to the shared hotness config.
+func (c PoolPartitionActivityScoreConfig) controlConfig() controlactivity.HotnessConfig {
+	if c == (PoolPartitionActivityScoreConfig{}) {
+		return controlactivity.HotnessConfig{
+			HighGetsPerSecond:     defaultPartitionHighGetsPerSecond,
+			HighPutsPerSecond:     defaultPartitionHighPutsPerSecond,
+			HighLeaseOpsPerSecond: defaultPartitionHighLeaseOpsPerSecond,
+		}
+	}
+	return controlactivity.HotnessConfig{
+		HighGetsPerSecond:     c.HighGetsPerSecond,
+		HighPutsPerSecond:     c.HighPutsPerSecond,
+		HighBytesPerSecond:    c.HighBytesPerSecond,
+		HighLeaseOpsPerSecond: c.HighLeaseOpsPerSecond,
+		GetsWeight:            c.GetsWeight,
+		PutsWeight:            c.PutsWeight,
+		BytesWeight:           c.BytesWeight,
+		LeaseOpsWeight:        c.LeaseOpsWeight,
+	}
 }
