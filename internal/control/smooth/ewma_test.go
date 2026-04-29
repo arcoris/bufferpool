@@ -33,11 +33,42 @@ func TestEWMA(t *testing.T) {
 	}
 }
 
+func TestEWMASmoother(t *testing.T) {
+	smoother, err := NewEWMASmoother(AlphaConfig{})
+	if err != nil {
+		t.Fatalf("NewEWMASmoother(default) error = %v", err)
+	}
+	state := smoother.Update(EWMA{}, 10)
+	if !state.Initialized || state.Value != 10 {
+		t.Fatalf("first smoother update = %+v", state)
+	}
+	state = smoother.Update(state, 20)
+	if state.Value != 12 {
+		t.Fatalf("second smoother update = %+v, want 12", state)
+	}
+	if _, err := NewEWMASmoother(AlphaConfig{Alpha: math.NaN()}); err == nil {
+		t.Fatalf("NewEWMASmoother accepted non-finite alpha")
+	}
+	if got := MustNewEWMASmoother(AlphaConfig{Alpha: 1}).Update(state, 40).Value; got != 40 {
+		t.Fatalf("MustNewEWMASmoother alpha=1 update = %v, want 40", got)
+	}
+}
+
 func BenchmarkControlSmoothEWMAUpdate(b *testing.B) {
 	b.ReportAllocs()
 	avg := EWMA{}
 	for i := 0; i < b.N; i++ {
 		avg = avg.Update(0.2, float64(i))
+	}
+	_ = avg
+}
+
+func BenchmarkControlSmoothEWMASmootherUpdate(b *testing.B) {
+	b.ReportAllocs()
+	smoother := MustNewEWMASmoother(AlphaConfig{Alpha: 0.2})
+	avg := EWMA{}
+	for i := 0; i < b.N; i++ {
+		avg = smoother.Update(avg, float64(i))
 	}
 	_ = avg
 }

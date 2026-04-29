@@ -18,6 +18,18 @@ func TestWaste(t *testing.T) {
 	if custom.Value != 1 {
 		t.Fatalf("custom waste = %+v, want 1", custom)
 	}
+	scorer := NewWasteScorer(DefaultWasteWeights())
+	input := WasteInput{LowHitScore: 0.8, RetainedPressure: 0.7, LowActivityScore: 0.4, DropScore: 0.2}
+	if got, want := scorer.Score(input).Value, Waste(input).Value; got != want {
+		t.Fatalf("WasteScorer.Score() = %v, want %v", got, want)
+	}
+	if got, want := scorer.ScoreValue(input), Waste(input).Value; got != want {
+		t.Fatalf("WasteScorer.ScoreValue() = %v, want %v", got, want)
+	}
+	disabled := NewWasteScorer(WasteWeights{LowHit: -1, Drop: 1})
+	if got := disabled.ScoreValue(WasteInput{LowHitScore: 1, DropScore: 1}); got != 1 {
+		t.Fatalf("sanitized waste weights produced %v, want 1", got)
+	}
 }
 
 func BenchmarkControlScoreWaste(b *testing.B) {
@@ -25,5 +37,14 @@ func BenchmarkControlScoreWaste(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = Waste(input)
+	}
+}
+
+func BenchmarkControlScoreWasteScorer(b *testing.B) {
+	input := WasteInput{LowHitScore: 0.8, RetainedPressure: 0.7, LowActivityScore: 0.4, DropScore: 0.2}
+	scorer := NewWasteScorer(DefaultWasteWeights())
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = scorer.ScoreValue(input)
 	}
 }

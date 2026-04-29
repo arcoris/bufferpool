@@ -18,6 +18,15 @@ func TestTopK(t *testing.T) {
 	if candidates[0].Index != 1 {
 		t.Fatalf("TopK mutated input")
 	}
+	dst := make([]Candidate, 0, 8)
+	top = TopKDescendingInto(dst, candidates, 2)
+	if len(top) != 2 || cap(top) != cap(dst) || top[0].Index != 2 || top[1].Index != 3 {
+		t.Fatalf("TopKDescendingInto() = %+v", top)
+	}
+	all = TopKAscendingInto(dst, candidates, 10)
+	if len(all) != 3 || cap(all) != cap(dst) || all[0].Index != 1 || all[2].Index != 2 {
+		t.Fatalf("TopKAscendingInto() = %+v", all)
+	}
 }
 
 func BenchmarkControlRankTopK(b *testing.B) {
@@ -30,5 +39,19 @@ func BenchmarkControlRankTopK(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = TopKDescending(candidates, 2)
+	}
+}
+
+func BenchmarkControlRankTopKInto(b *testing.B) {
+	candidates := []Candidate{
+		{Index: 1, Score: 0.1, TieBreak: 1},
+		{Index: 2, Score: 0.8, TieBreak: 2},
+		{Index: 3, Score: 0.5, TieBreak: 3},
+		{Index: 4, Score: 0.8, TieBreak: 0},
+	}
+	dst := make([]Candidate, 0, len(candidates))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		dst = TopKDescendingInto(dst[:0], candidates, 2)
 	}
 }

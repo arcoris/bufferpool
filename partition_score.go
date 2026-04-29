@@ -21,6 +21,18 @@ import (
 	controlscore "arcoris.dev/bufferpool/internal/control/score"
 )
 
+var (
+	// partitionUsefulnessScorer prepares the default shared usefulness weights
+	// for repeated partition controller projections. It is immutable and does
+	// not publish runtime policy or retain domain state.
+	partitionUsefulnessScorer = controlscore.NewUsefulnessScorer(controlscore.DefaultUsefulnessWeights())
+
+	// partitionWasteScorer prepares the default shared waste weights for
+	// repeated partition controller projections. A high score remains a
+	// diagnostic signal, not a trim command.
+	partitionWasteScorer = controlscore.NewWasteScorer(controlscore.DefaultWasteWeights())
+)
+
 // PoolPartitionScoreComponent explains one normalized score contribution.
 type PoolPartitionScoreComponent struct {
 	// Name identifies the signal in diagnostics and test output.
@@ -173,7 +185,7 @@ func newPartitionScoreSignals(rates PoolPartitionWindowRates, ewma PoolPartition
 // ratio remains a penalty because frequent drops mean retained storage is less
 // useful even if hit and retain ratios are otherwise high.
 func newPoolPartitionUsefulnessScore(signals partitionScoreSignals, activity PoolPartitionActivityScore, rates PoolPartitionWindowRates) PoolPartitionUsefulnessScore {
-	score := controlscore.Usefulness(controlscore.UsefulnessInput{
+	score := partitionUsefulnessScorer.Score(controlscore.UsefulnessInput{
 		HitRatio:            signals.hitRatio,
 		RetainRatio:         signals.retainRatio,
 		AllocationAvoidance: controlnumeric.Invert01(signals.allocationRatio),
@@ -198,7 +210,7 @@ func newPoolPartitionWasteScore(
 	activity PoolPartitionActivityScore,
 	rates PoolPartitionWindowRates,
 ) PoolPartitionWasteScore {
-	score := controlscore.Waste(controlscore.WasteInput{
+	score := partitionWasteScorer.Score(controlscore.WasteInput{
 		LowHitScore:      controlnumeric.Invert01(signals.hitRatio),
 		RetainedPressure: controlnumeric.Clamp01(maxFloat64(budget.Value, pressure.Value)),
 		LowActivityScore: controlnumeric.Invert01(activity.Value),

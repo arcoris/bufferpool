@@ -20,3 +20,12 @@ func TestHysteresis(t *testing.T) {
 		t.Fatalf("non-finite threshold should fail")
 	}
 }
+
+func BenchmarkControlStabilityHysteresis(b *testing.B) {
+	h := Hysteresis{Enter: 0.8, Exit: 0.2}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = h.ShouldEnter(0.9)
+		_ = h.ShouldExit(0.1)
+	}
+}

@@ -37,3 +37,21 @@ func TestWeights(t *testing.T) {
 		t.Fatalf("NormalizeWeightsInto zero total = %v", zero)
 	}
 }
+
+func BenchmarkControlNumericNormalizeWeights(b *testing.B) {
+	weights := []float64{1, 2, 3, -1, 4}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NormalizeWeights(weights)
+	}
+}
+
+func BenchmarkControlNumericNormalizeWeightsInto(b *testing.B) {
+	weights := []float64{1, 2, 3, -1, 4}
+	dst := make([]float64, 0, len(weights))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		dst = NormalizeWeightsInto(dst[:0], weights)
+	}
+	_ = dst
+}

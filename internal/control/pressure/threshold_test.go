@@ -22,6 +22,13 @@ func TestThresholds(t *testing.T) {
 			if got := Classify(tt.value, tt.thresholds); got != tt.want {
 				t.Fatalf("Classify() = %v, want %v", got, tt.want)
 			}
+			classifier, err := NewClassifier(tt.thresholds)
+			if err != nil {
+				t.Fatalf("NewClassifier() error = %v", err)
+			}
+			if got := classifier.Classify(tt.value); got != tt.want {
+				t.Fatalf("Classifier.Classify() = %v, want %v", got, tt.want)
+			}
 		})
 	}
 	invalid := []Thresholds{{Medium: 20, High: 10}, {High: 30, Critical: 20}, {Medium: 30, Critical: 20}}
@@ -29,8 +36,12 @@ func TestThresholds(t *testing.T) {
 		if err := thresholds.Validate(); err == nil {
 			t.Fatalf("Validate(%+v) succeeded, want error", thresholds)
 		}
+		if _, err := NewClassifier(thresholds); err == nil {
+			t.Fatalf("NewClassifier(%+v) succeeded, want error", thresholds)
+		}
 	}
 	if err := (Thresholds{Medium: 10, Critical: 20}).Validate(); err != nil {
 		t.Fatalf("valid partial thresholds: %v", err)
 	}
+	_ = MustNewClassifier(Thresholds{Medium: 10})
 }

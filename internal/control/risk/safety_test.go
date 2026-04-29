@@ -33,4 +33,44 @@ func TestRiskScore(t *testing.T) {
 	if custom.Value != 1 {
 		t.Fatalf("custom risk = %+v, want 1", custom)
 	}
+	scorer := DefaultScorer()
+	input := Input{PoolReturnAdmissionRatio: 0.2, OwnershipViolationRatio: 0.3, InvalidReleaseRatio: 0.1}
+	if got, want := scorer.Score(input), NewScore(input); got != want {
+		t.Fatalf("Scorer.Score() = %+v, want %+v", got, want)
+	}
+	customScorer := NewScorer(Weights{ReturnFailure: 1}, ReturnFailureWeights{Closed: 1}, OwnershipWeights{})
+	if got := customScorer.Score(Input{PoolReturnClosedRatio: 1}); got.Value != 1 {
+		t.Fatalf("custom scorer risk = %+v, want value 1", got)
+	}
+}
+
+func BenchmarkControlRiskScore(b *testing.B) {
+	input := Input{
+		PoolReturnFailureRatio:   0.1,
+		PoolReturnAdmissionRatio: 0.2,
+		PoolReturnClosedRatio:    0.05,
+		InvalidReleaseRatio:      0.01,
+		DoubleReleaseRatio:       0.02,
+		OwnershipViolationRatio:  0.03,
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NewScore(input)
+	}
+}
+
+func BenchmarkControlRiskScorer(b *testing.B) {
+	input := Input{
+		PoolReturnFailureRatio:   0.1,
+		PoolReturnAdmissionRatio: 0.2,
+		PoolReturnClosedRatio:    0.05,
+		InvalidReleaseRatio:      0.01,
+		DoubleReleaseRatio:       0.02,
+		OwnershipViolationRatio:  0.03,
+	}
+	scorer := DefaultScorer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = scorer.Score(input)
+	}
 }

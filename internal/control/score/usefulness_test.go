@@ -22,6 +22,18 @@ func TestUsefulness(t *testing.T) {
 	if !Usefulness(UsefulnessInput{}).IsZero() {
 		t.Fatalf("zero usefulness should be zero")
 	}
+	scorer := NewUsefulnessScorer(DefaultUsefulnessWeights())
+	input := UsefulnessInput{HitRatio: 0.8, RetainRatio: 0.7, AllocationAvoidance: 0.9, ActivityScore: 0.6, DropPenalty: 0.1}
+	if got, want := scorer.Score(input).Value, Usefulness(input).Value; got != want {
+		t.Fatalf("UsefulnessScorer.Score() = %v, want %v", got, want)
+	}
+	if got, want := scorer.ScoreValue(input), Usefulness(input).Value; got != want {
+		t.Fatalf("UsefulnessScorer.ScoreValue() = %v, want %v", got, want)
+	}
+	disabled := NewUsefulnessScorer(UsefulnessWeights{HitRatio: -1, AllocationAvoidance: 1})
+	if got := disabled.ScoreValue(UsefulnessInput{HitRatio: 1, AllocationAvoidance: 1}); got != 1 {
+		t.Fatalf("sanitized usefulness weights produced %v, want 1", got)
+	}
 }
 
 func BenchmarkControlScoreUsefulness(b *testing.B) {
@@ -29,5 +41,14 @@ func BenchmarkControlScoreUsefulness(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = Usefulness(input)
+	}
+}
+
+func BenchmarkControlScoreUsefulnessScorer(b *testing.B) {
+	input := UsefulnessInput{HitRatio: 0.8, RetainRatio: 0.7, AllocationAvoidance: 0.9, ActivityScore: 0.6, DropPenalty: 0.1}
+	scorer := NewUsefulnessScorer(DefaultUsefulnessWeights())
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = scorer.ScoreValue(input)
 	}
 }
