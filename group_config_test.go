@@ -1,0 +1,72 @@
+/*
+  Copyright 2026 The ARCORIS Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+*/
+
+package bufferpool
+
+import "testing"
+
+func TestPoolGroupConfigNormalize(t *testing.T) {
+	config := PoolGroupConfig{
+		Partitions: []GroupPartitionConfig{{
+			Name: "alpha",
+			Config: PoolPartitionConfig{
+				Pools: []PartitionPoolConfig{testGroupPoolConfig("pool")},
+			},
+		}},
+	}
+	normalized := config.Normalize()
+	if normalized.Name != DefaultGroupName {
+		t.Fatalf("Name = %q, want %q", normalized.Name, DefaultGroupName)
+	}
+	if normalized.Partitions[0].Config.Name != "alpha" {
+		t.Fatalf("partition Config.Name = %q, want alpha", normalized.Partitions[0].Config.Name)
+	}
+	if config.Partitions[0].Config.Name != "" {
+		t.Fatalf("Normalize mutated caller config")
+	}
+}
+
+func TestPoolGroupConfigValidateRejectsNoPartitions(t *testing.T) {
+	err := DefaultPoolGroupConfig().Validate()
+	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+func TestPoolGroupConfigValidateRejectsDuplicatePartitions(t *testing.T) {
+	config := testGroupConfig("alpha", "alpha")
+	err := config.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+func TestPoolGroupConfigValidateRejectsInvalidPartition(t *testing.T) {
+	config := DefaultPoolGroupConfig()
+	config.Partitions = []GroupPartitionConfig{{Name: "broken", Config: PoolPartitionConfig{Name: "broken"}}}
+	err := config.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+func TestCloneGroupConfigDefensiveCopy(t *testing.T) {
+	config := testGroupConfig("alpha", "beta").Normalize()
+	cloned := cloneGroupConfig(config)
+	cloned.Partitions[0].Name = "changed"
+	cloned.Partitions[0].Config.Pools[0].Name = "changed-pool"
+
+	if config.Partitions[0].Name != "alpha" {
+		t.Fatalf("clone mutated source partition name")
+	}
+	if config.Partitions[0].Config.Pools[0].Name != "alpha-pool" {
+		t.Fatalf("clone mutated source pool name")
+	}
+}
