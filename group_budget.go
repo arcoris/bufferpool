@@ -16,6 +16,8 @@
 
 package bufferpool
 
+import "errors"
+
 // PartitionBudgetTarget is a retained-memory budget publication for one
 // group-owned partition.
 //
@@ -64,9 +66,10 @@ func (g *PoolGroup) computePartitionBudgetTargets(
 // applyPartitionBudgetTargets publishes retained-byte targets into group-owned
 // partitions.
 //
-// This is an internal manual publication hook for later safety-gated
-// coordinators. It is serialized with hard Close through runtimeMu, rejects
-// closed groups, and does not run from Tick/TickInto.
+// This is an internal manual publication hook. It is serialized with hard Close
+// through runtimeMu, rejects closed groups, and publishes only partition policy
+// targets. Pool/class distribution remains a PoolPartition TickInto
+// responsibility.
 func (g *PoolGroup) applyPartitionBudgetTargets(targets []PartitionBudgetTarget) error {
 	g.mustBeInitialized()
 	g.runtimeMu.RLock()
@@ -76,17 +79,41 @@ func (g *PoolGroup) applyPartitionBudgetTargets(targets []PartitionBudgetTarget)
 		return newError(ErrClosed, errGroupClosed)
 	}
 
-	for _, target := range targets {
-		partition, ok := g.registry.partition(target.PartitionName)
-		if !ok {
-			return newError(ErrInvalidOptions, errGroupPartitionMissing+": "+target.PartitionName)
-		}
-		if err := partition.applyPartitionBudget(target); err != nil {
-			return err
-		}
+	skipped, err := g.publishPartitionBudgetTargets(targets, nil)
+	if err != nil {
+		return err
+	}
+	if len(skipped) > 0 {
+		return newError(ErrClosed, errGroupClosed)
 	}
 
 	return nil
+}
+
+// publishPartitionBudgetTargets publishes targets without taking runtimeMu.
+//
+// Callers must already hold the appropriate group foreground gate. Closed child
+// partitions are recorded as skipped so applied group ticks can report partial
+// publication without duplicating Partition close semantics.
+func (g *PoolGroup) publishPartitionBudgetTargets(
+	targets []PartitionBudgetTarget,
+	skipped []PoolGroupSkippedPartition,
+) ([]PoolGroupSkippedPartition, error) {
+	for _, target := range targets {
+		partition, ok := g.registry.partition(target.PartitionName)
+		if !ok {
+			return skipped, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+target.PartitionName)
+		}
+		if err := partition.applyPartitionBudget(target); err != nil {
+			if errors.Is(err, ErrClosed) {
+				skipped = append(skipped, PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: err.Error()})
+				continue
+			}
+			return skipped, err
+		}
+	}
+
+	return skipped, nil
 }
 
 // allocatePartitionBudgetTargets applies the common base-plus-adaptive allocator

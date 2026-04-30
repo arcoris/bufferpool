@@ -18,18 +18,20 @@ package bufferpool
 
 import "time"
 
-// PoolGroupPolicy defines group-level observational control behavior.
+// PoolGroupPolicy defines group-level manual control behavior.
 //
-// PoolGroupPolicy describes how a group interprets aggregate partition state.
-// It does not authorize automatic policy application in the current
-// implementation. Budget and pressure are group-level projections over the
-// partition-shaped aggregate sample; they do not mutate child partition policy.
+// PoolGroupPolicy describes how a group interprets aggregate partition state and
+// how manual TickInto distributes retained-budget targets. It does not authorize
+// automatic scheduling, background goroutines, trim execution, or pressure
+// propagation.
 type PoolGroupPolicy struct {
 	// Coordinator reserves automatic scheduling policy. Current PoolGroup only
-	// supports manual foreground observation through Tick and TickInto.
+	// supports manual foreground coordinator cycles through Tick and TickInto.
 	Coordinator PoolGroupCoordinatorPolicy
 
-	// Budget configures partition-shaped aggregate retained, active, and owned limits.
+	// Budget configures group aggregate retained, active, and owned limits.
+	// MaxRetainedBytes is also the parent retained target for partition budget
+	// redistribution during manual TickInto cycles.
 	Budget PartitionBudgetPolicy
 
 	// Pressure maps partition-shaped aggregate owned bytes into pressure levels.
@@ -52,7 +54,7 @@ type PoolGroupCoordinatorPolicy struct {
 	TickInterval time.Duration
 }
 
-// DefaultPoolGroupPolicy returns the default observational group policy.
+// DefaultPoolGroupPolicy returns the default manual group policy.
 func DefaultPoolGroupPolicy() PoolGroupPolicy { return PoolGroupPolicy{} }
 
 // Normalize returns p unchanged.

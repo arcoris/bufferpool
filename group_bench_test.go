@@ -39,6 +39,26 @@ func benchmarkPoolGroup(b *testing.B, partitions int) *PoolGroup {
 	return group
 }
 
+func benchmarkBudgetedPoolGroup(b *testing.B, partitions int, retained Size) *PoolGroup {
+	b.Helper()
+	partitionNames := make([]string, partitions)
+	for index := range partitionNames {
+		partitionNames[index] = "partition-" + string(rune('a'+index))
+	}
+	config := testGroupConfig(partitionNames...)
+	config.Policy.Budget.MaxRetainedBytes = retained
+	group, err := NewPoolGroup(config)
+	if err != nil {
+		b.Fatalf("NewPoolGroup() error = %v", err)
+	}
+	b.Cleanup(func() {
+		if closeErr := group.Close(); closeErr != nil {
+			b.Fatalf("PoolGroup.Close() error = %v", closeErr)
+		}
+	})
+	return group
+}
+
 // seedPoolGroupActivity creates real retained and lease counters before benchmarks.
 func seedPoolGroupActivity(b *testing.B, group *PoolGroup, partitions int) {
 	b.Helper()
@@ -116,6 +136,51 @@ func BenchmarkPoolGroupTickInto(b *testing.B) {
 		if err := group.TickInto(&report); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkPoolGroupTickAppliedCoordinator(b *testing.B) {
+	group := benchmarkBudgetedPoolGroup(b, 4, 4*MiB)
+	var report PoolGroupCoordinatorReport
+	_ = group.TickInto(&report)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := group.TickInto(&report); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPoolGroupTickManyPartitions(b *testing.B) {
+	for _, partitions := range []int{1, 4, 16} {
+		b.Run(fmt.Sprintf("partitions_%d", partitions), func(b *testing.B) {
+			group := benchmarkBudgetedPoolGroup(b, partitions, Size(partitions)*MiB)
+			var report PoolGroupCoordinatorReport
+			_ = group.TickInto(&report)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := group.TickInto(&report); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkPoolGroupBudgetRedistribution(b *testing.B) {
+	inputs := make([]partitionBudgetAllocationInput, 64)
+	for index := range inputs {
+		inputs[index] = partitionBudgetAllocationInput{
+			PartitionName: fmt.Sprintf("partition-%02d", index),
+			Score:         float64(index%8) + 1,
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		budgetPartitionTargetsSink = allocatePartitionBudgetTargets(Generation(i+1), 64*MiB, inputs)
 	}
 }
 

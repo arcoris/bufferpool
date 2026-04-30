@@ -18,17 +18,25 @@ package bufferpool
 
 import "time"
 
-// PoolGroupCoordinatorReport describes one explicit foreground group observation.
+// PoolGroupCoordinatorReport describes one explicit foreground group coordinator
+// cycle.
 //
-// The report is an observational projection. It is not an applied decision and
-// must not be interpreted as permission to mutate partition policies, apply
-// budgets, execute trim, or start a controller loop.
+// The report records the observation, window projection, partition scores, and
+// retained-budget targets published by one manual TickInto call. It still does
+// not execute trim, scan shards directly, compute class EWMA, propagate
+// pressure, or start a controller loop.
 type PoolGroupCoordinatorReport struct {
 	// Generation is the group event generation for this tick.
 	Generation Generation
 
+	// CoordinatorGeneration is the group coordinator generation for this cycle.
+	CoordinatorGeneration Generation
+
 	// PolicyGeneration is the group runtime-policy generation used by the tick.
 	PolicyGeneration Generation
+
+	// PublishedGeneration is the budget target generation published to partitions.
+	PublishedGeneration Generation
 
 	// Lifecycle is the observed group lifecycle state.
 	Lifecycle LifecycleState
@@ -39,16 +47,51 @@ type PoolGroupCoordinatorReport struct {
 	// Metrics is the lifetime-derived metrics projection from Sample.
 	Metrics PoolGroupMetrics
 
+	// Window contains aggregate movement from the previous coordinator sample to
+	// Sample.
+	Window PoolGroupWindow
+
+	// Rates contains aggregate ratio and throughput projections derived from Window.
+	Rates PoolGroupWindowRates
+
 	// Budget is the group budget projection from Sample.
 	Budget PartitionBudgetSnapshot
 
 	// Pressure is the group pressure interpretation from Sample.
 	Pressure PartitionPressureSnapshot
 
-	// Scores contains advisory scalar score values. Foreground Tick has no
-	// previous sample, so workload-window components remain zero until callers use
-	// PoolGroupControllerEvaluation with explicit previous/current samples.
+	// Scores contains aggregate scalar score values for the group window.
 	Scores PoolGroupScoreValues
+
+	// PartitionScores contains one score projection per sampled partition.
+	PartitionScores []PoolGroupPartitionScore
+
+	// PartitionBudgetTargets are retained-budget targets published by this cycle.
+	PartitionBudgetTargets []PartitionBudgetTarget
+
+	// SkippedPartitions records partitions that did not accept budget publication.
+	SkippedPartitions []PoolGroupSkippedPartition
+}
+
+// PoolGroupPartitionScore describes one partition score used for redistribution.
+type PoolGroupPartitionScore struct {
+	// PartitionName is the group-local partition name.
+	PartitionName string
+
+	// Scores contains scalar partition score values computed from the group window.
+	Scores PoolPartitionScoreValues
+
+	// Score is the positive allocation weight derived from Scores.
+	Score float64
+}
+
+// PoolGroupSkippedPartition records a partition skipped during budget publication.
+type PoolGroupSkippedPartition struct {
+	// PartitionName is the group-local partition name.
+	PartitionName string
+
+	// Reason is a diagnostic skip reason.
+	Reason string
 }
 
 // PoolGroupControllerEvaluation is a pure group controller projection.

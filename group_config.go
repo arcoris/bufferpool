@@ -68,7 +68,7 @@ type PoolGroupConfig struct {
 	// Name is diagnostic metadata for this group.
 	Name string
 
-	// Policy defines group-level observational control behavior.
+	// Policy defines group-level manual control behavior.
 	Policy PoolGroupPolicy
 
 	// Partitioning controls automatic partition count and Pool placement when

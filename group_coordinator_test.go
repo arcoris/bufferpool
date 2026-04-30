@@ -19,6 +19,9 @@ package bufferpool
 import (
 	"reflect"
 	"testing"
+	"time"
+
+	"arcoris.dev/bufferpool/internal/clock"
 )
 
 func TestPoolGroupTickInto(t *testing.T) {
@@ -55,7 +58,7 @@ func TestPoolGroupTickReturnsReport(t *testing.T) {
 	}
 }
 
-func TestPoolGroupTickDoesNotMutatePolicies(t *testing.T) {
+func TestPoolGroupTickDoesNotMutateGroupPolicy(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	before := group.Policy()
 	_, err := group.Tick()
@@ -66,8 +69,9 @@ func TestPoolGroupTickDoesNotMutatePolicies(t *testing.T) {
 	}
 }
 
-// TestPoolGroupTickIntoIsObservationOnly verifies Tick has no window rates.
-func TestPoolGroupTickIntoIsObservationOnly(t *testing.T) {
+// TestPoolGroupTickIntoFirstCycleHasNoWindowActivity verifies the first applied
+// cycle uses its current sample as the window baseline.
+func TestPoolGroupTickIntoFirstCycleHasNoWindowActivity(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	lease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
@@ -83,8 +87,9 @@ func TestPoolGroupTickIntoIsObservationOnly(t *testing.T) {
 	}
 }
 
-// TestPoolGroupTickIntoDoesNotMutatePartitionPolicies verifies observation only.
-func TestPoolGroupTickIntoDoesNotMutatePartitionPolicies(t *testing.T) {
+// TestPoolGroupTickIntoDoesNotPublishWithoutRetainedBudget verifies unbounded
+// groups do not publish meaningless zero targets.
+func TestPoolGroupTickIntoDoesNotPublishWithoutRetainedBudget(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
 	before := make(map[string]PartitionPolicy)
 	for _, name := range group.PartitionNames() {
@@ -108,4 +113,235 @@ func TestPoolGroupTickIntoDoesNotMutatePartitionPolicies(t *testing.T) {
 			t.Fatalf("Tick mutated partition %q policy: before=%#v after=%#v", name, before[name], after)
 		}
 	}
+}
+
+func TestPoolGroupTickIntoPublishesPartitionBudgetTargets(t *testing.T) {
+	group := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
+
+	before, ok := group.PartitionSnapshot("alpha")
+	if !ok {
+		t.Fatalf("PartitionSnapshot(alpha) not found")
+	}
+
+	var report PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&report))
+	if report.PublishedGeneration != report.Generation {
+		t.Fatalf("PublishedGeneration = %s, want %s", report.PublishedGeneration, report.Generation)
+	}
+	if report.CoordinatorGeneration.IsZero() {
+		t.Fatalf("CoordinatorGeneration is zero")
+	}
+	if len(report.PartitionScores) != 2 {
+		t.Fatalf("len(PartitionScores) = %d, want 2", len(report.PartitionScores))
+	}
+	if len(report.PartitionBudgetTargets) != 2 {
+		t.Fatalf("len(PartitionBudgetTargets) = %d, want 2", len(report.PartitionBudgetTargets))
+	}
+	if len(report.SkippedPartitions) != 0 {
+		t.Fatalf("SkippedPartitions = %+v, want empty", report.SkippedPartitions)
+	}
+	if total := sumPartitionBudgetTargets(report.PartitionBudgetTargets); total > 1*MiB {
+		t.Fatalf("target total = %s, want <= 1 MiB", total)
+	}
+
+	alphaTarget, ok := partitionBudgetTargetByName(report.PartitionBudgetTargets, "alpha")
+	if !ok {
+		t.Fatalf("alpha target not found")
+	}
+	alphaSnapshot, ok := group.PartitionSnapshot("alpha")
+	if !ok {
+		t.Fatalf("PartitionSnapshot(alpha) not found after tick")
+	}
+	if !alphaSnapshot.PolicyGeneration.After(before.PolicyGeneration) {
+		t.Fatalf("alpha policy generation = %s, want after %s", alphaSnapshot.PolicyGeneration, before.PolicyGeneration)
+	}
+	if alphaSnapshot.Policy.Budget.MaxRetainedBytes != alphaTarget.RetainedBytes {
+		t.Fatalf("alpha MaxRetainedBytes = %s, want target %s", alphaSnapshot.Policy.Budget.MaxRetainedBytes, alphaTarget.RetainedBytes)
+	}
+}
+
+func TestPoolGroupTickIntoZeroScorePartitionsGetEqualTargets(t *testing.T) {
+	group := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
+
+	var report PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&report))
+
+	alpha, ok := partitionBudgetTargetByName(report.PartitionBudgetTargets, "alpha")
+	if !ok {
+		t.Fatalf("alpha target not found")
+	}
+	beta, ok := partitionBudgetTargetByName(report.PartitionBudgetTargets, "beta")
+	if !ok {
+		t.Fatalf("beta target not found")
+	}
+	if alpha.RetainedBytes != beta.RetainedBytes {
+		t.Fatalf("targets = alpha %s beta %s, want equal", alpha.RetainedBytes, beta.RetainedBytes)
+	}
+}
+
+func TestPoolGroupTickIntoUsesPreviousWindowForPartitionScores(t *testing.T) {
+	group := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
+	manual := clock.NewManual(time.Date(2026, time.April, 30, 12, 0, 0, 0, time.UTC))
+	group.coordinator.clock = manual
+
+	var first PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&first))
+
+	manual.Advance(time.Second)
+	lease, err := group.Acquire("alpha-pool", 300)
+	requireGroupNoError(t, err)
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
+
+	var second PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&second))
+
+	alphaScore, ok := partitionScoreByName(second.PartitionScores, "alpha")
+	if !ok {
+		t.Fatalf("alpha score not found")
+	}
+	betaScore, ok := partitionScoreByName(second.PartitionScores, "beta")
+	if !ok {
+		t.Fatalf("beta score not found")
+	}
+	if alphaScore.Score <= betaScore.Score {
+		t.Fatalf("scores = alpha %.6f beta %.6f, want alpha greater", alphaScore.Score, betaScore.Score)
+	}
+	alphaTarget, ok := partitionBudgetTargetByName(second.PartitionBudgetTargets, "alpha")
+	if !ok {
+		t.Fatalf("alpha target not found")
+	}
+	betaTarget, ok := partitionBudgetTargetByName(second.PartitionBudgetTargets, "beta")
+	if !ok {
+		t.Fatalf("beta target not found")
+	}
+	if alphaTarget.RetainedBytes <= betaTarget.RetainedBytes {
+		t.Fatalf("targets = alpha %s beta %s, want alpha greater", alphaTarget.RetainedBytes, betaTarget.RetainedBytes)
+	}
+	if second.Window.Delta.Aggregate.LeaseAcquisitions == 0 {
+		t.Fatalf("window lease acquisitions = 0, want previous/current movement")
+	}
+	if second.Rates.Aggregate.LeaseOpsPerSecond == 0 {
+		t.Fatalf("LeaseOpsPerSecond = 0, want elapsed-time rate")
+	}
+}
+
+func TestPoolGroupTickIntoPublishedTargetsDrivePartitionTick(t *testing.T) {
+	group := testNewBudgetedPoolGroup(t, 512*KiB, "alpha")
+
+	var groupReport PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&groupReport))
+	if len(groupReport.PartitionBudgetTargets) != 1 {
+		t.Fatalf("len(PartitionBudgetTargets) = %d, want 1", len(groupReport.PartitionBudgetTargets))
+	}
+
+	partition, ok := group.partition("alpha")
+	if !ok {
+		t.Fatalf("partition alpha not found")
+	}
+	var partitionReport PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&partitionReport))
+	if len(partitionReport.PoolBudgetTargets) == 0 {
+		t.Fatalf("partition PoolBudgetTargets empty")
+	}
+	if partition.Policy().Budget.MaxRetainedBytes != groupReport.PartitionBudgetTargets[0].RetainedBytes {
+		t.Fatalf("partition retained budget = %s, want group target %s", partition.Policy().Budget.MaxRetainedBytes, groupReport.PartitionBudgetTargets[0].RetainedBytes)
+	}
+	if total := sumPoolBudgetTargets(partitionReport.PoolBudgetTargets); total > groupReport.PartitionBudgetTargets[0].RetainedBytes {
+		t.Fatalf("pool target total = %s, want <= partition target %s", total, groupReport.PartitionBudgetTargets[0].RetainedBytes)
+	}
+}
+
+func TestPoolGroupTickIntoManualAndAutoConfigsPublishTargets(t *testing.T) {
+	t.Run("manual", func(t *testing.T) {
+		group := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
+		var report PoolGroupCoordinatorReport
+		requireGroupNoError(t, group.TickInto(&report))
+		if len(report.PartitionBudgetTargets) != len(group.PartitionNames()) {
+			t.Fatalf("len(PartitionBudgetTargets) = %d, want %d", len(report.PartitionBudgetTargets), len(group.PartitionNames()))
+		}
+	})
+
+	t.Run("auto", func(t *testing.T) {
+		config := testManagedGroupConfig("api", "worker", "events", "batch")
+		config.Policy.Budget.MaxRetainedBytes = 1 * MiB
+		config.Partitioning.MinPartitions = 2
+		config.Partitioning.MaxPartitions = 2
+		group, err := NewPoolGroup(config)
+		requireGroupNoError(t, err)
+		t.Cleanup(func() { requireGroupNoError(t, group.Close()) })
+
+		var report PoolGroupCoordinatorReport
+		requireGroupNoError(t, group.TickInto(&report))
+		if len(report.PartitionBudgetTargets) != len(group.PartitionNames()) {
+			t.Fatalf("len(PartitionBudgetTargets) = %d, want %d", len(report.PartitionBudgetTargets), len(group.PartitionNames()))
+		}
+	})
+}
+
+func TestAllocatePartitionBudgetTargetsClampMinMax(t *testing.T) {
+	targets := allocatePartitionBudgetTargets(Generation(10), 10*KiB, []partitionBudgetAllocationInput{
+		{PartitionName: "alpha", MinRetainedBytes: 4 * KiB, MaxRetainedBytes: 4 * KiB, Score: 1},
+		{PartitionName: "beta", MaxRetainedBytes: 2 * KiB, Score: 1},
+		{PartitionName: "gamma", Score: 1},
+	})
+	if len(targets) != 3 {
+		t.Fatalf("len(targets) = %d, want 3", len(targets))
+	}
+	alpha, _ := partitionBudgetTargetByName(targets, "alpha")
+	beta, _ := partitionBudgetTargetByName(targets, "beta")
+	if alpha.RetainedBytes != 4*KiB {
+		t.Fatalf("alpha target = %s, want 4 KiB", alpha.RetainedBytes)
+	}
+	if beta.RetainedBytes > 2*KiB {
+		t.Fatalf("beta target = %s, want <= 2 KiB", beta.RetainedBytes)
+	}
+	if total := sumPartitionBudgetTargets(targets); total > 10*KiB {
+		t.Fatalf("target total = %s, want <= 10 KiB", total)
+	}
+}
+
+func testNewBudgetedPoolGroup(t *testing.T, retained Size, partitionNames ...string) *PoolGroup {
+	t.Helper()
+	config := testGroupConfig(partitionNames...)
+	config.Policy.Budget.MaxRetainedBytes = retained
+	group, err := NewPoolGroup(config)
+	requireGroupNoError(t, err)
+	t.Cleanup(func() {
+		requireGroupNoError(t, group.Close())
+	})
+	return group
+}
+
+func partitionBudgetTargetByName(targets []PartitionBudgetTarget, name string) (PartitionBudgetTarget, bool) {
+	for _, target := range targets {
+		if target.PartitionName == name {
+			return target, true
+		}
+	}
+	return PartitionBudgetTarget{}, false
+}
+
+func partitionScoreByName(scores []PoolGroupPartitionScore, name string) (PoolGroupPartitionScore, bool) {
+	for _, score := range scores {
+		if score.PartitionName == name {
+			return score, true
+		}
+	}
+	return PoolGroupPartitionScore{}, false
+}
+
+func sumPartitionBudgetTargets(targets []PartitionBudgetTarget) Size {
+	var total uint64
+	for _, target := range targets {
+		total = poolSaturatingAdd(total, target.RetainedBytes.Bytes())
+	}
+	return SizeFromBytes(total)
+}
+
+func sumPoolBudgetTargets(targets []PoolBudgetTarget) Size {
+	var total uint64
+	for _, target := range targets {
+		total = poolSaturatingAdd(total, target.RetainedBytes.Bytes())
+	}
+	return SizeFromBytes(total)
 }

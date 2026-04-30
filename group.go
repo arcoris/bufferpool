@@ -36,21 +36,22 @@ const (
 )
 
 // PoolGroup owns a deterministic set of PoolPartitions, a group-global Pool
-// directory, and an observational group-level control boundary.
+// directory, and a manual group-level coordinator boundary.
 //
 // PoolGroup is the first owner above PoolPartition. It routes managed
 // acquisition and release by Pool name through the owning partition while
 // aggregating partition samples, bounded windows, rates, metrics, snapshots,
-// and foreground coordinator reports. It deliberately does not apply partition
-// policies, redistribute budgets, execute physical trim, or start background
-// coordinator goroutines.
+// and foreground coordinator reports. TickInto may publish partition retained
+// budgets into owned PoolPartitions. It deliberately does not execute physical
+// trim, scan shards directly, compute class EWMA, propagate pressure, or start
+// background coordinator goroutines.
 //
 // Responsibility boundary:
 //
 //   - group.go owns the PoolGroup type, construction, metadata accessors, and
 //     receiver validation;
 //   - group_config.go owns construction config normalization and validation;
-//   - group_policy.go owns observational group policy;
+//   - group_policy.go owns manual group coordinator policy;
 //   - group_lifecycle.go owns hard close behavior;
 //   - group_registry.go owns the immutable partition registry;
 //   - group_runtime.go owns group runtime policy snapshots;
@@ -59,8 +60,8 @@ const (
 //   - group_rate.go owns aggregate rate projection;
 //   - group_score*.go owns score value projection;
 //   - group_snapshot.go and group_metrics.go own diagnostics;
-//   - group_coordinator.go and group_controller_report.go own foreground
-//     observation reports.
+//   - group_coordinator*.go and group_controller_report.go own foreground
+//     coordinator state, budget publication, and reports.
 //
 // Copying:
 //
@@ -99,13 +100,17 @@ type PoolGroup struct {
 
 	// scoreEvaluator owns prepared score adapters for group evaluation.
 	scoreEvaluator PoolGroupScoreEvaluator
+
+	// coordinator owns applied group-local state mutated only by TickInto.
+	coordinator groupCoordinator
 }
 
-// NewPoolGroup constructs and activates an observational PoolGroup.
+// NewPoolGroup constructs and activates a PoolGroup.
 //
 // NewPoolGroup constructs owned PoolPartitions from explicit partitions or from
-// group-level Pool assignments. It does not start background work and does not
-// publish any policy into partitions beyond their own construction configs.
+// group-level Pool assignments. It does not start background work. Runtime
+// partition budget publication happens only when callers explicitly invoke
+// TickInto/Tick.
 func NewPoolGroup(config PoolGroupConfig) (*PoolGroup, error) {
 	normalized := config.Normalize()
 	if err := normalized.Validate(); err != nil {
@@ -132,6 +137,7 @@ func NewPoolGroup(config PoolGroupConfig) (*PoolGroup, error) {
 		registry:       registry,
 		poolDirectory:  directory,
 		scoreEvaluator: NewPoolGroupScoreEvaluator(normalized.Policy.Score),
+		coordinator:    newGroupCoordinator(normalized.Policy),
 	}
 	group.generation.Store(InitialGeneration)
 	group.publishRuntimeSnapshot(newGroupRuntimeSnapshot(InitialGeneration, normalized.Policy))

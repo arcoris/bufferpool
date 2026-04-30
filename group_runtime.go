@@ -26,7 +26,7 @@ type groupRuntimeSnapshot struct {
 	// Generation is the group policy publication generation.
 	Generation Generation
 
-	// Policy is the immutable group policy used by observational planning.
+	// Policy is the immutable group policy used by manual coordinator cycles.
 	Policy PoolGroupPolicy
 }
 
@@ -37,10 +37,10 @@ func newGroupRuntimeSnapshot(generation Generation, policy PoolGroupPolicy) *gro
 
 // publishRuntimeSnapshot atomically publishes a group policy view.
 //
-// Group policy publication does not publish partition policies, does not mutate
-// budgets, does not execute trim, and does not advance the group state
-// generation. Future policy application must be implemented as a separate
-// safety-gated layer.
+// Group policy publication itself does not publish partition policies, execute
+// trim, or advance the group state generation. Manual TickInto reads this
+// snapshot and performs budget publication as an explicit foreground
+// coordinator cycle.
 func (g *PoolGroup) publishRuntimeSnapshot(snapshot *groupRuntimeSnapshot) {
 	if snapshot == nil {
 		panic(errGroupRuntimeSnapshotNil)
