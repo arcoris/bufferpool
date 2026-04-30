@@ -104,6 +104,15 @@ type PoolGroupBudgetPublicationReport struct {
 	SkippedPartitions []PoolGroupSkippedPartition
 }
 
+// CanPublish reports whether this group-to-partition publication report is
+// feasible and has no skipped child partition.
+func (r PoolGroupBudgetPublicationReport) CanPublish() bool {
+	return len(r.Targets) > 0 &&
+		r.Allocation.Feasible &&
+		len(r.SkippedPartitions) == 0 &&
+		r.FailureReason == ""
+}
+
 // computePartitionBudgetTargets computes group-to-partition budget targets for
 // advisory callers that do not publish runtime state.
 //

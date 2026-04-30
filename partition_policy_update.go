@@ -333,6 +333,21 @@ func poolMinimumRetainedBudget(pool *Pool) uint64 {
 	return pool.classes[0].classSize().Bytes()
 }
 
+// minimumRetainedBudget returns the smallest meaningful positive retained
+// assignment for all Pools owned by the partition.
+//
+// PoolGroup uses this partition-owned view when it validates group-to-partition
+// retained-budget feasibility. The group still does not inspect Pool shards or
+// Pool buckets; the partition boundary summarizes the minimum budget needed for
+// its owned Pools to receive one smallest-class retained buffer each.
+func (p *PoolPartition) minimumRetainedBudget() uint64 {
+	var total uint64
+	for _, entry := range p.registry.entries {
+		total = poolSaturatingAdd(total, poolMinimumRetainedBudget(entry.pool))
+	}
+	return total
+}
+
 // classifyPartitionPolicyUpdate maps partition policy differences into the
 // shared policy publication diagnostics used by Pool and hierarchy reports.
 func classifyPartitionPolicyUpdate(previous PartitionPolicy, next PartitionPolicy) PolicyUpdateDiffDiagnostics {

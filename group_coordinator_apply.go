@@ -27,7 +27,11 @@ import (
 // The group coordinator scores partition windows only. It does not inspect Pool
 // shards, update class EWMA, or derive Pool/class budgets. Those remain
 // PoolPartition responsibilities.
-func (g *PoolGroup) groupPartitionScores(window PoolGroupWindow, elapsed time.Duration) []PoolGroupPartitionScore {
+func (g *PoolGroup) groupPartitionScores(
+	window PoolGroupWindow,
+	elapsed time.Duration,
+	scoreEvaluator PoolGroupScoreEvaluator,
+) []PoolGroupPartitionScore {
 	scores := make([]PoolGroupPartitionScore, 0, len(window.Current.Partitions))
 	for _, current := range window.Current.Partitions {
 		previous, _ := findPoolGroupPartitionSample(window.Previous, current.Name)
@@ -40,7 +44,7 @@ func (g *PoolGroup) groupPartitionScores(window PoolGroupWindow, elapsed time.Du
 		runtime := partition.currentRuntimeSnapshot()
 		budget := newPartitionBudgetSnapshot(runtime.Policy.Budget, current.Sample)
 		pressure := newPartitionPressureSnapshot(runtime.Policy.Pressure, current.Sample)
-		values := g.scoreEvaluator.PartitionScoreValues(rates, PoolPartitionEWMAState{}, budget, pressure)
+		values := scoreEvaluator.PartitionScoreValues(rates, PoolPartitionEWMAState{}, budget, pressure)
 		scores = append(scores, PoolGroupPartitionScore{
 			PartitionName: current.Name,
 			Scores:        values,

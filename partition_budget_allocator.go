@@ -141,16 +141,26 @@ func (p *PoolPartition) applyPartitionBudgetLocked(target PartitionBudgetTarget)
 		return newError(ErrClosed, errPartitionClosed)
 	}
 
+	if err := p.validatePartitionBudgetTarget(target); err != nil {
+		return err
+	}
+
 	runtime := p.currentRuntimeSnapshot()
 	policy := runtime.Policy
 	policy.Budget.MaxRetainedBytes = target.RetainedBytes
-	if err := policy.Validate(); err != nil {
-		return err
-	}
 
 	generation := budgetPublicationGeneration(runtime.Generation, target.Generation)
 	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, policy, runtime.Pressure))
 	return nil
+}
+
+// validatePartitionBudgetTarget checks whether target can become the partition
+// retained budget without mutating runtime state.
+func (p *PoolPartition) validatePartitionBudgetTarget(target PartitionBudgetTarget) error {
+	runtime := p.currentRuntimeSnapshot()
+	policy := runtime.Policy
+	policy.Budget.MaxRetainedBytes = target.RetainedBytes
+	return policy.Validate()
 }
 
 // applyPoolBudgetTargets publishes retained targets into partition-owned Pools.

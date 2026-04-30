@@ -76,8 +76,9 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	metrics := newPoolGroupMetrics(g.name, sample)
 	budget := newGroupBudgetSnapshot(runtime.Policy.Budget, sample)
 	pressure := newGroupPressureSnapshot(runtime.Policy.Pressure, sample)
-	scores := g.scoreEvaluator.ScoreValues(rates, budget, pressure)
-	partitionScores := g.groupPartitionScores(window, elapsed)
+	scoreEvaluator := NewPoolGroupScoreEvaluator(runtime.Policy.Score)
+	scores := scoreEvaluator.ScoreValues(rates, budget, pressure)
+	partitionScores := g.groupPartitionScores(window, elapsed, scoreEvaluator)
 	partitionBudgetAllocation := g.coordinatorPartitionBudgetReport(generation, runtime, window, partitionScores)
 	partitionBudgetTargets := partitionBudgetAllocation.Targets
 	skippedPartitions := dst.SkippedPartitions[:0]
