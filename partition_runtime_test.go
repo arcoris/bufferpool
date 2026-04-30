@@ -137,9 +137,13 @@ func TestPoolPartitionPublishPoolRuntimeSnapshot(t *testing.T) {
 	requirePartitionErrorIs(t, err, ErrInvalidOptions)
 
 	unsupported := policy
-	unsupported.Ownership = StrictOwnershipPolicy()
+	unsupported.Shards.ReturnFallbackShards = 1
 	err = partition.publishPoolRuntimeSnapshot("primary", Generation(13), unsupported)
 	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+
+	managedOwnership := policy
+	managedOwnership.Ownership = StrictOwnershipPolicy()
+	requirePartitionNoError(t, partition.publishPoolRuntimeSnapshot("primary", Generation(16), managedOwnership))
 
 	invalid := policy
 	invalid.Retention.MaxRequestSize = 0

@@ -34,9 +34,11 @@ const (
 // lease-aware accounting owner.
 //
 // Accounting mode tracks checked-out leases and in-use capacity, but it does not
-// require strict backing-array identity validation. It is useful as the first
-// PoolPartition-managed ownership layer when the goal is observability and safe
-// lifecycle accounting rather than strict caller policing.
+// require strict backing-array identity validation. It still enforces configured
+// origin-class capacity growth because LeaseRegistry knows the acquired class.
+// It is useful as the first PoolPartition-managed ownership layer when the goal
+// is observability and safe lifecycle accounting rather than strict caller
+// policing.
 func AccountingOwnershipPolicy() OwnershipPolicy {
 	return OwnershipPolicy{
 		Mode:                      OwnershipModeAccounting,
@@ -52,7 +54,7 @@ func AccountingOwnershipPolicy() OwnershipPolicy {
 //
 // Strict mode validates the lease token, detects double release, checks that the
 // returned slice preserves the acquired base pointer, and canonicalizes the
-// Pool.Put handoff to the acquired capacity. MaxReturnedCapacityGrowth remains a
+// Pool handoff to the acquired capacity. MaxReturnedCapacityGrowth remains a
 // secondary guard: ordinary append beyond capacity normally reallocates and is
 // rejected as foreign before a growth-ratio check matters.
 func StrictOwnershipPolicy() OwnershipPolicy {
@@ -155,5 +157,5 @@ func (p OwnershipPolicy) IsStrict() bool { return p.Mode == OwnershipModeStrict 
 //
 // Accounting mode tracks lease lifecycle and checked-out gauges but does not
 // enforce strict backing identity. Replacement or foreign buffers can complete
-// ownership in this mode by design.
+// ownership in this mode when they satisfy capacity-growth validation.
 func (p OwnershipPolicy) IsAccounting() bool { return p.Mode == OwnershipModeAccounting }

@@ -48,9 +48,11 @@ func ownershipModeEnforcesStrictBufferIdentity(policy OwnershipPolicy) bool {
 // ownershipModeEnforcesCapacityGrowth reports whether release validation must
 // enforce MaxReturnedCapacityGrowth against the origin class.
 //
-// Strict mode primarily relies on base-pointer identity for ordinary Go slices.
-// Capacity-growth enforcement remains a secondary guard for unusual slice-header
-// shapes and future ownership modes.
+// Both accounting and strict managed modes can enforce growth because both have
+// a lease record with an origin class. Strict mode often rejects ordinary
+// append-past-capacity cases earlier as foreign-buffer releases, but the growth
+// guard still protects unusual slice-header shapes and accounting-mode
+// replacement buffers.
 func ownershipModeEnforcesCapacityGrowth(policy OwnershipPolicy) bool {
-	return policy.Mode == OwnershipModeStrict && policy.MaxReturnedCapacityGrowth != 0
+	return ownershipModeRequiresLease(policy.Mode) && policy.MaxReturnedCapacityGrowth != 0
 }

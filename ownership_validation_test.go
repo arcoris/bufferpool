@@ -171,6 +171,27 @@ func TestValidateLeaseReleaseStrictCapacityGrowth(t *testing.T) {
 	}
 }
 
+// TestValidateLeaseReleaseAccountingCapacityGrowth verifies that accounting
+// mode enforces capacity growth even though it accepts foreign backing arrays.
+func TestValidateLeaseReleaseAccountingCapacityGrowth(t *testing.T) {
+	t.Parallel()
+
+	record := &leaseRecord{
+		originClass: ClassSizeFromBytes(64),
+		data:        bufferBackingData(make([]byte, 0, 64)),
+	}
+	policy := AccountingOwnershipPolicy()
+	policy.MaxReturnedCapacityGrowth = PolicyRatioOne
+
+	kind, err := validateLeaseRelease(record, make([]byte, 0, 128), policy)
+	if kind != OwnershipViolationCapacityGrowth {
+		t.Fatalf("violation kind = %s, want %s", kind, OwnershipViolationCapacityGrowth)
+	}
+	if !errors.Is(err, ErrOwnershipViolation) {
+		t.Fatalf("error does not match ErrOwnershipViolation: %v", err)
+	}
+}
+
 // TestValidateLeaseReleaseStrictSuccess verifies a valid strict release.
 func TestValidateLeaseReleaseStrictSuccess(t *testing.T) {
 	t.Parallel()

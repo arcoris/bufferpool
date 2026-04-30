@@ -66,6 +66,36 @@ func TestPoolPartitionAcquireReleaseThroughLeaseRegistry(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionManagedPolicyAcceptsStrictPoolOwnership verifies that
+// partition-owned Pool construction can carry strict ownership policy metadata
+// while LeaseRegistry remains the actual ownership boundary.
+func TestPoolPartitionManagedPolicyAcceptsStrictPoolOwnership(t *testing.T) {
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Ownership = StrictOwnershipPolicy()
+	config := testPartitionConfig("primary")
+	config.Pools[0].Config.Policy = policy
+
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() {
+		if closeErr := partition.Close(); closeErr != nil {
+			t.Fatalf("PoolPartition.Close() error = %v", closeErr)
+		}
+	})
+
+	lease, err := partition.Acquire("primary", 128)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+
+	metrics := partition.Metrics()
+	if metrics.LeaseAcquisitions != 1 || metrics.LeaseReleases != 1 {
+		t.Fatalf("lease counters = acquire:%d release:%d, want 1/1", metrics.LeaseAcquisitions, metrics.LeaseReleases)
+	}
+	if metrics.ActiveLeases != 0 || metrics.CurrentActiveBytes != 0 {
+		t.Fatalf("active gauges = leases:%d bytes:%d, want zero", metrics.ActiveLeases, metrics.CurrentActiveBytes)
+	}
+}
+
 // TestPoolPartitionAcquireRejectsUnknownPool verifies named Pool lookup failures.
 func TestPoolPartitionAcquireRejectsUnknownPool(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")

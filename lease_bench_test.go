@@ -37,7 +37,7 @@ var (
 //
 // Lease benchmarks measure ownership-aware path overhead: lease record
 // allocation, registry bookkeeping, strict/accounting validation, active gauges,
-// and best-effort Pool.Put handoff. Bare Pool benchmarks measure the retained
+// and best-effort Pool handoff. Bare Pool benchmarks measure the retained
 // storage data plane without ownership records. The contracts are different and
 // should not be compared as interchangeable APIs.
 
@@ -69,6 +69,26 @@ func BenchmarkLeaseRegistryAcquireReleaseStrict(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// BenchmarkLeaseRegistryAcquireRelease measures the default managed ownership
+// path with strict validation enabled.
+func BenchmarkLeaseRegistryAcquireRelease(b *testing.B) {
+	pool := poolBenchmarkNewPool(b, poolTestSmallSingleShardPolicy())
+	registry := leaseBenchmarkNewRegistry(b, DefaultLeaseConfig())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lease, err := registry.Acquire(pool, 300)
+		if err != nil {
+			b.Fatalf("Acquire() returned error: %v", err)
+		}
+		if err := lease.ReleaseUnchanged(); err != nil {
+			b.Fatalf("ReleaseUnchanged() returned error: %v", err)
+		}
+		partitionBenchmarkLeaseSink = lease
 	}
 }
 
@@ -157,6 +177,26 @@ func BenchmarkLeaseReleaseValidation(b *testing.B) {
 			b.Fatalf("cleanup ReleaseUnchanged() returned error: %v", err)
 		}
 	})
+}
+
+// BenchmarkLeaseStrictReleaseCheck measures strict release validation failure
+// cost while keeping the lease active for repeated checks.
+func BenchmarkLeaseStrictReleaseCheck(b *testing.B) {
+	pool := poolBenchmarkNewPool(b, poolTestSmallSingleShardPolicy())
+	registry := leaseBenchmarkNewRegistry(b, DefaultLeaseConfig())
+	lease := leaseBenchmarkAcquireOne(b, registry, pool, 128)
+	foreign := make([]byte, 128, 512)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		leaseBenchmarkErrorSink = lease.Release(foreign)
+	}
+	b.StopTimer()
+
+	if err := lease.ReleaseUnchanged(); err != nil {
+		b.Fatalf("cleanup ReleaseUnchanged() returned error: %v", err)
+	}
 }
 
 // BenchmarkLeaseReleaseAfterPoolClose measures ownership completion when the

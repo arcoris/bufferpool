@@ -125,7 +125,7 @@ func (c PoolPartitionConfig) Validate() error {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, poolErr, errPartitionConfigInvalidPool+": "+poolConfig.Name))
 			continue
 		}
-		if supportErr := validatePoolSupportedPolicy(normalizedPool.Policy); supportErr != nil {
+		if supportErr := validatePoolSupportedPolicy(normalizedPool.Policy, poolConstructionModePartitionOwned); supportErr != nil {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, supportErr, errPartitionConfigInvalidPool+": "+poolConfig.Name))
 		}
 	}

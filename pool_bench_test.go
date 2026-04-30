@@ -334,6 +334,32 @@ func BenchmarkPoolGetPutSequential(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolRawGetPut measures the direct Pool API without LeaseRegistry or
+// partition routing.
+func BenchmarkPoolRawGetPut(b *testing.B) {
+	pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(poolBenchmarkCase{
+		size:        256,
+		capacity:    256,
+		shards:      1,
+		selector:    ShardSelectionModeSingle,
+		bucketSlots: 64,
+	}))
+	poolBenchmarkSeedRetainedPublic(b, pool, 256, 32)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buffer, err := pool.Get(256)
+		if err != nil {
+			b.Fatalf("Get() returned error: %v", err)
+		}
+		if err := pool.Put(buffer); err != nil {
+			b.Fatalf("Put() returned error: %v", err)
+		}
+		poolBenchmarkBufferSink = buffer
+	}
+}
+
 // BenchmarkPoolGetPutParallel measures concurrent mixed Get+Put behavior.
 //
 // Use Go's external -cpu flag to measure GOMAXPROCS scaling, for example:

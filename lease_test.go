@@ -387,7 +387,7 @@ func TestLeaseReleaseForeignBufferAccounting(t *testing.T) {
 		t.Fatalf("Acquire() returned error: %v", err)
 	}
 
-	foreign := make([]byte, 128, 512)
+	foreign := make([]byte, 128, int(lease.AcquiredCapacity()))
 	if err := lease.Release(foreign); err != nil {
 		t.Fatalf("accounting Release(foreign) returned error: %v", err)
 	}
@@ -405,11 +405,48 @@ func TestLeaseReleaseForeignBufferAccounting(t *testing.T) {
 	if counters.OwnershipViolations != 0 {
 		t.Fatalf("OwnershipViolations = %d, want 0", counters.OwnershipViolations)
 	}
-	if counters.ReleasedBytes != 512 {
-		t.Fatalf("ReleasedBytes = %d, want replacement buffer capacity 512", counters.ReleasedBytes)
+	if counters.ReleasedBytes != lease.AcquiredCapacity() {
+		t.Fatalf("ReleasedBytes = %d, want replacement buffer capacity %d", counters.ReleasedBytes, lease.AcquiredCapacity())
 	}
 	if counters.PoolReturnSuccesses != 1 {
 		t.Fatalf("PoolReturnSuccesses = %d, want 1", counters.PoolReturnSuccesses)
+	}
+}
+
+// TestLeaseReleaseCapacityGrowthAccountingRejectsOversizedReplacement verifies
+// that managed accounting mode still enforces configured origin-class growth.
+func TestLeaseReleaseCapacityGrowthAccountingRejectsOversizedReplacement(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+
+	ownership := AccountingOwnershipPolicy()
+	ownership.MaxReturnedCapacityGrowth = PolicyRatioOne
+	registry := MustNewLeaseRegistry(LeaseConfigFromOwnershipPolicy(ownership))
+	defer closeLeaseRegistryForTest(t, registry)
+
+	lease, err := registry.Acquire(pool, 128)
+	if err != nil {
+		t.Fatalf("Acquire() returned error: %v", err)
+	}
+
+	oversized := make([]byte, 0, int(lease.AcquiredCapacity()+1))
+	err = lease.Release(oversized)
+	if !errors.Is(err, ErrOwnershipViolation) {
+		t.Fatalf("Release(oversized) error = %v, want ErrOwnershipViolation", err)
+	}
+
+	snapshot := registry.Snapshot()
+	if snapshot.Counters.CapacityGrowthViolations != 1 {
+		t.Fatalf("CapacityGrowthViolations = %d, want 1", snapshot.Counters.CapacityGrowthViolations)
+	}
+	if snapshot.Counters.ActiveLeases != 1 {
+		t.Fatalf("ActiveLeases = %d, want 1", snapshot.Counters.ActiveLeases)
+	}
+
+	if err := lease.Release(lease.Buffer()); err != nil {
+		t.Fatalf("retry Release(original) returned error: %v", err)
 	}
 }
 
@@ -546,7 +583,7 @@ func TestLeaseAcquireZeroSizeRejectedByLeaseLayer(t *testing.T) {
 	}
 }
 
-// TestLeaseReleaseAfterPoolCloseCompletesOwnership verifies that Pool.Put
+// TestLeaseReleaseAfterPoolCloseCompletesOwnership verifies that Pool handoff
 // failure after successful ownership release is diagnostic only.
 func TestLeaseReleaseAfterPoolCloseCompletesOwnership(t *testing.T) {
 	t.Parallel()
@@ -597,7 +634,7 @@ func TestLeaseReleaseAfterPoolCloseCompletesOwnership(t *testing.T) {
 }
 
 // TestLeaseReleasePoolHandoffAdmissionFailureIsDiagnostic verifies that a
-// non-lifecycle Pool.Put rejection after ownership release is reported through
+// non-lifecycle Pool handoff rejection after ownership release is reported through
 // handoff counters without reactivating the lease.
 func TestLeaseReleasePoolHandoffAdmissionFailureIsDiagnostic(t *testing.T) {
 	t.Parallel()
@@ -607,7 +644,9 @@ func TestLeaseReleasePoolHandoffAdmissionFailureIsDiagnostic(t *testing.T) {
 
 	pool := MustNew(PoolConfig{Policy: policy})
 	defer closePoolForTest(t, pool)
-	registry := MustNewLeaseRegistry(LeaseConfigFromOwnershipPolicy(AccountingOwnershipPolicy()))
+	ownership := AccountingOwnershipPolicy()
+	ownership.MaxReturnedCapacityGrowth = 32 * PolicyRatioOne
+	registry := MustNewLeaseRegistry(LeaseConfigFromOwnershipPolicy(ownership))
 	defer closeLeaseRegistryForTest(t, registry)
 
 	lease, err := registry.Acquire(pool, 128)

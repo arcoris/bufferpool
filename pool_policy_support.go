@@ -35,49 +35,72 @@ const (
 	// construction is asked to detect repeated returns without ownership state.
 	errPoolUnsupportedDoubleReleaseDetection = "bufferpool.Pool.New: double-release detection requires a lease-aware ownership layer"
 
-	// errPoolUnsupportedReturnFallbackShards is returned when direct Pool
-	// construction is asked to probe additional shards on Put.
+	// errPoolUnsupportedReturnFallbackShards is returned when Pool construction
+	// is asked to probe additional shards on Put.
 	errPoolUnsupportedReturnFallbackShards = "bufferpool.Pool.New: return fallback shards are not supported by standalone Pool"
 )
 
+// poolConstructionMode identifies which owner is constructing a Pool.
+//
+// Standalone Pool construction exposes only the raw []byte Get/Put data plane,
+// so it cannot claim lease-backed ownership guarantees. Partition-owned Pool
+// construction is different: PoolPartition wraps the Pool with LeaseRegistry
+// acquisition/release and can therefore accept ownership-aware policy metadata
+// while still keeping Pool.Get and Pool.Put simple.
+type poolConstructionMode uint8
+
+const (
+	// poolConstructionModeStandalone builds a Pool for direct public use.
+	poolConstructionModeStandalone poolConstructionMode = iota
+
+	// poolConstructionModePartitionOwned builds a Pool that is reachable through
+	// PoolPartition or PoolGroup managed acquisition and release.
+	poolConstructionModePartitionOwned
+)
+
 // validatePoolSupportedPolicy validates the subset of Policy implemented by a
-// directly constructed Pool.
+// Pool in the requested construction mode.
 //
 // Policy intentionally describes the broader target architecture. Some fields
-// belong to future PoolPartition, PoolGroup, or ownership-aware lease layers
-// rather than the current bare []byte Pool data plane. Generic Policy.Validate
-// can accept those fields because they are valid policy model concepts, but New
-// must reject them for standalone Pool construction so callers do not receive
-// false guarantees.
+// belong to PoolPartition, PoolGroup, or ownership-aware lease layers rather
+// than the bare []byte Pool data plane. Generic Policy.Validate can accept those
+// fields because they are valid policy model concepts; construction support
+// validation decides whether the selected owner can actually implement them.
 //
 // Direct Pool currently supports capacity-based Get/Put admission, bounded
 // class/shard storage, lifecycle safety, counters, snapshots, metrics, and
 // immutable runtime snapshot consumption. It does not own checked-out buffer
 // identity, in-use registries, origin-class growth checks, double-release
-// detection, or return fallback probing. Those features require additional API
-// or controller layers and must not be silently treated as active.
+// detection, or return fallback probing. Standalone mode rejects those
+// ownership-only fields so callers do not receive false guarantees.
+//
+// Partition-owned mode allows accounting and strict ownership metadata because
+// LeaseRegistry owns the managed acquisition/release boundary. Pool itself still
+// does not perform lease validation in Get or Put; it only provides the
+// retained-storage return primitive used after LeaseRegistry consumes a lease.
 //
 // OwnershipModeUnset is allowed only as "no ownership policy configured"; it is
 // treated the same as OwnershipModeNone when no active tracking flags are set.
-// MaxReturnedCapacityGrowth may carry the normalized default value, but direct
-// Pool does not enforce that ratio until a lease-aware ownership API exists.
-func validatePoolSupportedPolicy(policy Policy) error {
+// MaxReturnedCapacityGrowth may carry the normalized default value.
+func validatePoolSupportedPolicy(policy Policy, mode poolConstructionMode) error {
 	var err error
 
-	if policy.Ownership.Mode != OwnershipModeUnset && policy.Ownership.Mode != OwnershipModeNone {
-		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedOwnershipMode))
-	}
+	if mode == poolConstructionModeStandalone {
+		if policy.Ownership.Mode != OwnershipModeUnset && policy.Ownership.Mode != OwnershipModeNone {
+			multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedOwnershipMode))
+		}
 
-	if policy.Ownership.TrackInUseBytes {
-		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedTrackInUseBytes))
-	}
+		if policy.Ownership.TrackInUseBytes {
+			multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedTrackInUseBytes))
+		}
 
-	if policy.Ownership.TrackInUseBuffers {
-		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedTrackInUseBuffers))
-	}
+		if policy.Ownership.TrackInUseBuffers {
+			multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedTrackInUseBuffers))
+		}
 
-	if policy.Ownership.DetectDoubleRelease {
-		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedDoubleReleaseDetection))
+		if policy.Ownership.DetectDoubleRelease {
+			multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedDoubleReleaseDetection))
+		}
 	}
 
 	if policy.Shards.ReturnFallbackShards > 0 {

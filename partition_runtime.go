@@ -64,7 +64,7 @@ func (p *PoolPartition) currentRuntimeSnapshot() *partitionRuntimeSnapshot {
 // owned Pool.
 //
 // Controller publication must fail closed with errors. It normalizes and
-// validates the policy, checks standalone Pool support boundaries, checks
+// validates the policy, checks partition-owned Pool support boundaries, checks
 // compatibility with the already-built Pool topology, and only then calls the
 // panic-on-invariant Pool publication hook. Pool policy publication uses the
 // Pool runtime generation stream and dirty-state generation; it does not advance
@@ -80,7 +80,7 @@ func (p *PoolPartition) publishPoolRuntimeSnapshot(poolName string, generation G
 	if err := normalized.Validate(); err != nil {
 		return wrapError(ErrInvalidOptions, err, errPoolConfigInvalidPolicy)
 	}
-	if err := validatePoolSupportedPolicy(normalized); err != nil {
+	if err := validatePoolSupportedPolicy(normalized, poolConstructionModePartitionOwned); err != nil {
 		return wrapError(ErrInvalidOptions, err, errPoolConfigInvalidPolicy)
 	}
 	if err := pool.validateRuntimePolicyCompatible(normalized); err != nil {

@@ -27,12 +27,12 @@ const (
 	errLeaseForeignRegistry = "bufferpool.Lease: lease belongs to a different registry"
 )
 
-// Release completes ownership for lease and then attempts retained-storage
-// handoff to the lease's origin Pool.
+// Release completes ownership for lease and then attempts owner-aware
+// retained-storage handoff to the lease's origin Pool.
 //
 // Ownership validation failures leave the lease active when retry is safe.
-// Successful validation consumes the lease before Pool.Put runs. A later
-// Pool.Put failure is recorded as a pool-return diagnostic and Release still
+// Successful validation consumes the lease before Pool handoff runs. A later
+// Pool return failure is recorded as a pool-return diagnostic and Release still
 // returns nil because ownership has already ended; retrying the same lease would
 // be a double release.
 func (r *LeaseRegistry) Release(lease Lease, buffer []byte) error {
@@ -54,9 +54,9 @@ func (r *LeaseRegistry) Release(lease Lease, buffer []byte) error {
 // releaseRecord performs the locked ownership-state transition for a release.
 //
 // Lock order is registry first, then record. Snapshot uses the same order so
-// concurrent snapshot/release cannot deadlock. Pool.Put is called only after
-// both locks are released because Pool return admission may take shard locks and
-// must not run while registry bookkeeping locks are held.
+// concurrent snapshot/release cannot deadlock. Pool return admission is called
+// only after both locks are released because it may take shard locks and must
+// not run while registry bookkeeping locks are held.
 //
 // The active-map deletion, active-gauge decrement, release counters, and
 // generation movement happen in the same registry critical section. That keeps
@@ -86,6 +86,8 @@ func (r *LeaseRegistry) releaseRecord(record *leaseRecord, buffer []byte) error 
 	record.releasedAt = time.Now()
 	acquiredCapacity := record.acquiredCapacity
 	returnedCapacity := record.returnedCapacity
+	originClass := record.originClass
+	requestedSize := record.requestedSize
 	pool := record.pool
 	delete(r.active, record.id)
 	r.counters.recordRelease(acquiredCapacity, returnedCapacity)
@@ -94,7 +96,13 @@ func (r *LeaseRegistry) releaseRecord(record *leaseRecord, buffer []byte) error 
 	r.mu.Unlock()
 
 	r.recordPoolReturnAttempt()
-	if err := pool.Put(returnBuffer); err != nil {
+	if err := pool.putOwnedBuffer(ownedReturnInput{
+		Buffer:           returnBuffer,
+		OriginClass:      originClass,
+		RequestedSize:    requestedSize,
+		AcquiredCapacity: acquiredCapacity,
+		ReturnedCapacity: returnedCapacity,
+	}); err != nil {
 		r.recordPoolReturnFailure(err)
 		return nil
 	}
@@ -115,11 +123,11 @@ func (r *LeaseRegistry) recordInvalidRelease(kind OwnershipViolationKind) {
 	r.mu.Unlock()
 }
 
-// recordPoolReturnAttempt records a post-release Pool.Put handoff attempt.
+// recordPoolReturnAttempt records a post-release Pool handoff attempt.
 //
 // The update is guarded by the registry lock so Snapshot samples active records,
-// counters, and generation at a clear registry boundary. Pool.Put itself is not
-// called while this lock is held.
+// counters, and generation at a clear registry boundary. Pool retained-storage
+// admission is not called while this lock is held.
 func (r *LeaseRegistry) recordPoolReturnAttempt() {
 	r.mu.Lock()
 	r.counters.recordPoolReturnAttempt()
@@ -127,8 +135,7 @@ func (r *LeaseRegistry) recordPoolReturnAttempt() {
 	r.mu.Unlock()
 }
 
-// recordPoolReturnSuccess records that a post-release Pool.Put handoff returned
-// nil.
+// recordPoolReturnSuccess records that a post-release Pool handoff returned nil.
 func (r *LeaseRegistry) recordPoolReturnSuccess() {
 	r.mu.Lock()
 	r.counters.recordPoolReturnSuccess()
@@ -136,7 +143,7 @@ func (r *LeaseRegistry) recordPoolReturnSuccess() {
 	r.mu.Unlock()
 }
 
-// recordPoolReturnFailure records that a post-release Pool.Put handoff failed.
+// recordPoolReturnFailure records that a post-release Pool handoff failed.
 func (r *LeaseRegistry) recordPoolReturnFailure(err error) {
 	r.mu.Lock()
 	r.counters.recordPoolReturnFailure(err)
@@ -144,12 +151,12 @@ func (r *LeaseRegistry) recordPoolReturnFailure(err error) {
 	r.mu.Unlock()
 }
 
-// canonicalLeaseReturnBuffer returns the slice header handed to Pool.Put after
+// canonicalLeaseReturnBuffer returns the slice header handed to Pool after
 // ownership validation succeeds.
 //
 // Strict mode canonicalizes to the originally acquired base and capacity. This
-// lets callers release harmless clipped-capacity views without corrupting Pool's
-// capacity-based class routing, while shifted subslices remain rejected during
+// lets callers release harmless clipped-capacity views without corrupting
+// origin-class return routing, while shifted subslices remain rejected during
 // validation because their base pointer differs.
 func canonicalLeaseReturnBuffer(record *leaseRecord, buffer []byte, policy OwnershipPolicy) []byte {
 	if ownershipModeEnforcesStrictBufferIdentity(policy) {

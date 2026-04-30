@@ -63,12 +63,12 @@ const (
 // Depending on admission actions, unsuitable returned buffers may be silently
 // dropped or reported as errors.
 //
-// Bare []byte returns are capacity-admitted, not ownership-verified. The
-// current API cannot prove that a buffer originated from this Pool, cannot
-// detect double release, cannot enforce origin-class capacity growth, and cannot
-// track in-use bytes or buffers. Those guarantees require a lease-aware
-// ownership layer above or beside the bare []byte API; Pool does not fake them
-// in the hot path.
+// Bare []byte returns are capacity-admitted, not ownership-verified. This API
+// cannot prove that a buffer originated from this Pool, cannot detect double
+// release, cannot enforce origin-class capacity growth, and cannot track in-use
+// bytes or buffers. Managed PoolPartition and PoolGroup paths provide those
+// guarantees through LeaseRegistry, which consumes the lease first and then uses
+// Pool's owner-aware internal return primitive.
 //
 // Put records valid public return attempts before lifecycle admission so
 // post-close drop-return behavior remains visible in snapshots and metrics. nil
@@ -119,6 +119,52 @@ func (p *Pool) Put(buffer []byte) error {
 
 	outcome := p.returnBuffer(input, runtime)
 	err = p.applyReturnOutcome(runtime.Policy, input, outcome)
+	p.endOperation()
+
+	return err
+}
+
+// putOwnedBuffer returns a lease-owned buffer after LeaseRegistry has consumed
+// ownership.
+//
+// The method is the managed counterpart to public Put. It still uses Pool's
+// lifecycle gate, owner counters, admission policy, zeroing policy, class/shard
+// retention, and return-outcome mapping. The difference is routing: public Put
+// classifies by returned capacity because it has no owner metadata, while this
+// path routes by the origin class captured at acquisition time.
+func (p *Pool) putOwnedBuffer(input ownedReturnInput) error {
+	p.mustBeInitialized()
+
+	returnInput := poolReturnInput{
+		Buffer:   input.Buffer,
+		Capacity: input.ReturnedCapacity,
+	}
+
+	p.ownerCounters.recordPut(returnInput.Capacity)
+
+	runtime := p.currentRuntimeSnapshot()
+
+	admitted, err := p.beginReturnOperation()
+	if err != nil {
+		return err
+	}
+
+	if !admitted {
+		return p.applyReturnOutcome(
+			runtime.Policy,
+			returnInput,
+			poolReturnOutcomeDrop(
+				AdmissionActionDrop,
+				nil,
+				"",
+				PoolDropReasonClosedPool,
+				returnInput.Capacity,
+			),
+		)
+	}
+
+	outcome := p.returnOwnedBuffer(input, runtime)
+	err = p.applyReturnOutcome(runtime.Policy, returnInput, outcome)
 	p.endOperation()
 
 	return err
@@ -209,6 +255,80 @@ func (p *Pool) returnBuffer(input poolReturnInput, runtime *poolRuntimeSnapshot)
 		)
 	}
 
+	return p.returnBufferToClass(input, policy, class)
+}
+
+// returnOwnedBuffer executes the managed Pool return primitive used after a
+// LeaseRegistry has validated and consumed a lease.
+//
+// This method is intentionally internal. It does not validate the lease token,
+// detect double release, or update in-use gauges; LeaseRegistry already owns
+// those responsibilities. It only uses the recorded origin class to route the
+// returned buffer back to the class that issued it, preserving managed
+// origin-class accounting while reusing the same Pool admission, budget, shard,
+// zeroing, and counter logic as public Put.
+func (p *Pool) returnOwnedBuffer(input ownedReturnInput, runtime *poolRuntimeSnapshot) poolReturnOutcome {
+	returnInput := poolReturnInput{
+		Buffer:   input.Buffer,
+		Capacity: input.ReturnedCapacity,
+	}
+	policy := runtime.Policy
+
+	switch policy.Admission.ReturnedBuffers {
+	case ReturnedBufferPolicyDrop:
+		return poolReturnOutcomeDrop(
+			AdmissionActionDrop,
+			nil,
+			"",
+			PoolDropReasonReturnedBuffersDisabled,
+			returnInput.Capacity,
+		)
+
+	case ReturnedBufferPolicyAdmit:
+
+	default:
+		return poolReturnOutcomeDrop(
+			AdmissionActionError,
+			ErrInvalidPolicy,
+			errPoolPutInvalidReturnedBufferPolicy,
+			PoolDropReasonInvalidPolicy,
+			returnInput.Capacity,
+		)
+	}
+
+	capacity := SizeFromBytes(returnInput.Capacity)
+	if capacity > policy.Retention.MaxRetainedBufferCapacity {
+		return poolReturnOutcomeDrop(
+			policy.Admission.OversizedReturn,
+			ErrBufferTooLarge,
+			errPoolPutBufferTooLarge,
+			PoolDropReasonOversized,
+			returnInput.Capacity,
+		)
+	}
+
+	class, ok := p.table.classForExactSize(input.OriginClass)
+	if !ok {
+		return poolReturnOutcomeDrop(
+			policy.Admission.UnsupportedClass,
+			ErrUnsupportedClass,
+			errPoolPutUnsupportedClass,
+			PoolDropReasonUnsupportedClass,
+			returnInput.Capacity,
+		)
+	}
+
+	return p.returnBufferToClass(returnInput, policy, class)
+}
+
+// returnBufferToClass performs class/shard retention after owner-side routing
+// has selected the class.
+//
+// Public Put reaches this helper after capacity-based class lookup. Managed
+// lease release reaches it after origin-class lookup. Keeping the lower half
+// shared ensures both modes use identical admission actions, zeroing, shard
+// credit, bucket storage, and counter behavior once a class is selected.
+func (p *Pool) returnBufferToClass(input poolReturnInput, policy Policy, class SizeClass) poolReturnOutcome {
 	result := p.mustClassStateFor(class).tryRetainSelectedWithOptions(
 		p.shardSelectorFor(class),
 		input.Buffer,
@@ -257,6 +377,25 @@ func (p *Pool) returnBuffer(input poolReturnInput, runtime *poolRuntimeSnapshot)
 		PoolDropReasonNone,
 		input.Capacity,
 	)
+}
+
+// ownedReturnInput is the already lease-validated managed return input passed
+// from LeaseRegistry to Pool.
+type ownedReturnInput struct {
+	// Buffer is the slice handed back after lease validation and canonicalization.
+	Buffer []byte
+
+	// OriginClass is the class size recorded when the lease was acquired.
+	OriginClass ClassSize
+
+	// RequestedSize is the logical size requested by the original acquisition.
+	RequestedSize Size
+
+	// AcquiredCapacity is the capacity checked out by the original acquisition.
+	AcquiredCapacity uint64
+
+	// ReturnedCapacity is cap(Buffer) captured after lease canonicalization.
+	ReturnedCapacity uint64
 }
 
 // applyReturnOutcome applies the already-decided return outcome.

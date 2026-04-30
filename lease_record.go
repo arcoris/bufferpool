@@ -46,7 +46,7 @@ type leaseRecord struct {
 
 	// buffer is the originally acquired slice header.
 	//
-	// Strict release canonicalizes Pool.Put handoff back to this base and
+	// Strict release canonicalizes Pool handoff back to this base and
 	// capacity after validation succeeds. The registry stores the header for
 	// identity and handoff; it does not serialize caller reads or writes to the
 	// backing array while the lease is active.
@@ -64,7 +64,7 @@ type leaseRecord struct {
 	// acquiredCapacity is cap(buffer) at acquisition time.
 	acquiredCapacity uint64
 
-	// returnedCapacity is the capacity handed to Pool.Put after successful
+	// returnedCapacity is the capacity handed to Pool after successful
 	// ownership release.
 	returnedCapacity uint64
 

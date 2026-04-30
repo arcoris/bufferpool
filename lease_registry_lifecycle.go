@@ -51,7 +51,7 @@ func (r *LeaseRegistry) IsClosed() bool {
 // whether to wait, log, or force shutdown. Release remains allowed after Close.
 // Owners that want clean retained-storage handoff should close the registry
 // before closing its Pools; if a Pool is closed first, ownership release still
-// completes and the failed Pool.Put handoff is recorded diagnostically.
+// completes and the failed Pool handoff is recorded diagnostically.
 // Concurrent Close callers wait on the registry mutex so only one caller
 // publishes Closed and advances generation. If Closing is already visible after
 // the mutex is owned, Close finishes that already-started shutdown.

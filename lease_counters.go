@@ -25,9 +25,9 @@ import (
 // LeaseRegistry.
 //
 // Lifetime counters are monotonic. ActiveLeases and ActiveBytes are gauges.
-// Pool-return counters describe the best-effort handoff after ownership release;
-// they are separate from ownership validation failures because Pool.Put failure
-// does not make a released lease active again.
+// Pool-return counters describe the best-effort retained-storage handoff after
+// ownership release; they are separate from ownership validation failures
+// because a Pool handoff failure does not make a released lease active again.
 //
 // The registry stores raw facts only. Rates such as pool-return failure rate,
 // active memory ratio, or release failure rate should be computed from sampled
@@ -55,37 +55,35 @@ type LeaseCountersSnapshot struct {
 	// ActiveBytes is the current checked-out backing capacity gauge.
 	ActiveBytes uint64
 
-	// InvalidReleases counts malformed releases that are not strict ownership
-	// identity or capacity-growth violations.
+	// InvalidReleases counts malformed releases that are not strict identity or
+	// managed capacity-growth violations.
 	InvalidReleases uint64
 
 	// DoubleReleases counts release attempts after ownership already completed.
 	DoubleReleases uint64
 
-	// OwnershipViolations counts strict ownership validation failures.
+	// OwnershipViolations counts ownership validation failures.
 	OwnershipViolations uint64
 
 	// ForeignBufferReleases counts strict releases with the wrong slice base.
 	ForeignBufferReleases uint64
 
-	// CapacityGrowthViolations counts strict capacity-growth failures.
+	// CapacityGrowthViolations counts managed capacity-growth failures.
 	CapacityGrowthViolations uint64
 
-	// PoolReturnAttempts counts best-effort Pool.Put handoffs after ownership
-	// completion.
+	// PoolReturnAttempts counts best-effort Pool handoffs after ownership completion.
 	PoolReturnAttempts uint64
 
-	// PoolReturnSuccesses counts Pool.Put handoffs that returned nil.
+	// PoolReturnSuccesses counts Pool handoffs that returned nil.
 	PoolReturnSuccesses uint64
 
-	// PoolReturnFailures counts Pool.Put handoffs that returned an error.
+	// PoolReturnFailures counts Pool handoffs that returned an error.
 	PoolReturnFailures uint64
 
-	// PoolReturnClosedFailures counts Pool.Put handoffs rejected by Pool
-	// lifecycle.
+	// PoolReturnClosedFailures counts Pool handoffs rejected by Pool lifecycle.
 	PoolReturnClosedFailures uint64
 
-	// PoolReturnAdmissionFailures counts non-closed Pool.Put handoff failures.
+	// PoolReturnAdmissionFailures counts non-closed Pool handoff failures.
 	PoolReturnAdmissionFailures uint64
 }
 
@@ -146,19 +144,19 @@ type leaseCounters struct {
 	// capacityGrowthViolations counts capacity growth limit failures.
 	capacityGrowthViolations atomic.Uint64
 
-	// poolReturnAttempts counts Pool.Put handoff attempts after release.
+	// poolReturnAttempts counts Pool retained-storage handoff attempts after release.
 	poolReturnAttempts atomic.Uint64
 
-	// poolReturnSuccesses counts successful Pool.Put handoffs.
+	// poolReturnSuccesses counts successful Pool retained-storage handoffs.
 	poolReturnSuccesses atomic.Uint64
 
-	// poolReturnFailures counts failed Pool.Put handoffs.
+	// poolReturnFailures counts failed Pool retained-storage handoffs.
 	poolReturnFailures atomic.Uint64
 
-	// poolReturnClosedFailures counts Pool.Put handoffs rejected by lifecycle.
+	// poolReturnClosedFailures counts Pool handoffs rejected by lifecycle.
 	poolReturnClosedFailures atomic.Uint64
 
-	// poolReturnAdmissionFailures counts non-lifecycle Pool.Put handoff errors.
+	// poolReturnAdmissionFailures counts non-lifecycle Pool handoff errors.
 	poolReturnAdmissionFailures atomic.Uint64
 }
 
@@ -206,18 +204,18 @@ func (c *leaseCounters) recordInvalidRelease(kind OwnershipViolationKind) {
 	}
 }
 
-// recordPoolReturnAttempt records that ownership completed and Pool.Put handoff
+// recordPoolReturnAttempt records that ownership completed and Pool handoff
 // was attempted.
 func (c *leaseCounters) recordPoolReturnAttempt() {
 	c.poolReturnAttempts.Add(1)
 }
 
-// recordPoolReturnSuccess records a successful best-effort Pool.Put handoff.
+// recordPoolReturnSuccess records a successful best-effort Pool handoff.
 func (c *leaseCounters) recordPoolReturnSuccess() {
 	c.poolReturnSuccesses.Add(1)
 }
 
-// recordPoolReturnFailure records a failed best-effort Pool.Put handoff.
+// recordPoolReturnFailure records a failed best-effort Pool handoff.
 //
 // Closed-pool failures get a dedicated bucket because shutdown ordering is an
 // ownership-layer integration concern. Other errors are grouped as admission

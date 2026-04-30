@@ -24,7 +24,7 @@ import (
 // Pool is the pool-level data-plane owner for reusable byte-buffer capacity.
 //
 // Pool can be constructed directly for the current static bounded mode, and it
-// is also the component that future PoolPartition wiring will manage. It owns
+// is also the retained-storage component that PoolPartition wiring manages. It owns
 // local class/shard storage and hot-path admission, but it does not own group
 // coordination, partition control loops, adaptive scoring, or global memory
 // governance.
@@ -155,14 +155,25 @@ type Pool struct {
 //   - activate lifecycle.
 //
 // New does not start background controllers. Standalone Pool is a local
-// data-plane owner. Controller lifecycle belongs to future PoolPartition or
-// PoolGroup components.
+// data-plane owner. Controller lifecycle belongs to PoolPartition or PoolGroup
+// components.
 func New(config PoolConfig) (*Pool, error) {
+	return newPool(config, poolConstructionModeStandalone)
+}
+
+// newPool constructs a Pool for a specific owner boundary.
+//
+// Standalone construction is the public raw Get/Put path and rejects
+// lease-dependent ownership policy. Partition-owned construction is used only by
+// PoolPartition while building its immutable registry; it accepts
+// ownership-aware policy metadata because the surrounding LeaseRegistry owns the
+// managed acquire/release contract.
+func newPool(config PoolConfig, mode poolConstructionMode) (*Pool, error) {
 	normalized := config.Normalize()
 	if err := normalized.Validate(); err != nil {
 		return nil, err
 	}
-	if err := validatePoolSupportedPolicy(normalized.Policy); err != nil {
+	if err := validatePoolSupportedPolicy(normalized.Policy, mode); err != nil {
 		return nil, wrapError(ErrInvalidOptions, err, errPoolConfigInvalidPolicy)
 	}
 

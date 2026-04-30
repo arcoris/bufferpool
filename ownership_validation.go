@@ -39,12 +39,13 @@ const (
 // Strict mode compares the acquired slice base pointer. Sharing some backing
 // allocation is not enough: buffer[1:] is rejected because the slice base
 // changed. After successful strict validation, release canonicalizes the handoff
-// back to the originally acquired capacity before calling Pool.Put. This
-// protects Pool's capacity-based class routing from clipped-capacity views.
+// back to the originally acquired capacity before Pool handoff. This protects
+// origin-class return routing from clipped-capacity views.
 //
 // Accounting mode intentionally skips strict backing identity checks. It tracks
 // lease lifecycle and active bytes, but replacement or foreign buffers can
-// complete ownership in that mode by design.
+// complete ownership in that mode when they still satisfy the configured
+// origin-class capacity-growth limit.
 func validateLeaseRelease(record *leaseRecord, buffer []byte, policy OwnershipPolicy) (OwnershipViolationKind, error) {
 	if buffer == nil {
 		return OwnershipViolationNilBuffer, newError(ErrNilBuffer, errLeaseReleaseNilBuffer)

@@ -28,10 +28,10 @@ const (
 
 // poolRuntimeSnapshot is the immutable runtime view consumed by Pool hot paths.
 //
-// Pool is a data-plane owner. Future PoolPartition control-plane code can
-// publish a new immutable snapshot without mutating Pool fields in place and
-// without calling into Pool from the hot path. Get and Put load the pointer once
-// near operation start and use that stable view for admission decisions.
+// Pool is a data-plane owner. PoolPartition control-plane code can publish a new
+// immutable snapshot without mutating Pool fields in place and without calling
+// into Pool from the hot path. Get and Put load the pointer once near operation
+// start and use that stable view for admission decisions.
 //
 // A snapshot is not a bucket rebuild. Shrinking policy limits through a future
 // publication restricts new retention immediately, while physical correction of

@@ -75,7 +75,7 @@ func newPartitionRegistry(configs []PartitionPoolConfig) (partitionRegistry, err
 			err := newError(ErrInvalidOptions, errPartitionRegistryDuplicatePool+": "+normalized.Name)
 			return partitionRegistry{}, multierr.Append(err, registry.closeAll())
 		}
-		pool, err := New(normalized.Config)
+		pool, err := newPool(normalized.Config, poolConstructionModePartitionOwned)
 		if err != nil {
 			return partitionRegistry{}, multierr.Append(err, registry.closeAll())
 		}

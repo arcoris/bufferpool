@@ -64,6 +64,17 @@ func TestPoolGroupConfigValidateAcceptsGroupLevelPools(t *testing.T) {
 	requireGroupNoError(t, config.Validate())
 }
 
+// TestPoolGroupConfigValidateAcceptsManagedPoolOwnership verifies that
+// group-managed Pools may carry ownership-aware policy metadata.
+func TestPoolGroupConfigValidateAcceptsManagedPoolOwnership(t *testing.T) {
+	config := testManagedGroupConfig("api")
+	policy := DefaultConfigPolicy()
+	policy.Ownership = StrictOwnershipPolicy()
+	config.Pools[0].Config.Policy = policy
+
+	requireGroupNoError(t, config.Validate())
+}
+
 func TestPoolGroupConfigValidateRejectsDuplicatePools(t *testing.T) {
 	config := testManagedGroupConfig("api", "api")
 	err := config.Validate()

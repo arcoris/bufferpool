@@ -37,7 +37,7 @@ const (
 
 	// LeaseStateReleased means ownership has completed.
 	//
-	// A released lease may already have failed its best-effort Pool.Put handoff;
+	// A released lease may already have failed its best-effort Pool handoff;
 	// that does not reactivate the lease.
 	LeaseStateReleased
 )

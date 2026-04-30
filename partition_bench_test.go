@@ -88,6 +88,25 @@ func BenchmarkPoolPartitionAcquireReleaseStrict(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolPartitionManagedAcquireRelease measures managed partition
+// routing through PoolPartition and LeaseRegistry.
+func BenchmarkPoolPartitionManagedAcquireRelease(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lease, err := partition.Acquire("pool_0", 300)
+		if err != nil {
+			b.Fatalf("Acquire() returned error: %v", err)
+		}
+		if err := partition.Release(lease, lease.Buffer()); err != nil {
+			b.Fatalf("Release() returned error: %v", err)
+		}
+		partitionBenchmarkLeaseSink = lease
+	}
+}
+
 // BenchmarkPoolPartitionSample measures public value-returning samples. Public
 // Sample may allocate per-Pool sample storage; SampleInto is the reusable path
 // for callers that need allocation control.

@@ -455,7 +455,7 @@ func validateGroupPools(pools []GroupPoolConfig) error {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, poolErr, errGroupConfigInvalidPool+": "+normalized.Name))
 			continue
 		}
-		if supportErr := validatePoolSupportedPolicy(normalized.Config.Policy); supportErr != nil {
+		if supportErr := validatePoolSupportedPolicy(normalized.Config.Policy, poolConstructionModePartitionOwned); supportErr != nil {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, supportErr, errGroupConfigInvalidPool+": "+normalized.Name))
 		}
 	}

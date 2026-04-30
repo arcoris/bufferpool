@@ -60,6 +60,34 @@ func TestPoolGroupAcquireReleaseManagedPools(t *testing.T) {
 	}
 }
 
+// TestPoolGroupManagedPolicyAcceptsStrictPoolOwnership verifies that group
+// managed construction can carry ownership-aware pool policy metadata while
+// routing acquisition and release through PoolPartition.
+func TestPoolGroupManagedPolicyAcceptsStrictPoolOwnership(t *testing.T) {
+	config := testManagedGroupConfig("api")
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Ownership = StrictOwnershipPolicy()
+	config.Pools[0].Config.Policy = policy
+
+	group, err := NewPoolGroup(config)
+	requireGroupNoError(t, err)
+	t.Cleanup(func() {
+		requireGroupNoError(t, group.Close())
+	})
+
+	lease, err := group.Acquire("api", 128)
+	requireGroupNoError(t, err)
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
+
+	metrics := group.Metrics()
+	if metrics.LeaseAcquisitions != 1 || metrics.LeaseReleases != 1 {
+		t.Fatalf("lease metrics = acquisitions %d releases %d, want 1/1", metrics.LeaseAcquisitions, metrics.LeaseReleases)
+	}
+	if metrics.ActiveLeases != 0 || metrics.CurrentActiveBytes != 0 {
+		t.Fatalf("active metrics = leases %d bytes %d, want zero", metrics.ActiveLeases, metrics.CurrentActiveBytes)
+	}
+}
+
 // TestPoolGroupAcquireSize verifies Size-typed routing mirrors Acquire.
 func TestPoolGroupAcquireSize(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")

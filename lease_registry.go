@@ -32,19 +32,18 @@ const (
 // scope.
 //
 // The registry is deliberately separate from Pool. Pool remains the local
-// retained-storage data plane. LeaseRegistry can be owned by a future
-// PoolPartition or PoolGroup layer and can acquire from one or more Pools without
-// forcing bare []byte Put to pretend it has ownership guarantees.
+// retained-storage data plane. LeaseRegistry is owned by PoolPartition and can
+// acquire from one or more Pools without forcing bare []byte Put to pretend it
+// has ownership guarantees.
 //
 // LeaseRegistry owns checked-out identity, not retained storage. Pool owns
 // retained storage, not checked-out ownership. Release completes ownership first
-// and then attempts a best-effort Pool.Put handoff so a retained-storage failure
+// and then attempts a best-effort Pool handoff so a retained-storage failure
 // cannot make an already released lease active again.
 //
 // Multiple registries may acquire from the same Pool, but their active lease and
-// in-use accounting is independent. A future PoolPartition should provide the
-// single registry for its owned pool set when coherent ownership accounting is
-// required.
+// in-use accounting is independent. PoolPartition provides one registry for its
+// owned pool set when coherent managed ownership accounting is required.
 //
 // Concurrency:
 //

@@ -200,6 +200,33 @@ func BenchmarkPoolGroupAcquireRelease(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupManagedAcquireRelease measures pool-name directory routing
+// through PoolGroup, PoolPartition, and LeaseRegistry.
+func BenchmarkPoolGroupManagedAcquireRelease(b *testing.B) {
+	group, err := NewPoolGroup(testManagedGroupConfig("api"))
+	if err != nil {
+		b.Fatalf("NewPoolGroup() error = %v", err)
+	}
+	b.Cleanup(func() {
+		if closeErr := group.Close(); closeErr != nil {
+			b.Fatalf("PoolGroup.Close() error = %v", closeErr)
+		}
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lease, err := group.Acquire("api", 256)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := group.Release(lease, lease.Buffer()); err != nil {
+			b.Fatal(err)
+		}
+		partitionBenchmarkLeaseSink = lease
+	}
+}
+
 func BenchmarkPoolGroupAcquireByPoolDirectory(b *testing.B) {
 	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker", "events", "batch"))
 	if err != nil {

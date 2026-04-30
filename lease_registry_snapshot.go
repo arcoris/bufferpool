@@ -25,7 +25,8 @@ package bufferpool
 //
 // Active records, active gauges, and generation are sampled while the registry
 // lock is held. Pool-return handoff counters may still move after ownership
-// release because Pool.Put deliberately runs outside registry locks.
+// release because Pool retained-storage admission deliberately runs outside
+// registry locks.
 func (r *LeaseRegistry) Snapshot() LeaseRegistrySnapshot {
 	r.mustBeInitialized()
 	r.mu.Lock()

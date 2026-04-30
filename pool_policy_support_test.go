@@ -21,9 +21,9 @@ import (
 	"testing"
 )
 
-// TestPoolSupportedPolicyAcceptsCurrentSubset verifies that direct Pool
-// construction accepts the policy subset implemented by the current data plane.
-func TestPoolSupportedPolicyAcceptsCurrentSubset(t *testing.T) {
+// TestPoolSupportedPolicyAcceptsStandaloneSubset verifies that direct Pool
+// construction accepts the policy subset implemented by the raw data plane.
+func TestPoolSupportedPolicyAcceptsStandaloneSubset(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -65,7 +65,7 @@ func TestPoolSupportedPolicyAcceptsCurrentSubset(t *testing.T) {
 				tt.mutate(&policy)
 			}
 
-			if err := validatePoolSupportedPolicy(policy); err != nil {
+			if err := validatePoolSupportedPolicy(policy, poolConstructionModeStandalone); err != nil {
 				t.Fatalf("validatePoolSupportedPolicy() returned error: %v", err)
 			}
 
@@ -148,7 +148,7 @@ func TestPoolNewRejectsUnsupportedStandalonePolicyFeatures(t *testing.T) {
 			policy := poolTestSingleShardPolicy()
 			tt.mutate(&policy)
 
-			supportErr := validatePoolSupportedPolicy(policy)
+			supportErr := validatePoolSupportedPolicy(policy, poolConstructionModeStandalone)
 			if supportErr == nil {
 				t.Fatal("validatePoolSupportedPolicy() returned nil")
 			}
@@ -173,5 +173,54 @@ func TestPoolNewRejectsUnsupportedStandalonePolicyFeatures(t *testing.T) {
 				t.Fatalf("New() error does not unwrap ErrInvalidPolicy: %v", err)
 			}
 		})
+	}
+}
+
+// TestPoolSupportedPolicyAcceptsPartitionOwnedOwnership verifies that
+// partition-owned Pool construction can carry ownership-aware policy metadata.
+func TestPoolSupportedPolicyAcceptsPartitionOwnedOwnership(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		ownership OwnershipPolicy
+	}{
+		{name: "accounting", ownership: AccountingOwnershipPolicy()},
+		{name: "strict", ownership: StrictOwnershipPolicy()},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			policy := poolTestSingleShardPolicy()
+			policy.Ownership = tt.ownership
+
+			if err := validatePoolSupportedPolicy(policy, poolConstructionModePartitionOwned); err != nil {
+				t.Fatalf("partition-owned validatePoolSupportedPolicy() returned error: %v", err)
+			}
+		})
+	}
+}
+
+// TestPoolSupportedPolicyRejectsReturnFallbackInManagedMode verifies that
+// construction mode does not silently enable unsupported return probing.
+func TestPoolSupportedPolicyRejectsReturnFallbackInManagedMode(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSingleShardPolicy()
+	policy.Ownership = StrictOwnershipPolicy()
+	policy.Shards.ReturnFallbackShards = 1
+
+	err := validatePoolSupportedPolicy(policy, poolConstructionModePartitionOwned)
+	if err == nil {
+		t.Fatal("validatePoolSupportedPolicy(partition-owned) returned nil")
+	}
+	if !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("error = %v, want ErrInvalidPolicy", err)
+	}
+	if err.Error() != errPoolUnsupportedReturnFallbackShards {
+		t.Fatalf("error = %q, want %q", err.Error(), errPoolUnsupportedReturnFallbackShards)
 	}
 }

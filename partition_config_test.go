@@ -95,11 +95,21 @@ func TestPoolPartitionConfigValidateAcceptsMinimalPartition(t *testing.T) {
 	requirePartitionNoError(t, err)
 }
 
-// TestPoolPartitionConfigValidateRejectsInvalidInputs verifies construction validation errors.
-func TestPoolPartitionConfigValidateRejectsInvalidInputs(t *testing.T) {
+// TestPoolPartitionConfigValidateAcceptsManagedPoolOwnership verifies that
+// partition-owned Pools may carry ownership-aware policy metadata.
+func TestPoolPartitionConfigValidateAcceptsManagedPoolOwnership(t *testing.T) {
 	strictPoolPolicy := DefaultConfigPolicy()
 	strictPoolPolicy.Ownership = StrictOwnershipPolicy()
 
+	config := PoolPartitionConfig{
+		Pools: []PartitionPoolConfig{{Name: "primary", Config: PoolConfig{Name: "primary", Policy: strictPoolPolicy}}},
+	}
+
+	requirePartitionNoError(t, config.Validate())
+}
+
+// TestPoolPartitionConfigValidateRejectsInvalidInputs verifies construction validation errors.
+func TestPoolPartitionConfigValidateRejectsInvalidInputs(t *testing.T) {
 	tests := []struct {
 		name   string
 		config PoolPartitionConfig
@@ -132,13 +142,6 @@ func TestPoolPartitionConfigValidateRejectsInvalidInputs(t *testing.T) {
 			config: PoolPartitionConfig{
 				Lease: LeaseConfigFromOwnershipPolicy(OwnershipPolicy{Mode: OwnershipModeNone}),
 				Pools: []PartitionPoolConfig{testPartitionPoolConfig("primary")},
-			},
-			want: ErrInvalidPolicy,
-		},
-		{
-			name: "pool requires unsupported standalone ownership",
-			config: PoolPartitionConfig{
-				Pools: []PartitionPoolConfig{{Name: "primary", Config: PoolConfig{Name: "primary", Policy: strictPoolPolicy}}},
 			},
 			want: ErrInvalidPolicy,
 		},
