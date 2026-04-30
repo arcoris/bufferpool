@@ -137,6 +137,42 @@ func BenchmarkPressureAdmission(b *testing.B) {
 	}
 }
 
+// BenchmarkPressureAdmissionLevels measures the pressure-only admission check
+// for normal, high, and critical runtime signals.
+func BenchmarkPressureAdmissionLevels(b *testing.B) {
+	policy := poolBenchmarkPolicyForCase(poolBenchmarkCase{
+		capacity:    512,
+		shards:      1,
+		selector:    ShardSelectionModeSingle,
+		bucketSlots: 128,
+	})
+	policy.Pressure = poolTestPressurePolicy()
+	input := poolReturnInput{Buffer: make([]byte, 0, 512), Capacity: 512}
+
+	for _, signal := range []PressureSignal{
+		{Level: PressureLevelNormal, Source: PressureSourceManual, Generation: Generation(1)},
+		{Level: PressureLevelHigh, Source: PressureSourceManual, Generation: Generation(2)},
+		{Level: PressureLevelCritical, Source: PressureSourceManual, Generation: Generation(3)},
+	} {
+		signal := signal
+
+		b.Run(signal.Level.String(), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				outcome, handled := poolPressureReturnOutcome(input, policy, signal)
+				if outcome.Retained {
+					b.Fatal("pressure admission retained a buffer")
+				}
+				if handled {
+					poolBenchmarkIntSink++
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkPolicyContraction measures foreground group policy shrink publication.
 func BenchmarkPolicyContraction(b *testing.B) {
 	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker"))

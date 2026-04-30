@@ -61,6 +61,94 @@ type Policy struct {
 	Ownership OwnershipPolicy
 }
 
+// PoolShapePolicy groups immutable construction shape for a Pool runtime.
+//
+// Shape fields decide which classes, shards, and bucket metadata exist after
+// construction. They are not live budgets and should not be mutated to express
+// current pressure, current trim backlog, or adaptive controller output.
+type PoolShapePolicy struct {
+	// Classes defines the size-class table constructed for the owner.
+	Classes ClassPolicy
+
+	// Shards defines class-local shard count, selector behavior, and bucket
+	// storage shape.
+	Shards ShardPolicy
+}
+
+// IsZero reports whether s contains no explicit shape policy.
+func (s PoolShapePolicy) IsZero() bool {
+	return s.Classes.IsZero() && s.Shards.IsZero()
+}
+
+// PoolRetentionPolicy groups runtime retention and correction behavior.
+//
+// These fields describe how retained storage is bounded, admitted, contracted
+// under pressure, and physically trimmed. They are still policy data: current
+// budgets, current pressure level, retained counters, and trim backlog remain
+// runtime state owned by Pool, PoolPartition, or PoolGroup.
+type PoolRetentionPolicy struct {
+	// Retention defines byte and buffer-count limits.
+	Retention RetentionPolicy
+
+	// Admission defines return-path retention decisions.
+	Admission AdmissionPolicy
+
+	// Pressure defines pressure-level contraction rules.
+	Pressure PressurePolicy
+
+	// Trim defines bounded retained-buffer removal work.
+	Trim TrimPolicy
+}
+
+// IsZero reports whether r contains no explicit retention policy.
+func (r PoolRetentionPolicy) IsZero() bool {
+	return r.Retention.IsZero() &&
+		r.Admission.IsZero() &&
+		r.Pressure.IsZero() &&
+		r.Trim.IsZero()
+}
+
+// NewPolicyFromSections joins split policy sections into the legacy concrete
+// Policy value used by owner configs.
+//
+// The class-size slice is copied so callers can freely mutate the input shape
+// after construction without changing the returned Policy.
+func NewPolicyFromSections(shape PoolShapePolicy, retention PoolRetentionPolicy, ownership OwnershipPolicy) Policy {
+	return Policy{
+		Retention: retention.Retention,
+		Classes: ClassPolicy{
+			Sizes: shape.Classes.SizesCopy(),
+		},
+		Shards:    shape.Shards,
+		Admission: retention.Admission,
+		Pressure:  retention.Pressure,
+		Trim:      retention.Trim,
+		Ownership: ownership,
+	}
+}
+
+// ShapePolicy returns the construction-shape section of p.
+//
+// The returned class-size slice is caller-owned. Mutating it does not mutate p.
+func (p Policy) ShapePolicy() PoolShapePolicy {
+	return PoolShapePolicy{
+		Classes: ClassPolicy{
+			Sizes: p.Classes.SizesCopy(),
+		},
+		Shards: p.Shards,
+	}
+}
+
+// RetentionPolicy returns the retention/admission/correction section of p.
+func (p Policy) RetentionPolicy() PoolRetentionPolicy {
+	return PoolRetentionPolicy{
+		Retention: p.Retention,
+		Admission: p.Admission,
+		Pressure:  p.Pressure,
+		Trim:      p.Trim,
+	}
+}
+
 // IsZero reports whether p contains no explicit policy values.
 //
 // A zero Policy is not necessarily valid for constructing a runtime object. It
@@ -258,9 +346,9 @@ const (
 	// supplies it. Standalone Pool has no public affinity input yet, so it uses
 	// the same owner-local entropy as processor-inspired selection.
 	//
-	// The mode exists as an explicit policy value for future managed routing, but
-	// current Pool construction must still execute it safely without adding a
-	// hot-path dependency on higher-level ownership or group code.
+	// The mode exists as an explicit policy value for managed routing. Pool
+	// construction must still execute it safely without adding a hot-path
+	// dependency on higher-level ownership or group code.
 	ShardSelectionModeAffinity
 )
 
@@ -554,10 +642,10 @@ func (p PressureLevelPolicy) IsZero() bool {
 
 // TrimPolicy defines bounded physical removal behavior for retained buffers.
 type TrimPolicy struct {
-	// Enabled reports whether background/corrective trimming is enabled.
+	// Enabled reports whether corrective trimming is enabled.
 	Enabled bool
 
-	// Interval is the target cadence for ordinary background trim cycles.
+	// Interval is the target cadence for ordinary trim cycles.
 	Interval time.Duration
 
 	// FullScanInterval is the target cadence for broader diagnostic/control

@@ -26,26 +26,24 @@ import "time"
 // policy, merge caller overrides, and create the runtime objects that enforce
 // the policy.
 //
-// A profile affects the current and planned runtime layers through the ordinary
-// policy sections:
+// A profile affects runtime layers through ordinary policy sections:
 //
 //   - Retention defines byte and buffer-count limits that later become owner
 //     budgets, class budgets, and shard credits.
 //   - Classes define the explicit size-class table used for request ceil lookup
 //     and returned-capacity floor lookup.
 //   - Shards define lock striping, bucket depth, and optional fallback probing.
-//   - Admission defines how unsuitable returned buffers should be handled by the
-//     future public Pool return path.
+//   - Admission defines how unsuitable returned buffers should be handled by
+//     raw and managed return paths.
 //   - Pressure defines static contraction rules for owner-published pressure;
 //     it does not observe memory pressure by itself.
-//   - Trim defines bounded cold-path cleanup work for future trim controllers.
-//   - Ownership defines whether future ownership/lease layers should track and
+//   - Trim defines bounded cold-path cleanup work.
+//   - Ownership defines whether managed ownership/lease layers should track and
 //     validate checked-out buffers.
 //
 // Profiles are deliberately static. They are useful because they provide named,
-// reviewable defaults before adaptive policy exists, but they are not a
-// substitute for future Pool, pressure, ownership, or adaptive control-plane
-// behavior.
+// reviewable defaults, but they are not a substitute for live pressure,
+// ownership, trim, or adaptive controller state.
 
 const (
 	// errUnknownPolicyProfile is used when a caller requests a named policy
@@ -68,8 +66,8 @@ const (
 // Each profile answers the question "which static bounded retention behavior is
 // a reasonable starting point for this workload?" It does not inspect live
 // traffic, does not redistribute memory between classes, and does not replace
-// future adaptive controllers. The selected Policy is still just data: owner
-// construction code will later validate it, publish it, and project retention
+// applied controller state. The selected Policy is still just data: owner
+// construction code validates it, publishes it, and projects retention
 // limits into class budgets and shard credits.
 //
 // Profiles deliberately return full Policy values instead of partial overrides.
@@ -183,8 +181,8 @@ func (p PolicyProfile) Policy() (Policy, bool) {
 // runtime owner is constructed.
 //
 // A profile result is suitable as a policy seed. Callers may use it directly,
-// copy it and override selected fields, or pass it through future Pool/Group/
-// Partition option processing. Validation remains a separate step; keeping
+// copy it and override selected fields, or pass it through Pool, PoolGroup, or
+// PoolPartition option processing. Validation remains a separate step; keeping
 // lookup and validation separate makes profile selection usable in option
 // builders, tests, examples, and static configuration paths.
 func PolicyForProfile(profile PolicyProfile) (Policy, bool) {
@@ -483,13 +481,12 @@ func MemoryConstrainedPolicy() Policy {
 //
 // The larger hard limit should be read with the trim policy. The hard limit
 // defines what may be retained during a burst; trim and pressure define how much
-// work future controllers may spend per cycle to remove retained buffers after
-// the burst. This avoids making burst handling depend on one unbounded cleanup
-// operation.
+// work owners may spend per cycle to remove retained buffers after the burst.
+// This avoids making burst handling depend on one unbounded cleanup operation.
 //
 // This profile should not be read as an adaptive controller. It is still static
-// policy data. Future owner, pressure, and trim layers decide when to publish
-// pressure levels and when to run trim work.
+// policy data. Runtime owners decide when to publish pressure levels and when to
+// run trim work.
 func BurstyPolicy() Policy {
 	return Policy{
 		Retention: RetentionPolicy{
@@ -704,7 +701,7 @@ func StrictBoundedPolicy() Policy {
 // capacity based. Keeping the upper class size at 1 MiB avoids making ordinary
 // secure returns pay large scrub costs by default.
 //
-// Strict ownership means future ownership/lease layers should validate origin,
+// Strict ownership means managed ownership/lease layers validate origin,
 // capacity growth, double release, and in-use accounting before accepting
 // returned buffers. Admission actions are configured as errors for invalid
 // classes and mismatches so unsafe returns can be surfaced instead of silently
@@ -712,8 +709,7 @@ func StrictBoundedPolicy() Policy {
 //
 // This profile is a policy preset, not a complete security boundary by itself.
 // It prepares the runtime policy for stricter handling; callers still need the
-// future public Pool and ownership layers to enforce end-to-end ownership
-// semantics.
+// managed ownership path to enforce end-to-end ownership semantics.
 func SecurePolicy() Policy {
 	return Policy{
 		Retention: RetentionPolicy{
@@ -939,8 +935,8 @@ func StrictBoundedClassSizes() []ClassSize {
 // default secure retained set. The returned slice is fresh and caller-owned.
 //
 // As with the other profile class lists, this slice is only the classification
-// shape. Future ownership and admission layers still decide whether a returned
-// buffer may be accepted, whether it must be zeroed, and whether invalid returns
+// shape. Ownership and admission layers still decide whether a returned buffer
+// may be accepted, whether it must be zeroed, and whether invalid returns
 // become drops or errors.
 func SecureClassSizes() []ClassSize {
 	return []ClassSize{

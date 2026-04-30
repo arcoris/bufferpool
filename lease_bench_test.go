@@ -204,8 +204,8 @@ func BenchmarkLeaseStrictReleaseCheck(b *testing.B) {
 func BenchmarkLeaseReleaseAfterPoolClose(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
+
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
 		pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
 		registry := MustNewLeaseRegistry(DefaultLeaseConfig())
 		lease, err := registry.Acquire(pool, 128)
@@ -217,9 +217,7 @@ func BenchmarkLeaseReleaseAfterPoolClose(b *testing.B) {
 			b.Fatalf("Pool.Close() returned error: %v", err)
 		}
 
-		b.StartTimer()
 		leaseBenchmarkErrorSink = lease.Release(buffer)
-		b.StopTimer()
 
 		if err := registry.Close(); err != nil {
 			b.Fatalf("LeaseRegistry.Close() returned error: %v", err)

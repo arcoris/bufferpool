@@ -19,6 +19,10 @@ package bufferpool
 import "arcoris.dev/bufferpool/internal/multierr"
 
 const (
+	// errPolicyUnsupportedValidationContext is returned when policy validation
+	// receives an unknown runtime construction context.
+	errPolicyUnsupportedValidationContext = "bufferpool.Policy: unknown validation context"
+
 	// errPoolUnsupportedOwnershipMode is returned when direct Pool construction
 	// receives a lease-dependent ownership mode.
 	errPoolUnsupportedOwnershipMode = "bufferpool.Pool.New: ownership mode requires a lease-aware ownership layer"
@@ -39,6 +43,77 @@ const (
 	// is asked to probe additional shards on Put.
 	errPoolUnsupportedReturnFallbackShards = "bufferpool.Pool.New: return fallback shards are not supported by standalone Pool"
 )
+
+// PolicyValidationContext identifies the runtime owner that will enforce a
+// Policy.
+//
+// Generic Policy validation proves that the policy model is internally
+// consistent. Context validation additionally proves that a concrete owner can
+// enforce the requested behavior. For example, raw Pool construction cannot
+// promise lease-backed strict ownership, while partition-owned Pool construction
+// can carry that metadata because LeaseRegistry owns managed acquire/release.
+type PolicyValidationContext uint8
+
+const (
+	// PolicyValidationContextUnset means no owner context has been selected.
+	PolicyValidationContextUnset PolicyValidationContext = iota
+
+	// PolicyValidationContextStandalonePool validates direct Pool use with the
+	// raw Get/Put API.
+	PolicyValidationContextStandalonePool
+
+	// PolicyValidationContextPartitionOwnedPool validates a Pool constructed as
+	// storage owned by PoolPartition.
+	PolicyValidationContextPartitionOwnedPool
+
+	// PolicyValidationContextPoolPartition validates PoolPartition-managed
+	// runtime policy.
+	PolicyValidationContextPoolPartition
+
+	// PolicyValidationContextPoolGroup validates PoolGroup-managed runtime
+	// policy.
+	PolicyValidationContextPoolGroup
+)
+
+// String returns a stable diagnostic label for c.
+func (c PolicyValidationContext) String() string {
+	switch c {
+	case PolicyValidationContextUnset:
+		return "unset"
+	case PolicyValidationContextStandalonePool:
+		return "standalone_pool"
+	case PolicyValidationContextPartitionOwnedPool:
+		return "partition_owned_pool"
+	case PolicyValidationContextPoolPartition:
+		return "pool_partition"
+	case PolicyValidationContextPoolGroup:
+		return "pool_group"
+	default:
+		return "unknown"
+	}
+}
+
+// ValidatePolicyForContext validates policy for the owner that will enforce it.
+//
+// The function first runs generic Policy validation, then applies owner support
+// checks. This keeps policy-model errors separate from context errors while
+// avoiding silent acceptance of managed-only features in raw Pool mode.
+func ValidatePolicyForContext(policy Policy, context PolicyValidationContext) error {
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+
+	switch context {
+	case PolicyValidationContextStandalonePool:
+		return validatePoolSupportedPolicy(policy, poolConstructionModeStandalone)
+	case PolicyValidationContextPartitionOwnedPool,
+		PolicyValidationContextPoolPartition,
+		PolicyValidationContextPoolGroup:
+		return validatePoolSupportedPolicy(policy, poolConstructionModePartitionOwned)
+	default:
+		return newError(ErrInvalidPolicy, errPolicyUnsupportedValidationContext)
+	}
+}
 
 // poolConstructionMode identifies which owner is constructing a Pool.
 //

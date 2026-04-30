@@ -51,8 +51,8 @@ const (
 	// DefaultPolicyMaxRequestSize is the largest request size served by the
 	// default class profile.
 	//
-	// Larger requests should be allocated directly by the future Pool layer
-	// rather than routed through retained storage. This keeps default retention
+	// Larger requests are allocated directly rather than routed through retained
+	// storage. This keeps default retention
 	// focused on reusable common-size buffers instead of rare large allocations.
 	DefaultPolicyMaxRequestSize Size = MiB
 
@@ -196,7 +196,7 @@ const (
 	// capacity under critical pressure.
 	//
 	// Critical pressure also disables retention in the default level policy, so
-	// this cap is mainly diagnostic and useful if a future profile preserves a
+	// this cap is mainly diagnostic and useful if a custom profile preserves a
 	// small hot class under critical pressure.
 	DefaultPolicyCriticalPressureMaxRetainedBufferCapacity Size = 64 * KiB
 
@@ -245,8 +245,8 @@ const (
 	//
 	// A value of 2.0 means a buffer may grow up to twice its origin class size
 	// before strict ownership-aware admission should reject or drop it. The
-	// default ownership mode is disabled, so this value becomes relevant only
-	// when a future config/profile enables ownership accounting.
+	// default ownership mode is disabled, so this value becomes relevant when a
+	// managed config/profile enables ownership accounting.
 	DefaultPolicyMaxReturnedCapacityGrowth PolicyRatio = 2 * PolicyRatioOne
 )
 
@@ -265,14 +265,34 @@ const (
 // The returned Policy owns its class-size slice. Callers may modify the returned
 // value without mutating package-level defaults.
 func DefaultPolicy() Policy {
-	return Policy{
+	return NewPolicyFromSections(DefaultPoolShapePolicy(), DefaultPoolRetentionPolicy(), DefaultOwnershipPolicy())
+}
+
+// DefaultPoolShapePolicy returns construction-shape defaults for Pool runtime
+// owners.
+//
+// Shape covers the class table, class-local shard count, shard selector, and
+// lazy bucket metadata shape. It does not include current budgets or pressure
+// state.
+func DefaultPoolShapePolicy() PoolShapePolicy {
+	return PoolShapePolicy{
+		Classes: DefaultClassPolicy(),
+		Shards:  DefaultShardPolicy(),
+	}
+}
+
+// DefaultPoolRetentionPolicy returns retention and correction defaults for Pool
+// runtime owners.
+//
+// This section describes retained-memory limits, return admission, pressure
+// contraction, and bounded trim behavior. Owner runtime state publishes the
+// current budget, current pressure level, and trim progress separately.
+func DefaultPoolRetentionPolicy() PoolRetentionPolicy {
+	return PoolRetentionPolicy{
 		Retention: DefaultRetentionPolicy(),
-		Classes:   DefaultClassPolicy(),
-		Shards:    DefaultShardPolicy(),
 		Admission: DefaultAdmissionPolicy(),
 		Pressure:  DefaultPressurePolicy(),
 		Trim:      DefaultTrimPolicy(),
-		Ownership: DefaultOwnershipPolicy(),
 	}
 }
 
@@ -352,8 +372,8 @@ func DefaultShardPolicy() ShardPolicy {
 //
 // The default policy admits ordinary returned buffers only when all runtime
 // checks allow retention. Buffers that fail admission are dropped rather than
-// reported as errors because the future convenient public Put path should be
-// safe to call for best-effort reuse.
+// reported as errors because public Put remains safe to call for best-effort
+// reuse.
 func DefaultAdmissionPolicy() AdmissionPolicy {
 	return AdmissionPolicy{
 		ZeroSizeRequests:    ZeroSizeRequestEmptyBuffer,
@@ -416,9 +436,9 @@ func DefaultHighPressurePolicy() PressureLevelPolicy {
 // DefaultCriticalPressurePolicy returns the default critical-pressure behavior.
 //
 // Critical pressure disables new retention by default and allows substantially
-// more bounded trim work per cycle. If a future profile enables preservation of
-// small hot classes under critical pressure, the capacity cap still prevents
-// large returned buffers from being retained.
+// more bounded trim work per cycle. If a profile preserves small hot classes
+// under critical pressure, the capacity cap still prevents large returned
+// buffers from being retained.
 func DefaultCriticalPressurePolicy() PressureLevelPolicy {
 	return PressureLevelPolicy{
 		RetentionScale:            DefaultPolicyCriticalPressureRetentionScale,
@@ -455,9 +475,9 @@ func DefaultTrimPolicy() TrimPolicy {
 // DefaultOwnershipPolicy returns the default ownership/accounting policy.
 //
 // Explicit ownership tracking is disabled by default because it changes public
-// API shape, memory accounting cost, and release validation semantics. Future
-// strict profiles can enable ownership without changing the default lightweight
-// data path.
+// API shape, memory accounting cost, and release validation semantics. Strict
+// managed profiles can enable ownership without changing the default
+// lightweight raw data path.
 func DefaultOwnershipPolicy() OwnershipPolicy {
 	return OwnershipPolicy{
 		Mode:                      OwnershipModeNone,

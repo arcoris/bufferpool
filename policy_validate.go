@@ -100,6 +100,57 @@ func (p Policy) Validate() error {
 	return multierr.Combine(errs...)
 }
 
+// Validate validates construction-shape policy in isolation.
+//
+// This method checks only shape-local rules: class-table shape and class-local
+// sharding/bucket shape. It cannot prove that retention limits can service the
+// largest class; cross-section checks remain part of Policy.Validate because
+// they require both shape and retention sections.
+func (s PoolShapePolicy) Validate() error {
+	var errs []error
+
+	if s.IsZero() {
+		errs = appendPolicyValidationError(errs, "bufferpool.PoolShapePolicy: shape policy must not be zero")
+		return multierr.Combine(errs...)
+	}
+
+	errs = appendPolicyError(errs, s.Classes.Validate())
+	errs = appendPolicyError(errs, s.Shards.Validate())
+	return multierr.Combine(errs...)
+}
+
+// Validate validates retention, admission, pressure, and trim policy together.
+//
+// This method keeps runtime correction behavior separate from construction
+// shape. It can validate retention-local rules, admission actions, pressure
+// ordering, trim cycle bounds, and retention/pressure compatibility. Class and
+// shard compatibility still belongs to Policy.Validate because it depends on
+// construction shape.
+func (r PoolRetentionPolicy) Validate() error {
+	var errs []error
+
+	if r.IsZero() {
+		errs = appendPolicyValidationError(errs, "bufferpool.PoolRetentionPolicy: retention policy must not be zero")
+		return multierr.Combine(errs...)
+	}
+
+	retentionErr := r.Retention.Validate()
+	admissionErr := r.Admission.Validate()
+	pressureErr := r.Pressure.Validate()
+	trimErr := r.Trim.Validate()
+
+	errs = appendPolicyError(errs, retentionErr)
+	errs = appendPolicyError(errs, admissionErr)
+	errs = appendPolicyError(errs, pressureErr)
+	errs = appendPolicyError(errs, trimErr)
+
+	if retentionErr == nil && pressureErr == nil {
+		errs = appendPolicyError(errs, validatePolicyPressureRetentionConsistency(r.Retention, r.Pressure))
+	}
+
+	return multierr.Combine(errs...)
+}
+
 // Validate validates retained-memory limits.
 //
 // RetentionPolicy is required for a complete Policy. Zero retention policy means

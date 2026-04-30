@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 // BenchmarkBucketPushPopSegmented measures the raw segmented bucket LIFO loop.
 //
@@ -42,6 +45,35 @@ func BenchmarkBucketPushPopSegmented(b *testing.B) {
 		}
 
 		poolBenchmarkBufferSink = popped
+	}
+}
+
+// BenchmarkBucketPushPopSegmentSizes compares steady push/pop cost across
+// supported lazy segment sizes.
+func BenchmarkBucketPushPopSegmentSizes(b *testing.B) {
+	for _, segmentSlots := range []int{4, 8, 16, 32} {
+		segmentSlots := segmentSlots
+
+		b.Run("segment_slots_"+strconv.Itoa(segmentSlots), func(b *testing.B) {
+			buffer := make([]byte, 0, 1024)
+			bucket := newBucket(64, segmentSlots)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if !bucket.push(buffer) {
+					b.Fatal("bucket push rejected")
+				}
+
+				popped, ok := bucket.pop()
+				if !ok {
+					b.Fatal("bucket pop missed")
+				}
+
+				poolBenchmarkBufferSink = popped
+			}
+		})
 	}
 }
 
