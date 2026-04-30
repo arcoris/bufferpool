@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -247,6 +248,72 @@ func TestApplyPoolBudgetTargetsRejectsInfeasibleWithoutPartialMutation(t *testin
 	}
 }
 
+func TestApplyPoolBudgetTargetsCannotPartiallyMutateAfterSuccessfulPlanning(t *testing.T) {
+	t.Parallel()
+
+	config := poolBudgetTestPartitionConfig()
+	config.Pools = append(config.Pools, PartitionPoolConfig{Name: "secondary", Config: PoolConfig{Policy: poolTestSmallSingleShardPolicy()}})
+	partition := MustNewPoolPartition(config)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	secondary, ok := partition.registry.pool("secondary")
+	if !ok {
+		t.Fatal("secondary pool not found")
+	}
+	requirePartitionNoError(t, secondary.Close())
+
+	beforePrimary, _ := partition.PoolSnapshot("primary")
+	err := partition.applyPoolBudgetTargets([]PoolBudgetTarget{
+		{
+			Generation: Generation(122),
+			PoolName:   "primary",
+			ClassTargets: []ClassBudgetTarget{
+				{Generation: Generation(122), ClassID: ClassID(0), TargetBytes: 2 * KiB},
+			},
+		},
+		{
+			Generation:    Generation(122),
+			PoolName:      "secondary",
+			RetainedBytes: KiB,
+		},
+	})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("applyPoolBudgetTargets(closed child) error = %v, want ErrClosed", err)
+	}
+	afterPrimary, _ := partition.PoolSnapshot("primary")
+	if afterPrimary.Generation != beforePrimary.Generation {
+		t.Fatalf("primary generation changed after closed-child batch: got %s want %s", afterPrimary.Generation, beforePrimary.Generation)
+	}
+}
+
+func TestApplyPoolBudgetTargetsReportClassPublicationStatus(t *testing.T) {
+	t.Parallel()
+
+	partition := MustNewPoolPartition(poolBudgetTestPartitionConfig())
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	if err := partition.beginForegroundOperation(); err != nil {
+		t.Fatalf("beginForegroundOperation() error = %v", err)
+	}
+	report, err := partition.applyPoolBudgetTargetsLocked([]PoolBudgetTarget{
+		{
+			Generation:    Generation(123),
+			PoolName:      "primary",
+			RetainedBytes: 4 * KiB,
+		},
+	})
+	partition.endForegroundOperation()
+	if err != nil {
+		t.Fatalf("applyPoolBudgetTargetsLocked() error = %v", err)
+	}
+	if !report.Published || len(report.ClassReports) != 1 || !report.ClassReports[0].Published {
+		t.Fatalf("publication report = %+v, want published class report", report)
+	}
+	if len(report.Targets) != 1 || len(report.Targets[0].ClassTargets) == 0 {
+		t.Fatalf("publication targets = %+v, want planned class targets", report.Targets)
+	}
+}
+
 func TestBudgetFeasibilityVisibleInControllerReports(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +330,93 @@ func TestBudgetFeasibilityVisibleInControllerReports(t *testing.T) {
 	}
 	if len(report.BudgetPublication.ClassReports) == 0 {
 		t.Fatalf("controller budget publication class reports missing")
+	}
+}
+
+func TestPoolPartitionTickUnpublishedBudgetDoesNotCommitControllerState(t *testing.T) {
+	t.Parallel()
+
+	partition := MustNewPoolPartition(poolBudgetTestPartitionConfig())
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	if err := partition.activeRegistry.markDirty("primary"); err != nil {
+		t.Fatalf("markDirty(primary) error = %v", err)
+	}
+	pool, ok := partition.registry.pool("primary")
+	if !ok {
+		t.Fatal("primary pool not found")
+	}
+	requirePartitionNoError(t, pool.Close())
+
+	beforeGeneration := partition.controller.generation.Load()
+	beforeHasPrevious := partition.controller.hasPreviousSample
+	beforePreviousTime := partition.controller.previousSampleTime
+	beforeEWMA := partition.controller.ewma
+	beforeClassEWMA := copyPoolClassEWMAStateMap(partition.controller.ewmaByPoolClass)
+	beforeDirty := partition.controllerDirtyIndexes(nil)
+
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+	if report.Generation.IsZero() {
+		t.Fatal("Generation is zero, want observed tick attempt")
+	}
+	if report.BudgetPublication.Published {
+		t.Fatalf("BudgetPublication.Published = true, want false: %+v", report.BudgetPublication)
+	}
+	if report.BudgetPublication.FailureReason == "" {
+		t.Fatalf("BudgetPublication.FailureReason empty: %+v", report.BudgetPublication)
+	}
+	if report.TrimResult.Attempted || report.TrimResult.Executed {
+		t.Fatalf("TrimResult = %+v, want no trim after unpublished budget", report.TrimResult)
+	}
+	if after := partition.controller.generation.Load(); after != beforeGeneration {
+		t.Fatalf("controller generation = %s, want unchanged %s", after, beforeGeneration)
+	}
+	if partition.controller.hasPreviousSample != beforeHasPrevious {
+		t.Fatalf("hasPreviousSample = %v, want %v", partition.controller.hasPreviousSample, beforeHasPrevious)
+	}
+	if partition.controller.previousSampleTime != beforePreviousTime {
+		t.Fatalf("previousSampleTime changed after unpublished tick")
+	}
+	if partition.controller.ewma != beforeEWMA {
+		t.Fatalf("controller EWMA changed after unpublished tick")
+	}
+	if !reflect.DeepEqual(partition.controller.ewmaByPoolClass, beforeClassEWMA) {
+		t.Fatalf("class EWMA changed after unpublished tick")
+	}
+	afterDirty := partition.controllerDirtyIndexes(nil)
+	if !reflect.DeepEqual(afterDirty, beforeDirty) {
+		t.Fatalf("dirty indexes = %v, want unchanged %v", afterDirty, beforeDirty)
+	}
+}
+
+func TestPoolPartitionTickSuccessfulBudgetCommitsControllerState(t *testing.T) {
+	t.Parallel()
+
+	partition := MustNewPoolPartition(poolBudgetTestPartitionConfig())
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	if err := partition.activeRegistry.markDirty("primary"); err != nil {
+		t.Fatalf("markDirty(primary) error = %v", err)
+	}
+	beforeGeneration := partition.controller.generation.Load()
+
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+	if !report.BudgetPublication.Published {
+		t.Fatalf("BudgetPublication = %+v, want published", report.BudgetPublication)
+	}
+	if after := partition.controller.generation.Load(); !after.After(beforeGeneration) {
+		t.Fatalf("controller generation = %s, want after %s", after, beforeGeneration)
+	}
+	if !partition.controller.hasPreviousSample {
+		t.Fatal("hasPreviousSample = false, want committed previous sample")
+	}
+	if !partition.controller.ewma.Initialized {
+		t.Fatal("controller EWMA not initialized after successful tick")
+	}
+	if dirty := partition.controllerDirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("dirty indexes = %v, want processed", dirty)
 	}
 }
 

@@ -26,16 +26,22 @@ import "time"
 // not execute trim, scan shards directly, compute class EWMA, propagate
 // pressure, or start a controller loop.
 type PoolGroupCoordinatorReport struct {
-	// Generation is the group event generation for this tick.
+	// Generation is the group event generation for this tick attempt. It means
+	// group state was sampled and a report was produced; it does not by itself
+	// mean budget targets were published.
 	Generation Generation
 
-	// CoordinatorGeneration is the group coordinator generation for this cycle.
+	// CoordinatorGeneration is the group coordinator generation committed after
+	// observation state is saved. It may advance for an unpublished budget tick
+	// because the observation window was still accepted.
 	CoordinatorGeneration Generation
 
 	// PolicyGeneration is the group runtime-policy generation used by the tick.
 	PolicyGeneration Generation
 
-	// PublishedGeneration is the budget target generation published to partitions.
+	// PublishedGeneration is the budget target generation accepted by every
+	// partition. It is NoGeneration when allocation is infeasible or a child
+	// partition skipped publication.
 	PublishedGeneration Generation
 
 	// Lifecycle is the observed group lifecycle state.
@@ -66,7 +72,8 @@ type PoolGroupCoordinatorReport struct {
 	// PartitionScores contains one score projection per sampled partition.
 	PartitionScores []PoolGroupPartitionScore
 
-	// PartitionBudgetTargets are retained-budget targets published by this cycle.
+	// PartitionBudgetTargets are retained-budget targets considered by this
+	// cycle. BudgetPublication.Published says whether every target was accepted.
 	PartitionBudgetTargets []PartitionBudgetTarget
 
 	// BudgetPublication reports allocation feasibility and publication status for

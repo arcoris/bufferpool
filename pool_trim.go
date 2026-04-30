@@ -92,12 +92,14 @@ type PoolTrimCandidate struct {
 	RetainedBytes uint64
 }
 
-// Trim removes retained buffers from the Pool in deterministic class/shard
-// order.
+// Trim removes retained buffers from the Pool in deterministic target-aware
+// class and shard order.
 //
 // Trim is a cold corrective path. It removes only retained bucket storage and
-// cannot see or force checked-out buffers owned by LeaseRegistry. The operation
-// is bounded by MaxBuffers and MaxBytes; zero limits make the call a no-op.
+// cannot see or force checked-out buffers owned by LeaseRegistry. Candidate
+// order prefers over-target retained storage, then retained-heavy candidates,
+// then larger classes, with stable indexes as tie-breakers. The operation is
+// bounded by MaxBuffers and MaxBytes; zero limits make the call a no-op.
 func (p *Pool) Trim(plan PoolTrimPlan) PoolTrimResult {
 	p.mustBeInitialized()
 	if plan.MaxBuffers < 0 {
@@ -106,6 +108,10 @@ func (p *Pool) Trim(plan PoolTrimPlan) PoolTrimResult {
 	if plan.MaxBuffers == 0 || plan.MaxBytes.IsZero() {
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
+	if err := p.beginPoolControlOperation(); err != nil {
+		return PoolTrimResult{Reason: err.Error()}
+	}
+	defer p.endOperation()
 
 	result := PoolTrimResult{Attempted: true, Reason: errPoolTrimCompleted}
 	candidates := p.poolTrimCandidates()
@@ -136,6 +142,10 @@ func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTri
 	if _, ok := p.table.classByID(classID); !ok {
 		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
 	}
+	if err := p.beginPoolControlOperation(); err != nil {
+		return PoolTrimResult{Reason: err.Error()}
+	}
+	defer p.endOperation()
 	result := PoolTrimResult{Attempted: true, VisitedClasses: 1, Reason: errPoolTrimCompleted}
 	result.add(p.trimClassState(&p.classes[classID.Index()], maxBuffers, maxBytes.Bytes(), 0))
 	return result
@@ -157,6 +167,10 @@ func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxByt
 	if shardIndex < 0 || shardIndex >= state.shardCount() {
 		return PoolTrimResult{Reason: errPoolTrimInvalidShard}
 	}
+	if err := p.beginPoolControlOperation(); err != nil {
+		return PoolTrimResult{Reason: err.Error()}
+	}
+	defer p.endOperation()
 	bucketResult := state.trimShardBounded(shardIndex, maxBuffers, maxBytes.Bytes())
 	result := PoolTrimResult{Attempted: true, VisitedClasses: 1, VisitedShards: 1, Reason: errPoolTrimCompleted}
 	result.addBucket(bucketResult)

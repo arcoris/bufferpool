@@ -20,7 +20,9 @@ import "time"
 
 // PartitionControllerReport describes one explicit controller tick.
 type PartitionControllerReport struct {
-	// Generation is the partition event generation for this tick.
+	// Generation is the partition event generation for this tick attempt. It
+	// means the partition was sampled and a diagnostic report was produced; it
+	// does not by itself mean Pool/class budgets were published.
 	Generation Generation
 
 	// PolicyGeneration is the partition runtime-policy generation used by the tick.
@@ -59,9 +61,12 @@ type PartitionControllerReport struct {
 	TrimPlan PartitionTrimPlan
 
 	// TrimResult reports bounded physical trim executed during this applied tick.
+	// It remains zero when budget publication is not published and controller
+	// state is not committed.
 	TrimResult PartitionTrimResult
 
-	// PoolBudgetTargets are the Pool/class budget targets applied by this tick.
+	// PoolBudgetTargets are the Pool/class budget targets considered by this
+	// tick. BudgetPublication.Published says whether they were applied.
 	PoolBudgetTargets []PoolBudgetTarget
 
 	// BudgetPublication reports partition-to-Pool and Pool-to-class feasibility
@@ -95,6 +100,12 @@ func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 // capacity. A nil dst is a no-op after receiver and lifecycle validation. Like
 // Tick, this is a manual foreground call: it does not start background
 // goroutines, coordinate with PoolGroup, or redistribute group-level budgets.
+//
+// If budget publication is infeasible or skipped, TickInto still reports the
+// sampled attempt generation, but it does not commit controller EWMA, previous
+// sample/time, dirty-marker processing, trim execution, or controller
+// generation. That keeps an observed-but-unapplied tick from half-advancing
+// adaptive state.
 func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	p.mustBeInitialized()
 	if err := p.beginForegroundOperation(); err != nil {
@@ -138,11 +149,11 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	poolBudgetTargets := budgetPublication.Targets
 	if len(poolBudgetTargets) > 0 && budgetPublication.CanPublish() {
 		appliedPublication, err := p.applyPoolBudgetTargetsLocked(poolBudgetTargets)
-		if err != nil {
-			return err
-		}
 		budgetPublication.Published = appliedPublication.Published
 		budgetPublication.ClassReports = appliedPublication.ClassReports
+		if err != nil {
+			budgetPublication.FailureReason = err.Error()
+		}
 		if !appliedPublication.Published {
 			budgetPublication.FailureReason = appliedPublication.FailureReason
 		}

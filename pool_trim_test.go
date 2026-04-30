@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // TestPoolTrimClassRemovesRetainedBuffers verifies class-scoped physical trim.
 func TestPoolTrimClassRemovesRetainedBuffers(t *testing.T) {
@@ -111,6 +114,49 @@ func TestPoolTrimPrefersOverTargetClass(t *testing.T) {
 			snapshot.Classes[0].CurrentRetainedBuffers,
 			snapshot.Classes[1].CurrentRetainedBuffers,
 		)
+	}
+}
+
+func TestPoolTrimCandidateOrderingDeterministic(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+	seedPoolRetainedBuffers(t, pool, 1, 512)
+	seedPoolRetainedBuffers(t, pool, 1, 1024)
+	if _, err := pool.applyClassBudgets([]ClassBudgetTarget{
+		{Generation: Generation(21), ClassID: ClassID(0), TargetBytes: 4 * KiB},
+		{Generation: Generation(21), ClassID: ClassID(1), TargetBytes: 0},
+	}); err != nil {
+		t.Fatalf("applyClassBudgets() error = %v", err)
+	}
+
+	first := poolTrimCandidateReports(pool.poolTrimCandidates())
+	second := poolTrimCandidateReports(pool.poolTrimCandidates())
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("candidate order is not deterministic: first=%+v second=%+v", first, second)
+	}
+	if len(first) == 0 || first[0].ClassID != ClassID(1) {
+		t.Fatalf("candidate order = %+v, want over-target class first", first)
+	}
+}
+
+func TestPoolTrimRejectsClosedPool(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	seedPoolRetainedBuffers(t, pool, 1, 512)
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Pool.Close() error = %v", err)
+	}
+
+	result := pool.Trim(PoolTrimPlan{MaxBuffers: 1, MaxBytes: KiB})
+	if result.Attempted || result.Executed || result.Reason != errPoolClosed {
+		t.Fatalf("Trim(closed) = %+v, want rejected closed pool", result)
 	}
 }
 

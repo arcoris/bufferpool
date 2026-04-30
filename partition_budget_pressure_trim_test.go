@@ -18,6 +18,7 @@ package bufferpool
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -274,6 +275,44 @@ func TestPartitionTrimPrefersOverTargetPool(t *testing.T) {
 			alpha.Metrics().CurrentRetainedBuffers,
 			beta.Metrics().CurrentRetainedBuffers,
 		)
+	}
+}
+
+func TestPartitionTrimCandidateOrderingDeterministic(t *testing.T) {
+	t.Parallel()
+
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, _ := partition.pool("alpha")
+	beta, _ := partition.pool("beta")
+	seedPoolRetainedBuffers(t, alpha, 1, 512)
+	seedPoolRetainedBuffers(t, beta, 1, 512)
+	retainedClassID := firstRetainedPoolClassID(t, beta)
+	if _, err := alpha.applyClassBudgets([]ClassBudgetTarget{{Generation: Generation(31), ClassID: retainedClassID, TargetBytes: 4 * KiB}}); err != nil {
+		t.Fatalf("alpha applyClassBudgets() error = %v", err)
+	}
+	if _, err := beta.applyClassBudgets([]ClassBudgetTarget{{Generation: Generation(31), ClassID: retainedClassID, TargetBytes: 0}}); err != nil {
+		t.Fatalf("beta applyClassBudgets() error = %v", err)
+	}
+
+	first := partitionTrimCandidateReports(partition.partitionTrimCandidates())
+	second := partitionTrimCandidateReports(partition.partitionTrimCandidates())
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("candidate order is not deterministic: first=%+v second=%+v", first, second)
+	}
+	if len(first) == 0 || first[0].PoolName != "beta" {
+		t.Fatalf("candidate order = %+v, want over-target beta first", first)
 	}
 }
 

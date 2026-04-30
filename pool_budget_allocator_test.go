@@ -93,6 +93,26 @@ func TestPoolApplyClassBudgetsRejectsDuplicateClass(t *testing.T) {
 	}
 }
 
+func TestPoolApplyClassBudgetsRejectsClosedPool(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	before := pool.Snapshot()
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Pool.Close() error = %v", err)
+	}
+
+	if _, err := pool.applyClassBudgets([]ClassBudgetTarget{
+		{Generation: Generation(62), ClassID: ClassID(0), TargetBytes: KiB},
+	}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("applyClassBudgets(closed) error = %v, want %v", err, ErrClosed)
+	}
+	after := pool.Snapshot()
+	if after.Generation != before.Generation {
+		t.Fatalf("Pool generation changed after closed apply: got %s want %s", after.Generation, before.Generation)
+	}
+}
+
 func TestPoolApplyPoolBudgetComputesDefaultClassTargets(t *testing.T) {
 	t.Parallel()
 

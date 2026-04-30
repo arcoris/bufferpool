@@ -30,7 +30,7 @@ func (p *Pool) applyPressure(signal PressureSignal) error {
 	if err := signal.validate(); err != nil {
 		return wrapError(ErrInvalidOptions, err, errPoolPressureInvalid)
 	}
-	if err := p.beginAcquireOperation(); err != nil {
+	if err := p.beginPoolControlOperation(); err != nil {
 		return err
 	}
 	defer p.endOperation()

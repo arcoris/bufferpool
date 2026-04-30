@@ -161,12 +161,26 @@ func (g *PoolGroup) applyPartitionBudgetTargets(targets []PartitionBudgetTarget)
 // publishPartitionBudgetTargets publishes targets without taking runtimeMu.
 //
 // Callers must already hold the appropriate group foreground gate. Closed child
-// partitions are recorded as skipped so applied group ticks can report partial
-// publication without duplicating Partition close semantics.
+// partitions are recorded as skipped before any target is applied so ordinary
+// closed-child cases do not partially mutate earlier partitions. A concurrent
+// direct partition close can still race after this precheck; that path is
+// reported through SkippedPartitions and Published=false rather than hidden.
 func (g *PoolGroup) publishPartitionBudgetTargets(
 	targets []PartitionBudgetTarget,
 	skipped []PoolGroupSkippedPartition,
 ) ([]PoolGroupSkippedPartition, error) {
+	for _, target := range targets {
+		partition, ok := g.registry.partition(target.PartitionName)
+		if !ok {
+			return skipped, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+target.PartitionName)
+		}
+		if !partition.lifecycle.AllowsWork() {
+			skipped = append(skipped, PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: errPartitionClosed})
+		}
+	}
+	if len(skipped) > 0 {
+		return skipped, nil
+	}
 	for _, target := range targets {
 		partition, ok := g.registry.partition(target.PartitionName)
 		if !ok {

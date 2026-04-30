@@ -80,6 +80,28 @@ type PoolPartitionBudgetPublicationReport struct {
 	FailureReason string
 }
 
+// plannedPoolBudget is one already validated Pool budget publication.
+//
+// Planning resolves the partition-local Pool, computes the exact class targets,
+// and records the active-registry index before any Pool is mutated.
+type plannedPoolBudget struct {
+	target PoolBudgetTarget
+	pool   *Pool
+	index  int
+}
+
+// plannedPoolBudgetBatch is the all-or-nothing apply unit for partition budget
+// publication.
+//
+// The partition foreground gate protects owned-Pool cleanup, while each Pool
+// control operation below protects against direct Pool.Close callers. Once every
+// Pool operation is admitted, applying the planned class targets cannot return
+// policy errors because all target identity and feasibility checks already ran.
+type plannedPoolBudgetBatch struct {
+	plans  []plannedPoolBudget
+	report PoolPartitionBudgetPublicationReport
+}
+
 // CanPublish reports whether this publication report is both feasible and free
 // of child class failures.
 func (r PoolPartitionBudgetPublicationReport) CanPublish() bool {
@@ -138,6 +160,9 @@ func (p *PoolPartition) applyPartitionBudgetLocked(target PartitionBudgetTarget)
 // and shard-credit publication.
 func (p *PoolPartition) applyPoolBudgetTargets(targets []PoolBudgetTarget) error {
 	p.mustBeInitialized()
+	if len(targets) == 0 {
+		return nil
+	}
 	if err := p.beginForegroundOperation(); err != nil {
 		return err
 	}
@@ -156,12 +181,40 @@ func (p *PoolPartition) applyPoolBudgetTargets(targets []PoolBudgetTarget) error
 // applyPoolBudgetTargetsLocked validates and publishes Pool targets while the
 // partition foreground gate is already held.
 func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget) (PoolPartitionBudgetPublicationReport, error) {
+	batch, err := p.planPoolBudgetTargetsLocked(targets)
+	if err != nil || !batch.report.CanPublish() {
+		return batch.report, err
+	}
+	if err := batch.beginPoolControlOperations(); err != nil {
+		batch.report.FailureReason = err.Error()
+		return batch.report, err
+	}
+	defer batch.endPoolControlOperations()
+
+	for _, plan := range batch.plans {
+		_ = plan.pool.applyPlannedClassBudgetTargets(plan.target.ClassTargets)
+		for index := range batch.report.ClassReports {
+			if batch.report.ClassReports[index].PoolName == plan.target.PoolName {
+				batch.report.ClassReports[index].Published = true
+			}
+		}
+		if plan.index >= 0 {
+			_ = p.activeRegistry.markDirtyIndex(plan.index)
+		}
+	}
+
+	batch.report.Published = len(batch.plans) > 0
+	return batch.report, nil
+}
+
+// planPoolBudgetTargetsLocked validates a full partition-to-Pool publication
+// batch without mutating any Pool.
+func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) (plannedPoolBudgetBatch, error) {
 	if !p.lifecycle.AllowsWork() {
-		return PoolPartitionBudgetPublicationReport{}, newError(ErrClosed, errPartitionClosed)
+		return plannedPoolBudgetBatch{}, newError(ErrClosed, errPartitionClosed)
 	}
 
 	report := PoolPartitionBudgetPublicationReport{
-		Targets: append([]PoolBudgetTarget(nil), targets...),
 		Allocation: BudgetAllocationDiagnostics{
 			Feasible:    true,
 			Reason:      budgetAllocationReasonFeasible,
@@ -171,15 +224,14 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 	if len(targets) > 0 {
 		report.Generation = targets[0].Generation
 	}
-	prepared := make([]struct {
-		target PoolBudgetTarget
-		pool   *Pool
-		index  int
-	}, 0, len(targets))
+	batch := plannedPoolBudgetBatch{
+		plans:  make([]plannedPoolBudget, 0, len(targets)),
+		report: report,
+	}
 	for _, target := range targets {
 		pool, ok := p.registry.pool(target.PoolName)
 		if !ok {
-			return report, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+target.PoolName)
+			return batch, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+target.PoolName)
 		}
 		classAllocation, err := pool.planPoolBudget(target)
 		classReport := PoolClassBudgetPublicationReport{
@@ -191,43 +243,43 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 		}
 		if err != nil {
 			classReport.FailureReason = err.Error()
-			report.ClassReports = append(report.ClassReports, classReport)
-			return report, err
+			batch.report.ClassReports = append(batch.report.ClassReports, classReport)
+			return batch, err
 		}
 		if !classAllocation.Allocation.Feasible {
 			classReport.FailureReason = classAllocation.Allocation.Reason
-			report.ClassReports = append(report.ClassReports, classReport)
-			report.FailureReason = classAllocation.Allocation.Reason
-			return report, nil
+			batch.report.ClassReports = append(batch.report.ClassReports, classReport)
+			batch.report.FailureReason = classAllocation.Allocation.Reason
+			return batch, nil
 		}
-		report.ClassReports = append(report.ClassReports, classReport)
+		batch.report.ClassReports = append(batch.report.ClassReports, classReport)
 		index, _ := p.registry.poolIndex(target.PoolName)
 		target.ClassTargets = classAllocation.Targets
-		prepared = append(prepared, struct {
-			target PoolBudgetTarget
-			pool   *Pool
-			index  int
-		}{target: target, pool: pool, index: index})
+		batch.report.Targets = append(batch.report.Targets, target)
+		batch.plans = append(batch.plans, plannedPoolBudget{target: target, pool: pool, index: index})
 	}
 
-	for _, item := range prepared {
-		if _, err := item.pool.applyPoolBudget(item.target); err != nil {
-			report.FailureReason = err.Error()
-			return report, err
-		}
-		for index := range report.ClassReports {
-			if report.ClassReports[index].PoolName == item.target.PoolName {
-				report.ClassReports[index].Published = true
+	return batch, nil
+}
+
+// beginPoolControlOperations admits every target Pool before mutation starts.
+func (b *plannedPoolBudgetBatch) beginPoolControlOperations() error {
+	for index, plan := range b.plans {
+		if err := plan.pool.beginPoolControlOperation(); err != nil {
+			for admitted := 0; admitted < index; admitted++ {
+				b.plans[admitted].pool.endOperation()
 			}
-		}
-		if item.index >= 0 {
-			_ = p.activeRegistry.markDirtyIndex(item.index)
+			return err
 		}
 	}
+	return nil
+}
 
-	report.Targets = append(report.Targets[:0], targets...)
-	report.Published = len(targets) > 0
-	return report, nil
+// endPoolControlOperations releases Pool operation gates admitted for a batch.
+func (b *plannedPoolBudgetBatch) endPoolControlOperations() {
+	for _, plan := range b.plans {
+		plan.pool.endOperation()
+	}
 }
 
 // allocatePoolBudgetTargets applies the common base-plus-adaptive allocator to

@@ -339,6 +339,48 @@ func TestPoolCloseWaitsForActiveOperations(t *testing.T) {
 	}
 }
 
+func TestPoolControlOperationRejectedAfterCloseStarts(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Pool.Close() error = %v", err)
+	}
+
+	if err := pool.beginPoolControlOperation(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("beginPoolControlOperation() error = %v, want %v", err, ErrClosed)
+	}
+}
+
+func TestPoolCloseWaitsForControlOperations(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})
+	defer func() {
+		_ = pool.Close()
+	}()
+
+	if err := pool.beginPoolControlOperation(); err != nil {
+		t.Fatalf("beginPoolControlOperation() returned error: %v", err)
+	}
+
+	closeReturned := make(chan struct{})
+	go func() {
+		_ = pool.Close()
+		close(closeReturned)
+	}()
+
+	select {
+	case <-closeReturned:
+		t.Fatal("Close() returned before admitted control operation ended")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	pool.endOperation()
+
+	select {
+	case <-closeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return after admitted control operation ended")
+	}
+}
+
 // TestPoolConcurrentGetPutAndClose is a race-oriented lifecycle smoke test.
 func TestPoolConcurrentGetPutAndClose(t *testing.T) {
 	pool := MustNew(PoolConfig{Policy: poolTestSingleShardPolicy()})

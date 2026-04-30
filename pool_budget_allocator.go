@@ -104,7 +104,12 @@ func (p *Pool) applyPoolBudget(target PoolBudgetTarget) (Generation, error) {
 		return p.currentRuntimeSnapshot().Generation, newError(ErrInvalidPolicy, report.Allocation.Reason)
 	}
 
-	return p.applyClassBudgets(report.Targets)
+	if err := p.beginPoolControlOperation(); err != nil {
+		return p.currentRuntimeSnapshot().Generation, err
+	}
+	defer p.endOperation()
+
+	return p.applyPlannedClassBudgetTargets(report.Targets), nil
 }
 
 // applyClassBudgets publishes class targets and derived shard credits.
@@ -123,6 +128,22 @@ func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) (Generation, error
 		return p.currentRuntimeSnapshot().Generation, err
 	}
 
+	if err := p.beginPoolControlOperation(); err != nil {
+		return p.currentRuntimeSnapshot().Generation, err
+	}
+	defer p.endOperation()
+
+	return p.applyPlannedClassBudgetTargets(targets), nil
+}
+
+// applyPlannedClassBudgetTargets applies a prevalidated class target batch.
+//
+// Callers must already hold a Pool control operation admitted through
+// beginPoolControlOperation. The class table is immutable, and planning has
+// already checked target identity and duplicate class IDs, so this apply phase
+// cannot return policy errors after earlier classes were mutated. Pool.Get and
+// Pool.Put never call this method.
+func (p *Pool) applyPlannedClassBudgetTargets(targets []ClassBudgetTarget) Generation {
 	var generation Generation
 	for _, target := range targets {
 		state := &p.classes[target.ClassID.Index()]
@@ -136,7 +157,7 @@ func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) (Generation, error
 	runtime := p.currentRuntimeSnapshot()
 	poolGeneration := budgetPublicationGeneration(runtime.Generation, generation)
 	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(poolGeneration, runtime.Policy, runtime.Pressure))
-	return poolGeneration, nil
+	return poolGeneration
 }
 
 // defaultClassBudgetTargets computes class targets for a Pool-level retained

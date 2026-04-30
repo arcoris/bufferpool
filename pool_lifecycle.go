@@ -42,9 +42,10 @@ const (
 	// errPoolOperationCounterUnderflow is used when the operation gate observes
 	// more completed operations than admitted operations.
 	//
-	// This should be impossible when callers use beginAcquireOperation or
-	// beginReturnOperation with a matching endOperation. If it happens, the Pool
-	// lifecycle gate has been corrupted by an internal bug.
+	// This should be impossible when callers use beginPoolForegroundOperation,
+	// beginReturnOperation, or one of their semantic wrappers with a matching
+	// endOperation. If it happens, the Pool lifecycle gate has been corrupted by
+	// an internal bug.
 	errPoolOperationCounterUnderflow = "bufferpool.Pool: active operation counter underflow"
 )
 
@@ -120,7 +121,7 @@ func (p *Pool) Close() error {
 	return nil
 }
 
-// beginAcquireOperation admits one Get-like operation into the Pool lifecycle
+// beginPoolForegroundOperation admits one Pool operation into the lifecycle
 // gate.
 //
 // The gate uses a double-check pattern:
@@ -133,8 +134,8 @@ func (p *Pool) Close() error {
 //
 // If the second check observes Closing or Closed, the method rolls back the
 // active operation count and rejects the operation. This prevents Close from
-// clearing retained storage while an already-admitted acquisition path is still
-// executing.
+// clearing retained storage while an already-admitted Get, control publication,
+// or physical trim path is still executing.
 //
 // Admitted hot paths use explicit endOperation calls instead of defer to keep
 // overhead low. This is a deliberate data-plane trade-off: internal invariant
@@ -143,7 +144,7 @@ func (p *Pool) Close() error {
 // the same Pool, lifecycle drain correctness is no longer guaranteed for the
 // corrupted operation because the active-operation counter may not have been
 // decremented.
-func (p *Pool) beginAcquireOperation() error {
+func (p *Pool) beginPoolForegroundOperation() error {
 	for {
 		if !p.lifecycle.AllowsWork() {
 			return newError(ErrClosed, errPoolClosed)
@@ -157,6 +158,25 @@ func (p *Pool) beginAcquireOperation() error {
 
 		p.endOperation()
 	}
+}
+
+// beginAcquireOperation admits one Get-like operation.
+//
+// It is a semantic wrapper around the shared foreground gate so data-plane call
+// sites keep their existing intent while control-plane code can use
+// beginPoolControlOperation.
+func (p *Pool) beginAcquireOperation() error {
+	return p.beginPoolForegroundOperation()
+}
+
+// beginPoolControlOperation admits one Pool-local control mutation.
+//
+// Budget publication, pressure publication, and physical trim mutate Pool-owned
+// runtime or retained state, so they must be serialized with hard Close. The
+// helper is intentionally Pool-local: it does not call PoolPartition,
+// PoolGroup, controllers, or trim planning.
+func (p *Pool) beginPoolControlOperation() error {
+	return p.beginPoolForegroundOperation()
 }
 
 // beginReturnOperation admits one Put-like operation into the Pool lifecycle

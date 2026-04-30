@@ -128,6 +128,15 @@ func TestPoolGroupTickIntoPublishesPartitionBudgetTargets(t *testing.T) {
 	if report.PublishedGeneration != report.Generation {
 		t.Fatalf("PublishedGeneration = %s, want %s", report.PublishedGeneration, report.Generation)
 	}
+	if !report.BudgetPublication.Published {
+		t.Fatalf("BudgetPublication = %+v, want published", report.BudgetPublication)
+	}
+	if report.BudgetPublication.Generation != report.Generation {
+		t.Fatalf("BudgetPublication.Generation = %s, want %s", report.BudgetPublication.Generation, report.Generation)
+	}
+	if !report.BudgetPublication.Allocation.Feasible {
+		t.Fatalf("BudgetPublication.Allocation = %+v, want feasible", report.BudgetPublication.Allocation)
+	}
 	if report.CoordinatorGeneration.IsZero() {
 		t.Fatalf("CoordinatorGeneration is zero")
 	}
@@ -157,6 +166,50 @@ func TestPoolGroupTickIntoPublishesPartitionBudgetTargets(t *testing.T) {
 	}
 	if alphaSnapshot.Policy.Budget.MaxRetainedBytes != alphaTarget.RetainedBytes {
 		t.Fatalf("alpha MaxRetainedBytes = %s, want target %s", alphaSnapshot.Policy.Budget.MaxRetainedBytes, alphaTarget.RetainedBytes)
+	}
+}
+
+func TestPoolGroupTickUnpublishedBudgetReportFieldsAreConsistent(t *testing.T) {
+	group := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
+	alphaBefore, ok := group.PartitionSnapshot("alpha")
+	if !ok {
+		t.Fatal("PartitionSnapshot(alpha) not found")
+	}
+	beta, ok := group.partition("beta")
+	if !ok {
+		t.Fatal("partition beta not found")
+	}
+	requirePartitionNoError(t, beta.Close())
+
+	var report PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&report))
+	if report.Generation.IsZero() {
+		t.Fatal("Generation is zero, want observed tick attempt")
+	}
+	if report.CoordinatorGeneration.IsZero() {
+		t.Fatal("CoordinatorGeneration is zero, want committed observation")
+	}
+	if report.PublishedGeneration != NoGeneration {
+		t.Fatalf("PublishedGeneration = %s, want NoGeneration", report.PublishedGeneration)
+	}
+	if report.BudgetPublication.Published {
+		t.Fatalf("BudgetPublication.Published = true, want false: %+v", report.BudgetPublication)
+	}
+	if !report.BudgetPublication.Allocation.Feasible {
+		t.Fatalf("BudgetPublication.Allocation = %+v, want feasible allocation with skipped child", report.BudgetPublication.Allocation)
+	}
+	if report.BudgetPublication.FailureReason == "" {
+		t.Fatalf("BudgetPublication.FailureReason empty: %+v", report.BudgetPublication)
+	}
+	if len(report.SkippedPartitions) != 1 || report.SkippedPartitions[0].PartitionName != "beta" {
+		t.Fatalf("SkippedPartitions = %+v, want beta", report.SkippedPartitions)
+	}
+	alphaAfter, ok := group.PartitionSnapshot("alpha")
+	if !ok {
+		t.Fatal("PartitionSnapshot(alpha) after tick not found")
+	}
+	if alphaAfter.PolicyGeneration != alphaBefore.PolicyGeneration {
+		t.Fatalf("alpha policy generation changed on skipped publication: got %s want %s", alphaAfter.PolicyGeneration, alphaBefore.PolicyGeneration)
 	}
 }
 

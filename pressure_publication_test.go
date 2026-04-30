@@ -108,8 +108,14 @@ func TestPoolPartitionPublishPressureFullSuccessPublishesPartitionRuntime(t *tes
 	if err != nil {
 		t.Fatalf("PublishPressure() error = %v", err)
 	}
-	if !publication.FullyApplied() || !publication.PartitionRuntimePublished || publication.Generation.IsZero() {
-		t.Fatalf("publication = %+v, want full partition runtime publication", publication)
+	if publication.Generation != publication.AttemptGeneration ||
+		!publication.PartitionRuntimePublished ||
+		publication.Partial ||
+		publication.FailureReason != "" ||
+		!publication.FullyApplied() ||
+		len(publication.AppliedPools) != 1 ||
+		len(publication.SkippedPools) != 0 {
+		t.Fatalf("publication = %+v, want full partition runtime publication invariants", publication)
 	}
 	if pressure := partition.currentRuntimeSnapshot().Pressure; pressure.Level != PressureLevelHigh || pressure.Generation != publication.Generation {
 		t.Fatalf("partition runtime pressure = %+v, want high generation %s", pressure, publication.Generation)
@@ -131,8 +137,15 @@ func TestPoolPartitionPublishPressureClosedPoolDoesNotPublishPartitionRuntime(t 
 	if err != nil {
 		t.Fatalf("PublishPressure() error = %v", err)
 	}
-	if publication.PartitionRuntimePublished || publication.FullyApplied() || publication.Generation != NoGeneration {
-		t.Fatalf("publication = %+v, want skipped without partition runtime publication", publication)
+	if publication.AttemptGeneration.IsZero() ||
+		publication.Generation != NoGeneration ||
+		publication.PartitionRuntimePublished ||
+		publication.Partial ||
+		publication.FailureReason == "" ||
+		publication.FullyApplied() ||
+		len(publication.AppliedPools) != 0 ||
+		len(publication.SkippedPools) != 1 {
+		t.Fatalf("publication = %+v, want skipped-before-apply partition invariants", publication)
 	}
 	if after := partition.currentRuntimeSnapshot().Generation; after != before {
 		t.Fatalf("partition runtime generation = %s, want unchanged %s", after, before)
@@ -147,8 +160,14 @@ func TestPoolGroupPublishPressureFullSuccessPublishesGroupRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatalf("PublishPressure() error = %v", err)
 	}
-	if !publication.FullyApplied() || !publication.GroupRuntimePublished || publication.Generation.IsZero() {
-		t.Fatalf("publication = %+v, want full group runtime publication", publication)
+	if publication.Generation != publication.AttemptGeneration ||
+		!publication.GroupRuntimePublished ||
+		publication.Partial ||
+		publication.FailureReason != "" ||
+		!publication.FullyApplied() ||
+		len(publication.AppliedPartitions) != 1 ||
+		len(publication.SkippedPartitions) != 0 {
+		t.Fatalf("publication = %+v, want full group runtime publication invariants", publication)
 	}
 	if pressure := group.currentRuntimeSnapshot().Pressure; pressure.Level != PressureLevelHigh || pressure.Generation != publication.Generation {
 		t.Fatalf("group runtime pressure = %+v, want high generation %s", pressure, publication.Generation)
@@ -170,8 +189,15 @@ func TestPoolGroupPublishPressureClosedPartitionDoesNotPublishGroupRuntime(t *te
 	if err != nil {
 		t.Fatalf("PublishPressure() error = %v", err)
 	}
-	if publication.GroupRuntimePublished || publication.FullyApplied() || publication.Generation != NoGeneration {
-		t.Fatalf("publication = %+v, want skipped without group runtime publication", publication)
+	if publication.AttemptGeneration.IsZero() ||
+		publication.Generation != NoGeneration ||
+		publication.GroupRuntimePublished ||
+		publication.Partial ||
+		publication.FailureReason == "" ||
+		publication.FullyApplied() ||
+		len(publication.AppliedPartitions) != 0 ||
+		len(publication.SkippedPartitions) != 1 {
+		t.Fatalf("publication = %+v, want skipped-before-apply group invariants", publication)
 	}
 	if after := group.currentRuntimeSnapshot().Generation; after != before {
 		t.Fatalf("group runtime generation = %s, want unchanged %s", after, before)

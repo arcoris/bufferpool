@@ -205,7 +205,8 @@ func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 // ExecuteTrim removes retained buffers only. It does not force active leases,
 // does not call Pool.Get or Pool.Put, and does not scan outside partition-owned
 // Pools. The cycle follows PlanTrim limits and visits Pools in deterministic
-// partition registry order.
+// target-aware order: over-target Pools first, then retained-heavy Pools, with
+// stable registry indexes as tie-breakers.
 func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 	p.mustBeInitialized()
 	if err := p.beginForegroundOperation(); err != nil {
