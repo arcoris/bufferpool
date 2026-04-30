@@ -191,6 +191,19 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 	}
 	defer batch.endPoolControlOperations()
 
+	return p.applyPlannedPoolBudgetBatchLocked(&batch), nil
+}
+
+// applyPlannedPoolBudgetBatchLocked applies a prevalidated partition-to-Pool
+// budget batch.
+//
+// The caller must already hold the partition foreground gate and must have
+// admitted every target Pool through beginPoolControlOperations. Under those
+// preconditions the apply phase cannot return policy validation errors after a
+// subset of Pools has been mutated: every Pool name, class target, and
+// feasibility report was resolved during planning, and Pool.Close is blocked by
+// the admitted Pool control operations.
+func (p *PoolPartition) applyPlannedPoolBudgetBatchLocked(batch *plannedPoolBudgetBatch) PoolPartitionBudgetPublicationReport {
 	for _, plan := range batch.plans {
 		_ = plan.pool.applyPlannedClassBudgetTargets(plan.target.ClassTargets)
 		for index := range batch.report.ClassReports {
@@ -204,7 +217,7 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 	}
 
 	batch.report.Published = len(batch.plans) > 0
-	return batch.report, nil
+	return batch.report
 }
 
 // planPoolBudgetTargetsLocked validates a full partition-to-Pool publication

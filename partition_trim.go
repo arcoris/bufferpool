@@ -61,6 +61,15 @@ type PartitionTrimPolicy struct {
 	// TrimOnPressure means trim planning is enabled only while pressure is above
 	// normal. Normal pressure produces a disabled "no_pressure" plan.
 	TrimOnPressure bool
+
+	// TrimOnPolicyShrink enables bounded retained cleanup after a live
+	// partition policy publication contracts retained targets.
+	//
+	// This flag is intentionally separate from TrimOnPressure: policy shrink is
+	// an explicit foreground control operation, not a pressure observation. It
+	// never reclaims active leases and it uses the same per-cycle pool, buffer,
+	// byte, class, and shard bounds as ordinary partition trim.
+	TrimOnPolicyShrink bool
 }
 
 // PartitionTrimPlan is a non-mutating trim plan derived from sample and policy.
@@ -164,7 +173,8 @@ func (p PartitionTrimPolicy) IsZero() bool {
 		p.MaxBytesPerCycle.IsZero() &&
 		p.MaxClassesPerPoolPerCycle == 0 &&
 		p.MaxShardsPerClassPerCycle == 0 &&
-		!p.TrimOnPressure
+		!p.TrimOnPressure &&
+		!p.TrimOnPolicyShrink
 }
 
 // Validate validates partition trim settings.
@@ -245,6 +255,39 @@ func newPartitionTrimPlan(policy PartitionTrimPolicy, pressure PartitionPressure
 		return plan
 	}
 	plan.Reason = "policy"
+	return plan
+}
+
+// newPartitionPolicyShrinkTrimPlan derives a bounded trim plan for live policy
+// contraction.
+//
+// Policy-shrink trim is foreground and explicit. It uses configured trim
+// bounds, does not require pressure to be above normal, and only removes
+// retained Pool storage through Pool.Trim. Active leases remain owned by
+// LeaseRegistry until callers release them normally.
+func newPartitionPolicyShrinkTrimPlan(policy PartitionTrimPolicy, pressureLevel PressureLevel, candidatePools int) PartitionTrimPlan {
+	policy = policy.Normalize()
+	plan := PartitionTrimPlan{
+		Enabled:                   policy.Enabled && policy.TrimOnPolicyShrink,
+		Reason:                    "policy_shrink",
+		PressureLevel:             pressureLevel,
+		CandidatePools:            candidatePools,
+		MaxPoolsPerCycle:          policy.MaxPoolsPerCycle,
+		MaxBuffersPerCycle:        policy.MaxBuffersPerCycle,
+		MaxBytesPerCycle:          policy.MaxBytesPerCycle.Bytes(),
+		MaxClassesPerPoolPerCycle: policy.MaxClassesPerPoolPerCycle,
+		MaxShardsPerClassPerCycle: policy.MaxShardsPerClassPerCycle,
+	}
+	if !policy.Enabled {
+		plan.Enabled = false
+		plan.Reason = "trim_disabled"
+		return plan
+	}
+	if !policy.TrimOnPolicyShrink {
+		plan.Enabled = false
+		plan.Reason = "policy_shrink_trim_disabled"
+		return plan
+	}
 	return plan
 }
 
