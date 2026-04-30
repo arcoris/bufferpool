@@ -112,12 +112,23 @@ type shardCredit struct {
 // reader may still observe old, new, or mixed target values; inconsistent mixed
 // target values reject retention.
 func (c *shardCredit) update(limit shardCreditLimit) Generation {
+	return c.updateAtLeast(limit, NoGeneration)
+}
+
+// updateAtLeast applies a new shard-local credit limit and publishes a
+// generation that is at least minimumGeneration.
+//
+// Budget target publication uses this path when a class budget target already
+// carries a higher-layer generation. The target fields are stored before the
+// generation marker. A concurrent reader may still observe old, new, or mixed
+// target values; inconsistent mixed target values reject retention.
+func (c *shardCredit) updateAtLeast(limit shardCreditLimit, minimumGeneration Generation) Generation {
 	limit.validate()
 
 	c.targetBuffers.Store(limit.TargetBuffers)
 	c.targetBytes.Store(limit.TargetBytes)
 
-	return c.generation.Advance()
+	return c.publishGenerationAtLeast(minimumGeneration)
 }
 
 // disable disables local retention credit and returns the new generation.
@@ -127,6 +138,28 @@ func (c *shardCredit) update(limit shardCreditLimit) Generation {
 // belongs to trim/clear paths.
 func (c *shardCredit) disable() Generation {
 	return c.update(shardCreditLimit{})
+}
+
+// publishGenerationAtLeast advances or raises the shard-credit generation.
+//
+// NoGeneration keeps the ordinary local generation stream and advances once.
+// A non-zero minimum lets applied class-budget publication preserve correlation
+// between the class target generation and each derived shard-credit update.
+func (c *shardCredit) publishGenerationAtLeast(minimumGeneration Generation) Generation {
+	if minimumGeneration.IsZero() {
+		return c.generation.Advance()
+	}
+
+	for {
+		current := c.generation.Load()
+		next := minimumGeneration
+		if !current.Before(minimumGeneration) {
+			next = current.Next()
+		}
+		if c.generation.CompareAndSwap(current, next) {
+			return next
+		}
+	}
 }
 
 // snapshot returns a point-in-time view of the current shard credit.

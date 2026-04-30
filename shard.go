@@ -294,6 +294,17 @@ func (s *shard) updateCredit(limit shardCreditLimit) Generation {
 	return s.credit.update(limit)
 }
 
+// updateCreditAtLeast applies shard-local credit while preserving a minimum
+// publication generation.
+//
+// This is used by applied class-budget targets so shard diagnostics can be
+// correlated with the class budget generation that produced the credit. The
+// shard does not compute that generation itself; it only publishes the already
+// derived local credit.
+func (s *shard) updateCreditAtLeast(limit shardCreditLimit, minimumGeneration Generation) Generation {
+	return s.credit.updateAtLeast(limit, minimumGeneration)
+}
+
 // disableCredit disables shard-local retention credit.
 //
 // Disabling credit prevents new retention through tryRetain but does not clear

@@ -138,11 +138,7 @@ func newClassBudget(classSize ClassSize) classBudget {
 // class. The value may be zero, which disables the effective retained target for
 // the class without changing the class size.
 func (b *classBudget) updateAssignedBytes(assignedBytes Size) Generation {
-	if b.classSize.IsZero() {
-		panic(errClassBudgetZeroClassSize)
-	}
-
-	return b.update(newClassBudgetLimit(b.classSize, assignedBytes))
+	return b.updateAssignedBytesAtLeast(assignedBytes, NoGeneration)
 }
 
 // update applies an already computed class budget limit.
@@ -151,6 +147,31 @@ func (b *classBudget) updateAssignedBytes(assignedBytes Size) Generation {
 // assigned byte target is stored; all whole-buffer fields are recomputed by
 // snapshot readers.
 func (b *classBudget) update(limit classBudgetLimit) Generation {
+	return b.updateAtLeast(limit, NoGeneration)
+}
+
+// updateAssignedBytesAtLeast computes and applies a new class budget while
+// publishing a generation that is at least minimumGeneration.
+//
+// Higher-level budget target publication uses this path so a target generation
+// can flow down into class budget snapshots. NoGeneration keeps legacy local
+// behavior and advances by one.
+func (b *classBudget) updateAssignedBytesAtLeast(assignedBytes Size, minimumGeneration Generation) Generation {
+	if b.classSize.IsZero() {
+		panic(errClassBudgetZeroClassSize)
+	}
+
+	return b.updateAtLeast(newClassBudgetLimit(b.classSize, assignedBytes), minimumGeneration)
+}
+
+// updateAtLeast applies an already computed class budget limit and publishes a
+// generation at least as new as minimumGeneration.
+//
+// The assigned byte target is stored before the generation marker. Concurrent
+// snapshots are observational and may see old or new publication state, but any
+// completed update returns a generation that is suitable for correlation with
+// the caller's budget target stream.
+func (b *classBudget) updateAtLeast(limit classBudgetLimit, minimumGeneration Generation) Generation {
 	limit.validate()
 
 	if b.classSize.IsZero() {
@@ -163,7 +184,7 @@ func (b *classBudget) update(limit classBudgetLimit) Generation {
 
 	b.assignedBytes.Store(limit.AssignedBytes)
 
-	return b.generation.Advance()
+	return b.publishGenerationAtLeast(minimumGeneration)
 }
 
 // disable disables the effective retained target for this class and returns the
@@ -173,6 +194,29 @@ func (b *classBudget) update(limit classBudgetLimit) Generation {
 // retained memory must be released by trim or clear paths.
 func (b *classBudget) disable() Generation {
 	return b.updateAssignedBytes(0)
+}
+
+// publishGenerationAtLeast advances or stores the budget generation.
+//
+// When minimumGeneration is NoGeneration, ordinary local monotonic advancement
+// is used. When a caller provides a target generation, the budget stream moves
+// to that generation if it is newer than the current value; otherwise it
+// advances once so every applied update still has a fresh local marker.
+func (b *classBudget) publishGenerationAtLeast(minimumGeneration Generation) Generation {
+	if minimumGeneration.IsZero() {
+		return b.generation.Advance()
+	}
+
+	for {
+		current := b.generation.Load()
+		next := minimumGeneration
+		if !current.Before(minimumGeneration) {
+			next = current.Next()
+		}
+		if b.generation.CompareAndSwap(current, next) {
+			return next
+		}
+	}
 }
 
 // snapshot returns a point-in-time view of this class budget.

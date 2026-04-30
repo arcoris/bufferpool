@@ -198,6 +198,19 @@ func (s *classState) updateBudget(assignedBytes Size) Generation {
 	return generation
 }
 
+// updateBudgetAtLeast computes and publishes a class budget while preserving a
+// caller-provided minimum publication generation.
+//
+// Pool budget target application uses this method to make class budget snapshots
+// correlate with the applied target generation. Publication is still
+// shard-by-shard; no Pool hot-path operation calls this method.
+func (s *classState) updateBudgetAtLeast(assignedBytes Size, minimumGeneration Generation) Generation {
+	generation := s.budget.updateAssignedBytesAtLeast(assignedBytes, minimumGeneration)
+	s.applyShardCreditPlanAtLeast(s.budget.shardCreditPlan(len(s.shards)), generation)
+
+	return generation
+}
+
 // updateBudgetLimit publishes an already computed class budget limit.
 //
 // The limit must belong to this class size. This method is useful when a higher
@@ -226,12 +239,23 @@ func (s *classState) disableBudget() Generation {
 //
 // The plan MUST have the same shard count as the class state.
 func (s *classState) applyShardCreditPlan(plan classShardCreditPlan) {
+	s.applyShardCreditPlanAtLeast(plan, NoGeneration)
+}
+
+// applyShardCreditPlanAtLeast applies a class-derived shard credit plan while
+// preserving a minimum credit generation.
+//
+// Applied budget targets call this helper with the class-budget generation so
+// shard snapshots can be correlated with the budget target that produced their
+// local credit. Ordinary local updates pass NoGeneration and retain the
+// shard-credit stream's normal one-step advancement behavior.
+func (s *classState) applyShardCreditPlanAtLeast(plan classShardCreditPlan, minimumGeneration Generation) {
 	if plan.ShardCount != len(s.shards) {
 		panic(errClassStateInvalidShardCount)
 	}
 
 	for index := range s.shards {
-		s.shards[index].updateCredit(plan.creditForShard(index))
+		s.shards[index].updateCreditAtLeast(plan.creditForShard(index), minimumGeneration)
 	}
 }
 
