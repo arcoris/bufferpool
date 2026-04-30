@@ -113,6 +113,19 @@ func (p *Pool) Trim(plan PoolTrimPlan) PoolTrimResult {
 	}
 	defer p.endOperation()
 
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
+
+	return p.trimLocked(plan)
+}
+
+// trimLocked executes a Pool-wide physical trim while a Pool control operation
+// and controlMu are already held.
+//
+// The helper exists so Pool.PublishPolicy can publish a contraction and execute
+// optional bounded cleanup inside one ordered Pool-local control operation
+// without re-entering the lifecycle gate or control mutex.
+func (p *Pool) trimLocked(plan PoolTrimPlan) PoolTrimResult {
 	result := PoolTrimResult{Attempted: true, Reason: errPoolTrimCompleted}
 	candidates := p.poolTrimCandidates()
 	result.CandidateClasses = poolTrimCandidateReports(candidates)
@@ -146,6 +159,8 @@ func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTri
 		return PoolTrimResult{Reason: err.Error()}
 	}
 	defer p.endOperation()
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
 	result := PoolTrimResult{Attempted: true, VisitedClasses: 1, Reason: errPoolTrimCompleted}
 	result.add(p.trimClassState(&p.classes[classID.Index()], maxBuffers, maxBytes.Bytes(), 0))
 	return result
@@ -171,6 +186,8 @@ func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxByt
 		return PoolTrimResult{Reason: err.Error()}
 	}
 	defer p.endOperation()
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
 	bucketResult := state.trimShardBounded(shardIndex, maxBuffers, maxBytes.Bytes())
 	result := PoolTrimResult{Attempted: true, VisitedClasses: 1, VisitedShards: 1, Reason: errPoolTrimCompleted}
 	result.addBucket(bucketResult)

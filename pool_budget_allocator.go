@@ -109,7 +109,10 @@ func (p *Pool) applyPoolBudget(target PoolBudgetTarget) (Generation, error) {
 	}
 	defer p.endOperation()
 
-	return p.applyPlannedClassBudgetTargets(report.Targets), nil
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
+
+	return p.applyPlannedClassBudgetTargetsAndPublishLocked(report.Targets), nil
 }
 
 // applyClassBudgets publishes class targets and derived shard credits.
@@ -133,17 +136,47 @@ func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) (Generation, error
 	}
 	defer p.endOperation()
 
-	return p.applyPlannedClassBudgetTargets(targets), nil
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
+
+	return p.applyPlannedClassBudgetTargetsAndPublishLocked(targets), nil
 }
 
-// applyPlannedClassBudgetTargets applies a prevalidated class target batch.
+// applyPlannedClassBudgetTargets applies a prevalidated class target batch and
+// republishes the current runtime policy view with the resulting generation.
 //
 // Callers must already hold a Pool control operation admitted through
-// beginPoolControlOperation. The class table is immutable, and planning has
+// beginPoolControlOperation. The method takes controlMu because class-budget
+// publication changes the same immutable runtime snapshot pointer as pressure
+// and live policy publication. The class table is immutable, and planning has
 // already checked target identity and duplicate class IDs, so this apply phase
 // cannot return policy errors after earlier classes were mutated. Pool.Get and
 // Pool.Put never call this method.
 func (p *Pool) applyPlannedClassBudgetTargets(targets []ClassBudgetTarget) Generation {
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
+
+	return p.applyPlannedClassBudgetTargetsAndPublishLocked(targets)
+}
+
+// applyPlannedClassBudgetTargetsAndPublishLocked applies targets while controlMu
+// is already held and republishes the current runtime policy snapshot.
+func (p *Pool) applyPlannedClassBudgetTargetsAndPublishLocked(targets []ClassBudgetTarget) Generation {
+	generation := p.applyPlannedClassBudgetTargetsLocked(targets)
+	runtime := p.currentRuntimeSnapshot()
+	poolGeneration := budgetPublicationGeneration(runtime.Generation, generation)
+	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(poolGeneration, runtime.Policy, runtime.Pressure))
+	return poolGeneration
+}
+
+// applyPlannedClassBudgetTargetsLocked applies prevalidated targets without
+// publishing a Pool runtime snapshot.
+//
+// Live policy publication uses this helper to apply candidate-policy class
+// budgets before atomically publishing the candidate runtime snapshot. Other
+// control paths call applyPlannedClassBudgetTargetsAndPublishLocked so budget
+// changes remain visible through the Pool runtime generation.
+func (p *Pool) applyPlannedClassBudgetTargetsLocked(targets []ClassBudgetTarget) Generation {
 	var generation Generation
 	for _, target := range targets {
 		state := &p.classes[target.ClassID.Index()]
@@ -154,10 +187,7 @@ func (p *Pool) applyPlannedClassBudgetTargets(targets []ClassBudgetTarget) Gener
 		}
 	}
 
-	runtime := p.currentRuntimeSnapshot()
-	poolGeneration := budgetPublicationGeneration(runtime.Generation, generation)
-	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(poolGeneration, runtime.Policy, runtime.Pressure))
-	return poolGeneration
+	return generation
 }
 
 // defaultClassBudgetTargets computes class targets for a Pool-level retained
@@ -169,11 +199,20 @@ func (p *Pool) defaultClassBudgetTargets(generation Generation, retainedBytes Si
 // defaultClassBudgetTargetsReport computes default class targets and keeps the
 // allocation feasibility report for applied budget publication.
 func (p *Pool) defaultClassBudgetTargetsReport(generation Generation, retainedBytes Size) classBudgetAllocationReport {
+	return p.defaultClassBudgetTargetsReportForPolicy(generation, retainedBytes, p.currentRuntimeSnapshot().Policy)
+}
+
+// defaultClassBudgetTargetsReportForPolicy computes class targets using policy
+// instead of the currently published runtime policy.
+//
+// Pool.PublishPolicy uses this during the planning phase so rejected candidate
+// policies do not mutate runtime snapshots before budget feasibility is known.
+func (p *Pool) defaultClassBudgetTargetsReportForPolicy(generation Generation, retainedBytes Size, policy Policy) classBudgetAllocationReport {
 	inputs := make([]classBudgetAllocationInput, len(p.classes))
 	for index := range p.classes {
 		inputs[index] = classBudgetAllocationInput{
 			ClassID:        p.classes[index].classID(),
-			MaxTargetBytes: SizeFromBytes(poolClassStaticBudgetCap(p.currentRuntimeSnapshot().Policy, p.classes[index].classSize())),
+			MaxTargetBytes: SizeFromBytes(poolClassStaticBudgetCap(policy, p.classes[index].classSize())),
 		}
 	}
 
@@ -196,8 +235,14 @@ func (p *Pool) validatePoolBudgetTarget(target PoolBudgetTarget) error {
 // planPoolBudget validates a PoolBudgetTarget and returns the full class target
 // batch without mutating Pool runtime state.
 func (p *Pool) planPoolBudget(target PoolBudgetTarget) (classBudgetAllocationReport, error) {
+	return p.planPoolBudgetForPolicy(target, p.currentRuntimeSnapshot().Policy)
+}
+
+// planPoolBudgetForPolicy validates a PoolBudgetTarget against an explicit
+// policy value without mutating Pool runtime state.
+func (p *Pool) planPoolBudgetForPolicy(target PoolBudgetTarget, policy Policy) (classBudgetAllocationReport, error) {
 	if len(target.ClassTargets) == 0 {
-		report := p.defaultClassBudgetTargetsReport(target.Generation, target.RetainedBytes)
+		report := p.defaultClassBudgetTargetsReportForPolicy(target.Generation, target.RetainedBytes, policy)
 		if err := p.validateClassBudgetTargets(report.Targets); err != nil {
 			return report, err
 		}

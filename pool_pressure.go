@@ -35,6 +35,9 @@ func (p *Pool) applyPressure(signal PressureSignal) error {
 	}
 	defer p.endOperation()
 
+	p.controlMu.Lock()
+	defer p.controlMu.Unlock()
+
 	runtime := p.currentRuntimeSnapshot()
 	generation := budgetPublicationGeneration(runtime.Generation, signal.Generation)
 	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))

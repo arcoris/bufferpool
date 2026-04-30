@@ -94,6 +94,15 @@ type Pool struct {
 	closeMu   sync.Mutex
 	closeCond *sync.Cond
 
+	// controlMu serializes Pool-local control-plane mutations.
+	//
+	// Pool.Get and Pool.Put never take this mutex. It protects foreground
+	// operations that publish runtime snapshots, pressure, class budgets, shard
+	// credits, or bounded trim effects so they do not overwrite each other's
+	// immutable runtime view. The lifecycle operation gate still protects these
+	// operations from hard Close; controlMu only orders admitted control work.
+	controlMu sync.Mutex
+
 	// name is diagnostic metadata only.
 	//
 	// It MUST NOT participate in class lookup, retention admission, shard
@@ -113,6 +122,14 @@ type Pool struct {
 	// useful for diagnostics and for future code that needs to distinguish the
 	// initial policy from controller-published runtime views.
 	constructionPolicy Policy
+
+	// constructionMode records which owner boundary built the Pool.
+	//
+	// Standalone Pools reject lease-aware live policy features that require a
+	// LeaseRegistry. Partition-owned Pools may keep those already-built semantics,
+	// but live updates still reject ownership shape changes because active lease
+	// records cannot be rewritten safely.
+	constructionMode poolConstructionMode
 
 	// runtimeSnapshot is the immutable policy view used by hot-path admission.
 	runtimeSnapshot atomic.Pointer[poolRuntimeSnapshot]
@@ -191,6 +208,7 @@ func newPool(config PoolConfig, mode poolConstructionMode) (*Pool, error) {
 		name:               normalized.Name,
 		config:             normalized,
 		constructionPolicy: normalized.Policy,
+		constructionMode:   mode,
 		table:              table,
 		classes:            classes,
 		selectors:          selectors,
