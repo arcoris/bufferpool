@@ -30,6 +30,10 @@ func (p *Pool) applyPressure(signal PressureSignal) error {
 	if err := signal.validate(); err != nil {
 		return wrapError(ErrInvalidOptions, err, errPoolPressureInvalid)
 	}
+	if err := p.beginAcquireOperation(); err != nil {
+		return err
+	}
+	defer p.endOperation()
 
 	runtime := p.currentRuntimeSnapshot()
 	generation := budgetPublicationGeneration(runtime.Generation, signal.Generation)

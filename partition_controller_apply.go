@@ -93,18 +93,66 @@ func partitionIndexSetContains(indexes []int, index int) bool {
 	return false
 }
 
-// controllerPoolBudgetTargets computes class-aware Pool budget targets for the
-// sampled Pool windows in one controller cycle.
-func (p *PoolPartition) controllerPoolBudgetTargets(
+// controllerUpdatedClassEWMA builds the next class EWMA snapshot for a tick.
+//
+// The controller keeps this snapshot local until budget publication succeeds.
+// Pool-level scores and class-level scores for the tick both read from this same
+// map, so the hierarchy is phase-consistent and cannot mix old Pool scores with
+// newly updated class scores.
+func (p *PoolPartition) controllerUpdatedClassEWMA(window PoolPartitionWindow, elapsed time.Duration) map[poolClassKey]PoolClassEWMAState {
+	next := copyPoolClassEWMAStateMap(p.controller.ewmaByPoolClass)
+	for _, poolWindow := range window.Pools {
+		for _, classWindow := range poolWindow.Classes {
+			activity := newPoolPartitionClassActivity(classWindow, elapsed)
+			key := poolClassKey{PoolName: poolWindow.Name, ClassID: classWindow.ClassID}
+			next[key] = next[key].WithUpdate(PoolPartitionEWMAConfig{}, elapsed, activity)
+		}
+	}
+	return next
+}
+
+// copyPoolClassEWMAStateMap returns a mutable copy of src.
+func copyPoolClassEWMAStateMap(src map[poolClassKey]PoolClassEWMAState) map[poolClassKey]PoolClassEWMAState {
+	copied := make(map[poolClassKey]PoolClassEWMAState, len(src))
+	for key, value := range src {
+		copied[key] = value
+	}
+	return copied
+}
+
+// controllerClassScoreMap computes class scores from one EWMA snapshot.
+func controllerClassScoreMap(window PoolPartitionWindow, elapsed time.Duration, ewma map[poolClassKey]PoolClassEWMAState) map[poolClassKey]float64 {
+	scores := make(map[poolClassKey]float64)
+	for _, poolWindow := range window.Pools {
+		for _, classWindow := range poolWindow.Classes {
+			key := poolClassKey{PoolName: poolWindow.Name, ClassID: classWindow.ClassID}
+			activity := newPoolPartitionClassActivity(classWindow, elapsed)
+			scores[key] = poolPartitionClassScore(classWindow.Current, activity, ewma[key])
+		}
+	}
+	return scores
+}
+
+// controllerPoolBudgetReport computes class-aware Pool budget targets for the
+// sampled Pool windows in one controller cycle while preserving feasibility.
+func (p *PoolPartition) controllerPoolBudgetReport(
 	generation Generation,
 	runtime *partitionRuntimeSnapshot,
 	window PoolPartitionWindow,
 	elapsed time.Duration,
-) []PoolBudgetTarget {
+	updatedEWMA map[poolClassKey]PoolClassEWMAState,
+) PoolPartitionBudgetPublicationReport {
 	if len(window.Pools) == 0 {
-		return nil
+		return PoolPartitionBudgetPublicationReport{
+			Generation: generation,
+			Allocation: BudgetAllocationDiagnostics{
+				Feasible: true,
+				Reason:   budgetAllocationReasonFeasible,
+			},
+		}
 	}
 
+	classScores := controllerClassScoreMap(window, elapsed, updatedEWMA)
 	inputs := make([]poolBudgetAllocationInput, 0, len(window.Pools))
 	for _, poolWindow := range window.Pools {
 		pool, ok := p.registry.pool(poolWindow.Name)
@@ -115,7 +163,7 @@ func (p *PoolPartition) controllerPoolBudgetTargets(
 			PoolName:          poolWindow.Name,
 			BaseRetainedBytes: SizeFromBytes(poolWindowCurrentBudgetBytes(poolWindow)),
 			MaxRetainedBytes:  SizeFromBytes(poolControllerRetainedBudget(pool)),
-			Score:             poolWindowScore(p, poolWindow, elapsed),
+			Score:             poolWindowScore(poolWindow, classScores),
 		})
 	}
 
@@ -123,42 +171,69 @@ func (p *PoolPartition) controllerPoolBudgetTargets(
 	if retainedBytes.IsZero() {
 		retainedBytes = SizeFromBytes(partitionControllerDefaultRetainedBudget(p, inputs))
 	}
-	targets := allocatePoolBudgetTargets(generation, retainedBytes, inputs)
+	allocation := allocatePoolBudgetTargetsReport(generation, retainedBytes, inputs)
+	report := PoolPartitionBudgetPublicationReport{
+		Generation: generation,
+		Allocation: newBudgetAllocationDiagnostics(allocation.Allocation),
+		Targets:    allocation.Targets,
+		Published:  false,
+	}
+	if !allocation.Allocation.Feasible {
+		report.FailureReason = allocation.Allocation.Reason
+		return report
+	}
+	targets := allocation.Targets
 	for index := range targets {
 		if poolWindow, ok := findPoolPartitionPoolWindow(window, targets[index].PoolName); ok {
 			if pool, ok := p.registry.pool(targets[index].PoolName); ok {
-				targets[index].ClassTargets = p.controllerClassBudgetTargets(generation, pool, poolWindow, targets[index].RetainedBytes, elapsed)
+				classReport := p.controllerClassBudgetReport(generation, pool, poolWindow, targets[index].RetainedBytes, classScores)
+				classReport.PoolName = targets[index].PoolName
+				report.ClassReports = append(report.ClassReports, classReport)
+				targets[index].ClassTargets = classReport.Targets
+				if !classReport.Allocation.Feasible {
+					report.FailureReason = classReport.Allocation.Reason
+					report.Targets = targets
+					return report
+				}
 			}
 		}
 	}
+	report.Targets = targets
 
-	return targets
+	return report
 }
 
-// controllerClassBudgetTargets computes class targets for one Pool budget target.
-func (p *PoolPartition) controllerClassBudgetTargets(
+// controllerClassBudgetReport computes class targets for one Pool budget target.
+func (p *PoolPartition) controllerClassBudgetReport(
 	generation Generation,
 	pool *Pool,
 	window PoolPartitionPoolWindow,
 	retainedBytes Size,
-	elapsed time.Duration,
-) []ClassBudgetTarget {
+	classScores map[poolClassKey]float64,
+) PoolClassBudgetPublicationReport {
 	inputs := make([]classBudgetAllocationInput, 0, len(window.Classes))
 	policy := pool.currentRuntimeSnapshot().Policy
 	for _, classWindow := range window.Classes {
-		activity := newPoolPartitionClassActivity(classWindow, elapsed)
 		key := poolClassKey{PoolName: window.Name, ClassID: classWindow.ClassID}
-		ewma := p.controller.ewmaByPoolClass[key].WithUpdate(PoolPartitionEWMAConfig{}, elapsed, activity)
-		p.controller.ewmaByPoolClass[key] = ewma
 
 		inputs = append(inputs, classBudgetAllocationInput{
 			ClassID:         classWindow.ClassID,
 			BaseTargetBytes: SizeFromBytes(classWindow.Current.Budget.AssignedBytes),
 			MaxTargetBytes:  SizeFromBytes(poolClassStaticBudgetCap(policy, classWindow.Class.Size())),
-			Score:           poolPartitionClassScore(classWindow.Current, activity, ewma),
+			Score:           classScores[key],
 		})
 	}
-	return allocateClassBudgetTargets(generation, retainedBytes, inputs)
+	allocation := allocateClassBudgetTargetsReport(generation, retainedBytes, inputs)
+	report := PoolClassBudgetPublicationReport{
+		Generation: generation,
+		Allocation: newBudgetAllocationDiagnostics(allocation.Allocation),
+		Targets:    allocation.Targets,
+		Published:  false,
+	}
+	if !allocation.Allocation.Feasible {
+		report.FailureReason = allocation.Allocation.Reason
+	}
+	return report
 }
 
 // poolWindowCurrentBudgetBytes returns the current assigned class budget total.
@@ -170,14 +245,12 @@ func poolWindowCurrentBudgetBytes(window PoolPartitionPoolWindow) uint64 {
 	return total
 }
 
-// poolWindowScore aggregates class scores for Pool-level budget allocation.
-func poolWindowScore(p *PoolPartition, window PoolPartitionPoolWindow, elapsed time.Duration) float64 {
+// poolWindowScore aggregates class scores from the tick-local score snapshot.
+func poolWindowScore(window PoolPartitionPoolWindow, classScores map[poolClassKey]float64) float64 {
 	var score float64
 	for _, class := range window.Classes {
-		activity := newPoolPartitionClassActivity(class, elapsed)
 		key := poolClassKey{PoolName: window.Name, ClassID: class.ClassID}
-		ewma := p.controller.ewmaByPoolClass[key]
-		score += poolPartitionClassScore(class.Current, activity, ewma)
+		score += classScores[key]
 	}
 	return score
 }

@@ -173,6 +173,99 @@ func TestPoolGroupApplyPartitionBudgetTargetsRejectsMissingPartition(t *testing.
 	}
 }
 
+func TestPoolApplyBudgetReportsInfeasibleClassBudget(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+
+	before := pool.Snapshot()
+	target := PoolBudgetTarget{
+		Generation:    Generation(120),
+		RetainedBytes: SizeFromBytes(512),
+		ClassTargets: []ClassBudgetTarget{
+			{Generation: Generation(120), ClassID: ClassID(0), TargetBytes: 2 * KiB},
+		},
+	}
+	report, err := pool.planPoolBudget(target)
+	if err != nil {
+		t.Fatalf("planPoolBudget() error = %v", err)
+	}
+	if report.Allocation.Feasible {
+		t.Fatalf("class allocation feasible = true, want infeasible")
+	}
+	if _, err := pool.applyPoolBudget(target); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("applyPoolBudget(infeasible) error = %v, want ErrInvalidPolicy", err)
+	}
+	after := pool.Snapshot()
+	if after.Generation != before.Generation {
+		t.Fatalf("pool generation after rejected budget = %s, want %s", after.Generation, before.Generation)
+	}
+}
+
+func TestApplyPoolBudgetTargetsRejectsInfeasibleWithoutPartialMutation(t *testing.T) {
+	t.Parallel()
+
+	config := poolBudgetTestPartitionConfig()
+	config.Pools = append(config.Pools, PartitionPoolConfig{Name: "secondary", Config: PoolConfig{Policy: poolTestSmallSingleShardPolicy()}})
+	partition := MustNewPoolPartition(config)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	beforePrimary, _ := partition.PoolSnapshot("primary")
+	beforeSecondary, _ := partition.PoolSnapshot("secondary")
+	err := partition.applyPoolBudgetTargets([]PoolBudgetTarget{
+		{
+			Generation:    Generation(121),
+			PoolName:      "primary",
+			RetainedBytes: SizeFromBytes(512),
+			ClassTargets: []ClassBudgetTarget{
+				{Generation: Generation(121), ClassID: ClassID(0), TargetBytes: 2 * KiB},
+			},
+		},
+		{
+			Generation:    Generation(121),
+			PoolName:      "secondary",
+			RetainedBytes: KiB,
+		},
+	})
+	if !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("applyPoolBudgetTargets(infeasible) error = %v, want ErrInvalidPolicy", err)
+	}
+	afterPrimary, _ := partition.PoolSnapshot("primary")
+	afterSecondary, _ := partition.PoolSnapshot("secondary")
+	if afterPrimary.Generation != beforePrimary.Generation || afterSecondary.Generation != beforeSecondary.Generation {
+		t.Fatalf("pool generations changed after rejected batch: primary %s/%s secondary %s/%s",
+			beforePrimary.Generation,
+			afterPrimary.Generation,
+			beforeSecondary.Generation,
+			afterSecondary.Generation,
+		)
+	}
+}
+
+func TestBudgetFeasibilityVisibleInControllerReports(t *testing.T) {
+	t.Parallel()
+
+	partition := MustNewPoolPartition(poolBudgetTestPartitionConfig())
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+	if !report.BudgetPublication.Allocation.Feasible {
+		t.Fatalf("controller budget allocation = %+v, want feasible", report.BudgetPublication.Allocation)
+	}
+	if !report.BudgetPublication.Published {
+		t.Fatalf("controller budget publication = %+v, want published", report.BudgetPublication)
+	}
+	if len(report.BudgetPublication.ClassReports) == 0 {
+		t.Fatalf("controller budget publication class reports missing")
+	}
+}
+
 func poolBudgetTestPartitionConfig() PoolPartitionConfig {
 	return PoolPartitionConfig{
 		Name: "alpha",

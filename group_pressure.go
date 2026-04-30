@@ -32,11 +32,26 @@ type PoolGroupPressureSnapshot PartitionPressureSnapshot
 // so the caller can see the partial publication instead of inferring it from a
 // generic error.
 type PoolGroupPressurePublication struct {
-	// Generation identifies the group pressure publication.
+	// Generation identifies the fully applied group pressure publication. It is
+	// NoGeneration when group runtime was not published.
 	Generation Generation
+
+	// AttemptGeneration identifies the child signal attempted for this call.
+	AttemptGeneration Generation
 
 	// Signal is the group-level pressure signal.
 	Signal PressureSignal
+
+	// GroupRuntimePublished reports whether the group runtime snapshot was
+	// published after every child partition accepted the signal.
+	GroupRuntimePublished bool
+
+	// Partial reports whether at least one child accepted the signal while the
+	// group runtime snapshot was not published.
+	Partial bool
+
+	// FailureReason is empty on full success and diagnostic on skip/failure.
+	FailureReason string
 
 	// AppliedPartitions contains partitions that accepted the signal.
 	AppliedPartitions []PoolGroupPressurePublicationEntry
@@ -47,7 +62,7 @@ type PoolGroupPressurePublication struct {
 
 // FullyApplied reports whether every group-owned partition accepted the signal.
 func (p PoolGroupPressurePublication) FullyApplied() bool {
-	return len(p.SkippedPartitions) == 0
+	return p.GroupRuntimePublished && len(p.SkippedPartitions) == 0
 }
 
 // PoolGroupPressurePublicationEntry describes one partition in pressure
@@ -98,9 +113,9 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		return PoolGroupPressurePublication{}, newError(ErrClosed, errGroupClosed)
 	}
 
-	generation := g.generation.Load().Next()
-	signal := PressureSignal{Level: level, Source: PressureSourceGroup, Generation: generation}
-	publication := PoolGroupPressurePublication{Generation: generation, Signal: signal}
+	attemptGeneration := g.generation.Load().Next()
+	signal := PressureSignal{Level: level, Source: PressureSourceGroup, Generation: attemptGeneration}
+	publication := PoolGroupPressurePublication{AttemptGeneration: attemptGeneration, Signal: signal}
 	for _, entry := range g.registry.entries {
 		if entry.partition.IsClosed() {
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
@@ -110,12 +125,15 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		}
 	}
 	if len(publication.SkippedPartitions) > 0 {
+		publication.FailureReason = errPartitionClosed
 		return publication, nil
 	}
 
 	for _, entry := range g.registry.entries {
 		partitionPublication, err := entry.partition.publishPressureSignal(signal)
 		if err != nil {
+			publication.Partial = len(publication.AppliedPartitions) > 0
+			publication.FailureReason = err.Error()
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
 				PartitionName: entry.name,
 				Reason:        err.Error(),
@@ -123,6 +141,8 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 			return publication, err
 		}
 		if !partitionPublication.FullyApplied() {
+			publication.Partial = len(publication.AppliedPartitions) > 0
+			publication.FailureReason = errPartitionClosed
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
 				PartitionName: entry.name,
 				Reason:        errPartitionClosed,
@@ -132,8 +152,10 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		publication.AppliedPartitions = append(publication.AppliedPartitions, PoolGroupPressurePublicationEntry{PartitionName: entry.name})
 	}
 
-	g.generation.Store(generation)
+	g.generation.Store(attemptGeneration)
 	runtime := g.currentRuntimeSnapshot()
-	g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))
+	g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(attemptGeneration, runtime.Policy, signal))
+	publication.Generation = attemptGeneration
+	publication.GroupRuntimePublished = true
 	return publication, nil
 }

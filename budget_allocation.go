@@ -77,6 +77,49 @@ type budgetAllocationReport struct {
 	Reason             string
 }
 
+// BudgetAllocationDiagnostics is the report-facing summary of one retained-byte
+// allocation attempt.
+//
+// Applied controller and coordinator paths use this value instead of exposing
+// the internal allocator result slice. Feasible is the publication guard for
+// hard retained budgets: when it is false, child minimums alone exceed the
+// parent target and the caller must either reject publication or explicitly
+// report soft overcommit. Pool, PoolPartition, and PoolGroup do not call this
+// allocator from Get or Put.
+type BudgetAllocationDiagnostics struct {
+	// Feasible reports whether child minimum assignments fit inside the parent
+	// retained-byte target.
+	Feasible bool
+
+	// RequestedBytes is the parent retained-byte target provided to the allocator.
+	RequestedBytes uint64
+
+	// AssignedBytes is the total bytes assigned across all child targets.
+	AssignedBytes uint64
+
+	// OvercommittedBytes is AssignedBytes - RequestedBytes when Feasible is false.
+	OvercommittedBytes uint64
+
+	// Reason is a stable diagnostic reason for feasibility.
+	Reason string
+
+	// TargetCount is the number of child targets produced by the allocation.
+	TargetCount int
+}
+
+// newBudgetAllocationDiagnostics converts an internal allocator report into a
+// stable report-facing summary.
+func newBudgetAllocationDiagnostics(report budgetAllocationReport) BudgetAllocationDiagnostics {
+	return BudgetAllocationDiagnostics{
+		Feasible:           report.Feasible,
+		RequestedBytes:     report.RequestedBytes,
+		AssignedBytes:      report.AssignedBytes,
+		OvercommittedBytes: report.OvercommittedBytes,
+		Reason:             report.Reason,
+		TargetCount:        len(report.Results),
+	}
+}
+
 // allocateBudgetTargets distributes parentBytes across inputs.
 //
 // The algorithm is base-first:

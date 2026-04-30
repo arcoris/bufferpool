@@ -251,6 +251,12 @@ func (r *partitionActiveRegistry) resetDirty() {
 // bit increments idle count only when the Pool is already active and clean; dirty
 // Pools are kept active until the controller consumes the dirty marker.
 func (r *partitionActiveRegistry) observeControllerActivity(indexes []int, activeDeltas []bool) error {
+	return r.observeControllerActivityWithDirtyIndexes(indexes, activeDeltas, r.dirtyIndexes(nil))
+}
+
+// observeControllerActivityWithDirtyIndexes updates active markers using a dirty
+// snapshot captured at the start of a controller cycle.
+func (r *partitionActiveRegistry) observeControllerActivityWithDirtyIndexes(indexes []int, activeDeltas []bool, dirtyIndexes []int) error {
 	if r == nil {
 		return nil
 	}
@@ -270,7 +276,7 @@ func (r *partitionActiveRegistry) observeControllerActivity(indexes []int, activ
 			}
 			continue
 		}
-		if !partitionActiveRegistryBitSet(r.activeBits, index) || partitionActiveRegistryBitSet(r.dirtyBits, index) {
+		if !partitionActiveRegistryBitSet(r.activeBits, index) || partitionIndexSetContains(dirtyIndexes, index) {
 			continue
 		}
 		if r.idleWindows[index] < partitionActiveRegistryIdleWindowLimit {

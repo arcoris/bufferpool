@@ -82,6 +82,38 @@ func TestPoolTrimClearsBucketReferences(t *testing.T) {
 	assertPoolClassShardSlotsCleared(t, pool, ClassID(0), 0)
 }
 
+func TestPoolTrimPrefersOverTargetClass(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+	seedPoolRetainedBuffers(t, pool, 1, 512)
+	seedPoolRetainedBuffers(t, pool, 1, 1024)
+	_, err := pool.applyClassBudgets([]ClassBudgetTarget{
+		{Generation: Generation(20), ClassID: ClassID(0), TargetBytes: 4 * KiB},
+		{Generation: Generation(20), ClassID: ClassID(1), TargetBytes: 0},
+	})
+	if err != nil {
+		t.Fatalf("applyClassBudgets() error = %v", err)
+	}
+
+	result := pool.Trim(PoolTrimPlan{MaxBuffers: 1, MaxBytes: KiB, MaxClasses: 1, MaxShardsPerClass: 1})
+	if !result.Executed || len(result.CandidateClasses) == 0 || result.CandidateClasses[0].ClassID != ClassID(1) {
+		t.Fatalf("Trim() = %+v, want class 1 selected first", result)
+	}
+	snapshot := pool.Snapshot()
+	if snapshot.Classes[1].CurrentRetainedBuffers != 0 || snapshot.Classes[0].CurrentRetainedBuffers != 1 {
+		t.Fatalf("retained after target-aware trim = class0 %d class1 %d, want class1 trimmed",
+			snapshot.Classes[0].CurrentRetainedBuffers,
+			snapshot.Classes[1].CurrentRetainedBuffers,
+		)
+	}
+}
+
 // TestPoolPressureNormalPreservesRetention verifies normal pressure is a no-op
 // for return admission.
 func TestPoolPressureNormalPreservesRetention(t *testing.T) {

@@ -185,6 +185,41 @@ func BenchmarkPoolGetFallback2(b *testing.B) {
 	benchmarkPoolGetFallback(b, 2)
 }
 
+// BenchmarkPoolGetFallbackHitPrimary isolates the primary-shard hit path while
+// fallback probing is configured but unused.
+func BenchmarkPoolGetFallbackHitPrimary(b *testing.B) {
+	benchmarkPoolGetFallbackPrefilled(b, 1, 0)
+}
+
+// BenchmarkPoolGetFallbackMissPrimaryHitSecondary isolates the configured
+// fallback probe that succeeds on the secondary shard without allocating.
+func BenchmarkPoolGetFallbackMissPrimaryHitSecondary(b *testing.B) {
+	benchmarkPoolGetFallbackPrefilled(b, 1, 1)
+}
+
+// BenchmarkPoolGetFallbackMissPrimaryMissSecondaryAllocate keeps retained
+// storage empty so primary and secondary probes miss before allocation.
+func BenchmarkPoolGetFallbackMissPrimaryMissSecondaryAllocate(b *testing.B) {
+	benchmarkPoolGetFallback(b, 1)
+}
+
+// BenchmarkPoolGetFallback0Prefilled measures a primary hit with fallback off.
+func BenchmarkPoolGetFallback0Prefilled(b *testing.B) {
+	benchmarkPoolGetFallbackPrefilled(b, 0, 0)
+}
+
+// BenchmarkPoolGetFallback1Prefilled measures a secondary hit with one fallback
+// probe.
+func BenchmarkPoolGetFallback1Prefilled(b *testing.B) {
+	benchmarkPoolGetFallbackPrefilled(b, 1, 1)
+}
+
+// BenchmarkPoolGetFallback2Prefilled measures a tertiary hit with two fallback
+// probes.
+func BenchmarkPoolGetFallback2Prefilled(b *testing.B) {
+	benchmarkPoolGetFallbackPrefilled(b, 2, 2)
+}
+
 // benchmarkPoolGetFallback measures empty-storage Get behavior for a fixed
 // eight-shard topology.
 //
@@ -221,6 +256,65 @@ func benchmarkPoolGetFallback(b *testing.B, fallbackShards int) {
 		}
 
 		poolBenchmarkBufferSink = buffer
+	}
+}
+
+// benchmarkPoolGetFallbackPrefilled measures fallback probing without allocation
+// by pre-seeding the shard that should satisfy each batch.
+func benchmarkPoolGetFallbackPrefilled(b *testing.B, fallbackShards int, hitShard int) {
+	benchCase := poolBenchmarkCase{
+		size:     300,
+		capacity: 512,
+		shards:   8,
+		selector: ShardSelectionModeSingle,
+	}
+	policy := poolBenchmarkPolicyForCase(benchCase)
+	policy.Shards.AcquisitionFallbackShards = fallbackShards
+	pool := poolBenchmarkNewPool(b, policy)
+	batchSize := poolBenchmarkBatchSize(benchCase.capacity)
+	var previousMisses uint64
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for completed := 0; completed < b.N; {
+		batch := batchSize
+		if remaining := b.N - completed; remaining < batch {
+			batch = remaining
+		}
+
+		b.StopTimer()
+		poolBenchmarkClearRetained(pool)
+		poolBenchmarkSeedRetainedShardInternal(b, pool, benchCase.capacity, hitShard, batch)
+		b.StartTimer()
+
+		for index := 0; index < batch; index++ {
+			buffer, err := pool.Get(benchCase.size)
+			if err != nil {
+				b.Fatalf("Get() returned error: %v", err)
+			}
+			if len(buffer) != benchCase.size || cap(buffer) != benchCase.capacity {
+				b.Fatalf("Get() len/cap = %d/%d, want %d/%d",
+					len(buffer),
+					cap(buffer),
+					benchCase.size,
+					benchCase.capacity,
+				)
+			}
+
+			poolBenchmarkBufferSink = buffer
+		}
+
+		completed += batch
+
+		b.StopTimer()
+		var sample poolCounterSample
+		pool.sampleCounters(&sample)
+		if sample.Counters.Misses != previousMisses {
+			b.Fatalf("prefilled fallback observed %d new misses", sample.Counters.Misses-previousMisses)
+		}
+		previousMisses = sample.Counters.Misses
+		b.StartTimer()
 	}
 }
 

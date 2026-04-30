@@ -217,6 +217,32 @@ func poolBenchmarkSeedRetainedInternal(b *testing.B, pool *Pool, capacity int, c
 	}
 }
 
+// poolBenchmarkSeedRetainedShardInternal preloads one exact shard for fallback
+// probing benchmarks.
+func poolBenchmarkSeedRetainedShardInternal(b *testing.B, pool *Pool, capacity int, shardIndex int, count int) {
+	b.Helper()
+
+	if count <= 0 {
+		return
+	}
+
+	class, ok := pool.table.classForCapacity(SizeFromInt(capacity))
+	if !ok {
+		b.Fatalf("capacity %d is not supported by benchmark policy", capacity)
+	}
+
+	state := pool.mustClassStateFor(class)
+	if shardIndex < 0 || shardIndex >= len(state.shards) {
+		b.Fatalf("shard index %d outside [0,%d)", shardIndex, len(state.shards))
+	}
+	for index := 0; index < count; index++ {
+		result := state.tryRetain(shardIndex, make([]byte, 0, capacity))
+		if !result.Retained() {
+			b.Fatalf("seed retain %d on shard %d failed: %#v", index, shardIndex, result)
+		}
+	}
+}
+
 // poolBenchmarkSeedRetainedPublic preloads retained storage through Pool.Put.
 //
 // Public seeding is less exact than internal seeding, but it produces realistic

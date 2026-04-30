@@ -57,15 +57,15 @@ func (g *PoolGroup) groupPartitionScores(window PoolGroupWindow, elapsed time.Du
 // no partition targets are published. When a hard group retained budget is
 // configured, the full target is distributed across current partitions by score
 // or equally when all partition scores are zero.
-func (g *PoolGroup) coordinatorPartitionBudgetTargets(
+func (g *PoolGroup) coordinatorPartitionBudgetReport(
 	generation Generation,
 	runtime *groupRuntimeSnapshot,
 	window PoolGroupWindow,
 	partitionScores []PoolGroupPartitionScore,
-) []PartitionBudgetTarget {
+) partitionBudgetAllocationReport {
 	retainedBytes := runtime.Policy.Budget.MaxRetainedBytes
 	if retainedBytes.IsZero() || len(window.Current.Partitions) == 0 {
-		return nil
+		return partitionBudgetAllocationReport{}
 	}
 
 	inputs := make([]partitionBudgetAllocationInput, 0, len(window.Current.Partitions))
@@ -76,7 +76,7 @@ func (g *PoolGroup) coordinatorPartitionBudgetTargets(
 		})
 	}
 
-	return g.computePartitionBudgetTargets(generation, retainedBytes, inputs)
+	return g.computePartitionBudgetTargetsReport(generation, retainedBytes, inputs)
 }
 
 // groupPartitionBudgetScore maps bounded-window movement to one positive

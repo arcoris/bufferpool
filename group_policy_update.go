@@ -37,11 +37,12 @@ func (g *PoolGroup) UpdatePolicy(policy PoolGroupPolicy) error {
 		return newError(ErrClosed, errGroupClosed)
 	}
 
-	generation := g.generation.Advance()
-	current := g.currentRuntimeSnapshot()
-	g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(generation, normalized, current.Pressure))
-
+	generation := g.generation.Load().Next()
+	var allocation partitionBudgetAllocationReport
 	if normalized.Budget.MaxRetainedBytes.IsZero() {
+		current := g.currentRuntimeSnapshot()
+		g.generation.Store(generation)
+		g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(generation, normalized, current.Pressure))
 		return nil
 	}
 
@@ -49,7 +50,15 @@ func (g *PoolGroup) UpdatePolicy(policy PoolGroupPolicy) error {
 	for _, entry := range g.registry.entries {
 		inputs = append(inputs, partitionBudgetAllocationInput{PartitionName: entry.name})
 	}
-	targets := g.computePartitionBudgetTargets(generation, normalized.Budget.MaxRetainedBytes, inputs)
+	allocation = g.computePartitionBudgetTargetsReport(generation, normalized.Budget.MaxRetainedBytes, inputs)
+	if !allocation.Allocation.Feasible {
+		return newError(ErrInvalidPolicy, allocation.Allocation.Reason)
+	}
+
+	current := g.currentRuntimeSnapshot()
+	g.generation.Store(generation)
+	g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(generation, normalized, current.Pressure))
+	targets := allocation.Targets
 	skipped, err := g.publishPartitionBudgetTargets(targets, nil)
 	if err != nil {
 		return err

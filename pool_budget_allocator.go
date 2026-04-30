@@ -60,6 +60,33 @@ type classBudgetAllocationReport struct {
 	Allocation budgetAllocationReport
 }
 
+// PoolClassBudgetPublicationReport describes one Pool-to-class budget
+// publication attempt.
+//
+// Published is true only after the complete class target batch has validated
+// and been applied. Infeasible default class allocations or malformed explicit
+// target batches are reported before mutation, preserving all-or-nothing Pool
+// budget publication.
+type PoolClassBudgetPublicationReport struct {
+	// PoolName is filled by partition callers that know the partition-local name.
+	PoolName string
+
+	// Generation is the intended class budget publication generation.
+	Generation Generation
+
+	// Allocation summarizes Pool-to-class feasibility.
+	Allocation BudgetAllocationDiagnostics
+
+	// Targets are the class targets considered for publication.
+	Targets []ClassBudgetTarget
+
+	// Published reports whether the class budget batch was applied.
+	Published bool
+
+	// FailureReason is empty on success and stable diagnostic text otherwise.
+	FailureReason string
+}
+
 // applyPoolBudget publishes a Pool-level budget target into class budgets.
 //
 // When target.ClassTargets is empty, the Pool computes class targets from
@@ -69,12 +96,15 @@ type classBudgetAllocationReport struct {
 func (p *Pool) applyPoolBudget(target PoolBudgetTarget) (Generation, error) {
 	p.mustBeInitialized()
 
-	classTargets := target.ClassTargets
-	if len(classTargets) == 0 {
-		classTargets = p.defaultClassBudgetTargets(target.Generation, target.RetainedBytes)
+	report, err := p.planPoolBudget(target)
+	if err != nil {
+		return p.currentRuntimeSnapshot().Generation, err
+	}
+	if !report.Allocation.Feasible {
+		return p.currentRuntimeSnapshot().Generation, newError(ErrInvalidPolicy, report.Allocation.Reason)
 	}
 
-	return p.applyClassBudgets(classTargets)
+	return p.applyClassBudgets(report.Targets)
 }
 
 // applyClassBudgets publishes class targets and derived shard credits.
@@ -112,6 +142,12 @@ func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) (Generation, error
 // defaultClassBudgetTargets computes class targets for a Pool-level retained
 // target when the caller did not provide explicit class targets.
 func (p *Pool) defaultClassBudgetTargets(generation Generation, retainedBytes Size) []ClassBudgetTarget {
+	return p.defaultClassBudgetTargetsReport(generation, retainedBytes).Targets
+}
+
+// defaultClassBudgetTargetsReport computes default class targets and keeps the
+// allocation feasibility report for applied budget publication.
+func (p *Pool) defaultClassBudgetTargetsReport(generation Generation, retainedBytes Size) classBudgetAllocationReport {
 	inputs := make([]classBudgetAllocationInput, len(p.classes))
 	for index := range p.classes {
 		inputs[index] = classBudgetAllocationInput{
@@ -120,17 +156,36 @@ func (p *Pool) defaultClassBudgetTargets(generation Generation, retainedBytes Si
 		}
 	}
 
-	return allocateClassBudgetTargets(generation, retainedBytes, inputs)
+	return allocateClassBudgetTargetsReport(generation, retainedBytes, inputs)
 }
 
 // validatePoolBudgetTarget validates the full class target batch implied by one
 // Pool target before publication.
 func (p *Pool) validatePoolBudgetTarget(target PoolBudgetTarget) error {
-	classTargets := target.ClassTargets
-	if len(classTargets) == 0 {
-		classTargets = p.defaultClassBudgetTargets(target.Generation, target.RetainedBytes)
+	report, err := p.planPoolBudget(target)
+	if err != nil {
+		return err
 	}
-	return p.validateClassBudgetTargets(classTargets)
+	if !report.Allocation.Feasible {
+		return newError(ErrInvalidPolicy, report.Allocation.Reason)
+	}
+	return nil
+}
+
+// planPoolBudget validates a PoolBudgetTarget and returns the full class target
+// batch without mutating Pool runtime state.
+func (p *Pool) planPoolBudget(target PoolBudgetTarget) (classBudgetAllocationReport, error) {
+	if len(target.ClassTargets) == 0 {
+		report := p.defaultClassBudgetTargetsReport(target.Generation, target.RetainedBytes)
+		if err := p.validateClassBudgetTargets(report.Targets); err != nil {
+			return report, err
+		}
+		return report, nil
+	}
+	if err := p.validateClassBudgetTargets(target.ClassTargets); err != nil {
+		return classBudgetAllocationReport{Targets: target.ClassTargets}, err
+	}
+	return classBudgetAllocationReportFromTargets(target.Generation, target.RetainedBytes, target.ClassTargets), nil
 }
 
 // validateClassBudgetTargets validates class target identity before
@@ -151,6 +206,47 @@ func (p *Pool) validateClassBudgetTargets(targets []ClassBudgetTarget) error {
 		seen[target.ClassID] = struct{}{}
 	}
 	return nil
+}
+
+// classBudgetAllocationReportFromTargets summarizes explicit class targets.
+//
+// Explicit class targets are already chosen by a higher controller phase. This
+// helper preserves feasibility visibility by checking whether the explicit
+// target sum exceeds the Pool-level parent target before Pool mutation starts.
+func classBudgetAllocationReportFromTargets(
+	generation Generation,
+	retainedBytes Size,
+	targets []ClassBudgetTarget,
+) classBudgetAllocationReport {
+	copied := append([]ClassBudgetTarget(nil), targets...)
+	results := make([]budgetAllocationResult, len(copied))
+	var assigned uint64
+	for index := range copied {
+		if copied[index].Generation.IsZero() {
+			copied[index].Generation = generation
+		}
+		targetBytes := copied[index].TargetBytes.Bytes()
+		assigned = poolSaturatingAdd(assigned, targetBytes)
+		results[index] = budgetAllocationResult{AssignedBytes: targetBytes}
+	}
+
+	requested := retainedBytes.Bytes()
+	if requested == 0 {
+		requested = assigned
+	}
+	allocation := budgetAllocationReport{
+		Results:        results,
+		Feasible:       true,
+		RequestedBytes: requested,
+		AssignedBytes:  assigned,
+		Reason:         budgetAllocationReasonFeasible,
+	}
+	if assigned > requested {
+		allocation.Feasible = false
+		allocation.OvercommittedBytes = assigned - requested
+		allocation.Reason = budgetAllocationReasonMinimumsExceedParent
+	}
+	return classBudgetAllocationReport{Targets: copied, Allocation: allocation}
 }
 
 // allocateClassBudgetTargets applies the common base-plus-adaptive allocator to

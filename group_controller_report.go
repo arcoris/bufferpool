@@ -69,6 +69,10 @@ type PoolGroupCoordinatorReport struct {
 	// PartitionBudgetTargets are retained-budget targets published by this cycle.
 	PartitionBudgetTargets []PartitionBudgetTarget
 
+	// BudgetPublication reports allocation feasibility and publication status for
+	// group-to-partition budget propagation.
+	BudgetPublication PoolGroupBudgetPublicationReport
+
 	// SkippedPartitions records partitions that did not accept budget publication.
 	SkippedPartitions []PoolGroupSkippedPartition
 }

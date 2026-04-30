@@ -237,6 +237,57 @@ func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	}
 }
 
+func TestPartitionTrimPrefersOverTargetPool(t *testing.T) {
+	t.Parallel()
+
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, _ := partition.pool("alpha")
+	beta, _ := partition.pool("beta")
+	seedPoolRetainedBuffers(t, alpha, 1, 512)
+	seedPoolRetainedBuffers(t, beta, 1, 512)
+	retainedClassID := firstRetainedPoolClassID(t, beta)
+	if _, err := alpha.applyClassBudgets([]ClassBudgetTarget{{Generation: Generation(30), ClassID: retainedClassID, TargetBytes: 4 * KiB}}); err != nil {
+		t.Fatalf("alpha applyClassBudgets() error = %v", err)
+	}
+	if _, err := beta.applyClassBudgets([]ClassBudgetTarget{{Generation: Generation(30), ClassID: retainedClassID, TargetBytes: 0}}); err != nil {
+		t.Fatalf("beta applyClassBudgets() error = %v", err)
+	}
+
+	result := partition.ExecuteTrim()
+	if !result.Executed || len(result.CandidatePools) == 0 || result.CandidatePools[0].PoolName != "beta" {
+		t.Fatalf("ExecuteTrim() = %+v, want beta selected first", result)
+	}
+	if beta.Metrics().CurrentRetainedBuffers != 0 || alpha.Metrics().CurrentRetainedBuffers != 1 {
+		t.Fatalf("retained after partition trim = alpha %d beta %d, want beta trimmed",
+			alpha.Metrics().CurrentRetainedBuffers,
+			beta.Metrics().CurrentRetainedBuffers,
+		)
+	}
+}
+
+func firstRetainedPoolClassID(t *testing.T, pool *Pool) ClassID {
+	t.Helper()
+	for _, class := range pool.Snapshot().Classes {
+		if class.CurrentRetainedBytes > 0 {
+			return class.Class.ID()
+		}
+	}
+	t.Fatal("pool has no retained class")
+	return ClassID(0)
+}
+
 func TestPoolPartitionExecuteTrimNeverTouchesActiveLeases(t *testing.T) {
 	config := testPartitionConfig("primary")
 	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}

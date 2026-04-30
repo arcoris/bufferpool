@@ -63,11 +63,26 @@ type PartitionPressureSnapshot struct {
 // AppliedPools and SkippedPools make partial propagation explicit. A closed Pool
 // is skipped instead of being silently ignored or mutated after close.
 type PoolPartitionPressurePublication struct {
-	// Generation identifies the partition pressure publication.
+	// Generation identifies the fully applied partition pressure publication. It
+	// is NoGeneration when partition runtime was not published.
 	Generation Generation
+
+	// AttemptGeneration identifies the signal attempted for owned Pools.
+	AttemptGeneration Generation
 
 	// Signal is the partition-level pressure signal.
 	Signal PressureSignal
+
+	// PartitionRuntimePublished reports whether the partition runtime snapshot
+	// was published after every owned Pool accepted the signal.
+	PartitionRuntimePublished bool
+
+	// Partial reports whether at least one Pool accepted the signal while the
+	// partition runtime snapshot was not published.
+	Partial bool
+
+	// FailureReason is empty on full success and diagnostic on skip/failure.
+	FailureReason string
 
 	// AppliedPools contains partition-local Pool names that accepted the signal.
 	AppliedPools []PoolPressurePublicationEntry
@@ -79,7 +94,7 @@ type PoolPartitionPressurePublication struct {
 
 // FullyApplied reports whether every owned Pool accepted the pressure signal.
 func (p PoolPartitionPressurePublication) FullyApplied() bool {
-	return len(p.SkippedPools) == 0
+	return p.PartitionRuntimePublished && len(p.SkippedPools) == 0
 }
 
 // PoolPressurePublicationEntry describes one Pool in a partition pressure
@@ -200,9 +215,11 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		return PoolPartitionPressurePublication{}, newError(ErrClosed, errPartitionClosed)
 	}
 
+	generation := budgetPublicationGeneration(p.generation.Load(), signal.Generation)
+	signal.Generation = generation
 	publication := PoolPartitionPressurePublication{
-		Generation: signal.Generation,
-		Signal:     signal,
+		AttemptGeneration: generation,
+		Signal:            signal,
 	}
 	for _, entry := range p.registry.entries {
 		if entry.pool.IsClosed() {
@@ -214,29 +231,30 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		}
 	}
 	if len(publication.SkippedPools) > 0 {
+		publication.FailureReason = errPoolClosed
 		return publication, nil
 	}
-
-	runtime := p.currentRuntimeSnapshot()
-	generation := budgetPublicationGeneration(runtime.Generation, signal.Generation)
-	if signal.Generation.IsZero() {
-		generation = p.generation.Advance()
-	}
-	signal.Generation = generation
-	publication.Generation = generation
-	publication.Signal = signal
-	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))
 
 	for _, entry := range p.registry.entries {
 		partitionSignal := signal
 		partitionSignal.Source = PressureSourcePartition
 		if err := entry.pool.applyPressure(partitionSignal); err != nil {
+			publication.Partial = len(publication.AppliedPools) > 0
+			publication.FailureReason = err.Error()
+			publication.SkippedPools = append(publication.SkippedPools, PoolPressurePublicationEntry{
+				PoolName: entry.name,
+				Reason:   err.Error(),
+			})
 			return publication, err
 		}
 		publication.AppliedPools = append(publication.AppliedPools, PoolPressurePublicationEntry{PoolName: entry.name})
 	}
+	runtime := p.currentRuntimeSnapshot()
+	p.generation.Store(generation)
+	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))
 	publication.Generation = generation
 	publication.Signal.Generation = generation
+	publication.PartitionRuntimePublished = true
 	return publication, nil
 }
 

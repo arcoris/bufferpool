@@ -73,17 +73,31 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	pressure := newGroupPressureSnapshot(runtime.Policy.Pressure, sample)
 	scores := g.scoreEvaluator.ScoreValues(rates, budget, pressure)
 	partitionScores := g.groupPartitionScores(window, elapsed)
-	partitionBudgetTargets := g.coordinatorPartitionBudgetTargets(generation, runtime, window, partitionScores)
+	partitionBudgetAllocation := g.coordinatorPartitionBudgetReport(generation, runtime, window, partitionScores)
+	partitionBudgetTargets := partitionBudgetAllocation.Targets
 	skippedPartitions := dst.SkippedPartitions[:0]
+	budgetPublication := PoolGroupBudgetPublicationReport{
+		Generation: generation,
+		Allocation: newBudgetAllocationDiagnostics(partitionBudgetAllocation.Allocation),
+		Targets:    partitionBudgetTargets,
+		Published:  false,
+	}
 	var err error
-	if len(partitionBudgetTargets) > 0 {
+	if len(partitionBudgetTargets) > 0 && !partitionBudgetAllocation.Allocation.Feasible {
+		budgetPublication.FailureReason = partitionBudgetAllocation.Allocation.Reason
+	} else if len(partitionBudgetTargets) > 0 {
 		skippedPartitions, err = g.publishPartitionBudgetTargets(partitionBudgetTargets, skippedPartitions)
 		if err != nil {
 			return err
 		}
+		budgetPublication.SkippedPartitions = skippedPartitions
+		budgetPublication.Published = len(skippedPartitions) == 0
+		if !budgetPublication.Published {
+			budgetPublication.FailureReason = errGroupClosed
+		}
 	}
 	publishedGeneration := NoGeneration
-	if len(partitionBudgetTargets) > 0 {
+	if budgetPublication.Published {
 		publishedGeneration = generation
 	}
 	g.coordinator.previousSample = copyPoolGroupSampleInto(g.coordinator.previousSample, sample)
@@ -105,6 +119,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 		Scores:                 scores,
 		PartitionScores:        partitionScores,
 		PartitionBudgetTargets: partitionBudgetTargets,
+		BudgetPublication:      budgetPublication,
 		SkippedPartitions:      skippedPartitions,
 	}
 	return nil

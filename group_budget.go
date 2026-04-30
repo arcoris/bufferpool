@@ -76,7 +76,39 @@ type partitionBudgetAllocationReport struct {
 	Allocation budgetAllocationReport
 }
 
-// computePartitionBudgetTargets computes group-to-partition budget targets.
+// PoolGroupBudgetPublicationReport describes one group-to-partition budget
+// publication attempt.
+//
+// Published is true only after every partition target has accepted the target.
+// Infeasible hard-budget allocations set Published=false and expose Allocation
+// diagnostics instead of mutating partitions with targets that already exceed
+// the group retained-byte parent. This report belongs to foreground coordinator
+// work and is not read by Pool.Get or Pool.Put.
+type PoolGroupBudgetPublicationReport struct {
+	// Generation is the intended target publication generation.
+	Generation Generation
+
+	// Allocation summarizes group-to-partition feasibility.
+	Allocation BudgetAllocationDiagnostics
+
+	// Targets are the partition targets considered for publication.
+	Targets []PartitionBudgetTarget
+
+	// Published reports whether every target was accepted by child partitions.
+	Published bool
+
+	// FailureReason is empty on success and stable diagnostic text otherwise.
+	FailureReason string
+
+	// SkippedPartitions records child partitions that did not accept publication.
+	SkippedPartitions []PoolGroupSkippedPartition
+}
+
+// computePartitionBudgetTargets computes group-to-partition budget targets for
+// advisory callers that do not publish runtime state.
+//
+// Applied coordinator code must use computePartitionBudgetTargetsReport so
+// feasibility does not disappear before hard-budget publication.
 func (g *PoolGroup) computePartitionBudgetTargets(
 	generation Generation,
 	retainedBytes Size,
@@ -85,6 +117,18 @@ func (g *PoolGroup) computePartitionBudgetTargets(
 	g.mustBeInitialized()
 
 	return allocatePartitionBudgetTargets(generation, retainedBytes, inputs)
+}
+
+// computePartitionBudgetTargetsReport computes group-to-partition budget targets
+// together with feasibility diagnostics for applied coordinator paths.
+func (g *PoolGroup) computePartitionBudgetTargetsReport(
+	generation Generation,
+	retainedBytes Size,
+	inputs []partitionBudgetAllocationInput,
+) partitionBudgetAllocationReport {
+	g.mustBeInitialized()
+
+	return allocatePartitionBudgetTargetsReport(generation, retainedBytes, inputs)
 }
 
 // applyPartitionBudgetTargets publishes retained-byte targets into group-owned

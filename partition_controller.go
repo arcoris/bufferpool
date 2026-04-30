@@ -63,6 +63,10 @@ type PartitionControllerReport struct {
 
 	// PoolBudgetTargets are the Pool/class budget targets applied by this tick.
 	PoolBudgetTargets []PoolBudgetTarget
+
+	// BudgetPublication reports partition-to-Pool and Pool-to-class feasibility
+	// and publication status for this applied controller tick.
+	BudgetPublication PoolPartitionBudgetPublicationReport
 }
 
 // Tick performs one explicit partition controller cycle.
@@ -121,6 +125,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	window.Reset(previous, sample)
 	rates := NewPoolPartitionTimedWindowRates(window, elapsed)
 	ewma := p.controller.ewma.WithUpdate(PoolPartitionEWMAConfig{}, elapsed, rates)
+	nextClassEWMA := p.controllerUpdatedClassEWMA(window, elapsed)
 
 	metrics := newPoolPartitionMetrics(p.name, sample)
 	budget := newPartitionBudgetSnapshot(runtime.Policy.Budget, sample)
@@ -129,19 +134,48 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	trimPlan := newPartitionTrimPlan(runtime.Policy.Trim, pressure, sample)
 	dirtyIndexes := p.activeRegistry.dirtyIndexes(nil)
 	activeDeltas := controllerPoolActivityDeltas(indexes, window, dirtyIndexes)
-	if err := p.activeRegistry.observeControllerActivity(indexes, activeDeltas); err != nil {
-		return err
+	budgetPublication := p.controllerPoolBudgetReport(generation, runtime, window, elapsed, nextClassEWMA)
+	poolBudgetTargets := budgetPublication.Targets
+	if len(poolBudgetTargets) > 0 && budgetPublication.CanPublish() {
+		appliedPublication, err := p.applyPoolBudgetTargetsLocked(poolBudgetTargets)
+		if err != nil {
+			return err
+		}
+		budgetPublication.Published = appliedPublication.Published
+		budgetPublication.ClassReports = appliedPublication.ClassReports
+		if !appliedPublication.Published {
+			budgetPublication.FailureReason = appliedPublication.FailureReason
+		}
 	}
-	poolBudgetTargets := p.controllerPoolBudgetTargets(generation, runtime, window, elapsed)
-	if err := p.applyPoolBudgetTargetsLocked(poolBudgetTargets); err != nil {
-		return err
+	if len(poolBudgetTargets) > 0 && !budgetPublication.Published {
+		*dst = PartitionControllerReport{
+			Generation:        generation,
+			PolicyGeneration:  sample.PolicyGeneration,
+			Lifecycle:         p.lifecycle.Load(),
+			Sample:            sample,
+			Metrics:           metrics,
+			Window:            window,
+			Rates:             rates,
+			EWMA:              ewma,
+			Scores:            scores,
+			Budget:            budget,
+			Pressure:          pressure,
+			TrimPlan:          trimPlan,
+			PoolBudgetTargets: poolBudgetTargets,
+			BudgetPublication: budgetPublication,
+		}
+		return nil
 	}
 	trimResult := p.executeTrimPlan(trimPlan)
+	if err := p.activeRegistry.observeControllerActivityWithDirtyIndexes(indexes, activeDeltas, dirtyIndexes); err != nil {
+		return err
+	}
 	p.markDirtyProcessed()
 	p.controller.previousSample = copyPoolPartitionSampleInto(p.controller.previousSample, sample)
 	p.controller.previousSampleTime = now
 	p.controller.hasPreviousSample = true
 	p.controller.ewma = ewma
+	p.controller.ewmaByPoolClass = nextClassEWMA
 	p.controller.cycles++
 	_ = p.controller.generation.Advance()
 
@@ -160,6 +194,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		TrimPlan:          trimPlan,
 		TrimResult:        trimResult,
 		PoolBudgetTargets: poolBudgetTargets,
+		BudgetPublication: budgetPublication,
 	}
 	return nil
 }

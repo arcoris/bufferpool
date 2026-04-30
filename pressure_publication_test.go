@@ -81,3 +81,99 @@ func TestPoolGroupSetPressureReportsClosedPartition(t *testing.T) {
 		t.Fatalf("SetPressure() error = %v, want ErrClosed for partial publication", err)
 	}
 }
+
+func TestPoolApplyPressureRejectsClosedPool(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	before := pool.Snapshot()
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Pool.Close() error = %v", err)
+	}
+	err := pool.applyPressure(PressureSignal{Level: PressureLevelHigh, Source: PressureSourceManual, Generation: Generation(100)})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("applyPressure(closed) error = %v, want ErrClosed", err)
+	}
+	after := pool.Snapshot()
+	if after.Generation != before.Generation {
+		t.Fatalf("closed pool generation after applyPressure = %s, want %s", after.Generation, before.Generation)
+	}
+}
+
+func TestPoolPartitionPublishPressureFullSuccessPublishesPartitionRuntime(t *testing.T) {
+	t.Parallel()
+
+	partition := testNewPoolPartition(t, "alpha")
+	publication, err := partition.PublishPressure(PressureLevelHigh)
+	if err != nil {
+		t.Fatalf("PublishPressure() error = %v", err)
+	}
+	if !publication.FullyApplied() || !publication.PartitionRuntimePublished || publication.Generation.IsZero() {
+		t.Fatalf("publication = %+v, want full partition runtime publication", publication)
+	}
+	if pressure := partition.currentRuntimeSnapshot().Pressure; pressure.Level != PressureLevelHigh || pressure.Generation != publication.Generation {
+		t.Fatalf("partition runtime pressure = %+v, want high generation %s", pressure, publication.Generation)
+	}
+}
+
+func TestPoolPartitionPublishPressureClosedPoolDoesNotPublishPartitionRuntime(t *testing.T) {
+	t.Parallel()
+
+	partition := testNewPoolPartition(t, "alpha", "beta")
+	before := partition.currentRuntimeSnapshot().Generation
+	pool, ok := partition.registry.pool("beta")
+	if !ok {
+		t.Fatal("partition pool beta not found")
+	}
+	requirePartitionNoError(t, pool.Close())
+
+	publication, err := partition.PublishPressure(PressureLevelHigh)
+	if err != nil {
+		t.Fatalf("PublishPressure() error = %v", err)
+	}
+	if publication.PartitionRuntimePublished || publication.FullyApplied() || publication.Generation != NoGeneration {
+		t.Fatalf("publication = %+v, want skipped without partition runtime publication", publication)
+	}
+	if after := partition.currentRuntimeSnapshot().Generation; after != before {
+		t.Fatalf("partition runtime generation = %s, want unchanged %s", after, before)
+	}
+}
+
+func TestPoolGroupPublishPressureFullSuccessPublishesGroupRuntime(t *testing.T) {
+	t.Parallel()
+
+	group := testNewPoolGroup(t, "alpha")
+	publication, err := group.PublishPressure(PressureLevelHigh)
+	if err != nil {
+		t.Fatalf("PublishPressure() error = %v", err)
+	}
+	if !publication.FullyApplied() || !publication.GroupRuntimePublished || publication.Generation.IsZero() {
+		t.Fatalf("publication = %+v, want full group runtime publication", publication)
+	}
+	if pressure := group.currentRuntimeSnapshot().Pressure; pressure.Level != PressureLevelHigh || pressure.Generation != publication.Generation {
+		t.Fatalf("group runtime pressure = %+v, want high generation %s", pressure, publication.Generation)
+	}
+}
+
+func TestPoolGroupPublishPressureClosedPartitionDoesNotPublishGroupRuntime(t *testing.T) {
+	t.Parallel()
+
+	group := testNewPoolGroup(t, "alpha", "beta")
+	before := group.currentRuntimeSnapshot().Generation
+	partition, ok := group.registry.partition("beta")
+	if !ok {
+		t.Fatal("group partition beta not found")
+	}
+	requirePartitionNoError(t, partition.Close())
+
+	publication, err := group.PublishPressure(PressureLevelHigh)
+	if err != nil {
+		t.Fatalf("PublishPressure() error = %v", err)
+	}
+	if publication.GroupRuntimePublished || publication.FullyApplied() || publication.Generation != NoGeneration {
+		t.Fatalf("publication = %+v, want skipped without group runtime publication", publication)
+	}
+	if after := group.currentRuntimeSnapshot().Generation; after != before {
+		t.Fatalf("group runtime generation = %s, want unchanged %s", after, before)
+	}
+}

@@ -54,6 +54,49 @@ type poolBudgetAllocationReport struct {
 	Allocation budgetAllocationReport
 }
 
+// PoolPartitionBudgetPublicationReport describes one partition-to-Pool budget
+// publication attempt.
+//
+// Published is true only after every Pool target and every nested class target
+// has validated and accepted publication. Infeasible hard-budget allocations
+// leave Published=false and do not mutate earlier Pools.
+type PoolPartitionBudgetPublicationReport struct {
+	// Generation is the intended Pool budget publication generation.
+	Generation Generation
+
+	// Allocation summarizes partition-to-Pool feasibility.
+	Allocation BudgetAllocationDiagnostics
+
+	// Targets are the Pool targets considered for publication.
+	Targets []PoolBudgetTarget
+
+	// ClassReports summarize each Pool-to-class publication plan.
+	ClassReports []PoolClassBudgetPublicationReport
+
+	// Published reports whether all Pool and class targets were applied.
+	Published bool
+
+	// FailureReason is empty on success and stable diagnostic text otherwise.
+	FailureReason string
+}
+
+// CanPublish reports whether this publication report is both feasible and free
+// of child class failures.
+func (r PoolPartitionBudgetPublicationReport) CanPublish() bool {
+	if len(r.Targets) == 0 {
+		return false
+	}
+	if !r.Allocation.Feasible {
+		return false
+	}
+	for _, classReport := range r.ClassReports {
+		if !classReport.Allocation.Feasible || classReport.FailureReason != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // applyPartitionBudget publishes the retained target into the partition policy
 // stream.
 //
@@ -100,16 +143,34 @@ func (p *PoolPartition) applyPoolBudgetTargets(targets []PoolBudgetTarget) error
 	}
 	defer p.endForegroundOperation()
 
-	return p.applyPoolBudgetTargetsLocked(targets)
+	report, err := p.applyPoolBudgetTargetsLocked(targets)
+	if err != nil {
+		return err
+	}
+	if !report.Published {
+		return newError(ErrInvalidPolicy, report.FailureReason)
+	}
+	return nil
 }
 
 // applyPoolBudgetTargetsLocked validates and publishes Pool targets while the
 // partition foreground gate is already held.
-func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget) error {
+func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget) (PoolPartitionBudgetPublicationReport, error) {
 	if !p.lifecycle.AllowsWork() {
-		return newError(ErrClosed, errPartitionClosed)
+		return PoolPartitionBudgetPublicationReport{}, newError(ErrClosed, errPartitionClosed)
 	}
 
+	report := PoolPartitionBudgetPublicationReport{
+		Targets: append([]PoolBudgetTarget(nil), targets...),
+		Allocation: BudgetAllocationDiagnostics{
+			Feasible:    true,
+			Reason:      budgetAllocationReasonFeasible,
+			TargetCount: len(targets),
+		},
+	}
+	if len(targets) > 0 {
+		report.Generation = targets[0].Generation
+	}
 	prepared := make([]struct {
 		target PoolBudgetTarget
 		pool   *Pool
@@ -118,12 +179,30 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 	for _, target := range targets {
 		pool, ok := p.registry.pool(target.PoolName)
 		if !ok {
-			return newError(ErrInvalidOptions, errPartitionPoolMissing+": "+target.PoolName)
+			return report, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+target.PoolName)
 		}
-		if err := pool.validatePoolBudgetTarget(target); err != nil {
-			return err
+		classAllocation, err := pool.planPoolBudget(target)
+		classReport := PoolClassBudgetPublicationReport{
+			PoolName:   target.PoolName,
+			Generation: target.Generation,
+			Allocation: newBudgetAllocationDiagnostics(classAllocation.Allocation),
+			Targets:    classAllocation.Targets,
+			Published:  false,
 		}
+		if err != nil {
+			classReport.FailureReason = err.Error()
+			report.ClassReports = append(report.ClassReports, classReport)
+			return report, err
+		}
+		if !classAllocation.Allocation.Feasible {
+			classReport.FailureReason = classAllocation.Allocation.Reason
+			report.ClassReports = append(report.ClassReports, classReport)
+			report.FailureReason = classAllocation.Allocation.Reason
+			return report, nil
+		}
+		report.ClassReports = append(report.ClassReports, classReport)
 		index, _ := p.registry.poolIndex(target.PoolName)
+		target.ClassTargets = classAllocation.Targets
 		prepared = append(prepared, struct {
 			target PoolBudgetTarget
 			pool   *Pool
@@ -133,14 +212,22 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 
 	for _, item := range prepared {
 		if _, err := item.pool.applyPoolBudget(item.target); err != nil {
-			return err
+			report.FailureReason = err.Error()
+			return report, err
+		}
+		for index := range report.ClassReports {
+			if report.ClassReports[index].PoolName == item.target.PoolName {
+				report.ClassReports[index].Published = true
+			}
 		}
 		if item.index >= 0 {
 			_ = p.activeRegistry.markDirtyIndex(item.index)
 		}
 	}
 
-	return nil
+	report.Targets = append(report.Targets[:0], targets...)
+	report.Published = len(targets) > 0
+	return report, nil
 }
 
 // allocatePoolBudgetTargets applies the common base-plus-adaptive allocator to
