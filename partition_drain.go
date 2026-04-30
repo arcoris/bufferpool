@@ -133,6 +133,8 @@ func (p *PoolPartition) CloseGracefully(policy PoolPartitionDrainPolicy) (PoolPa
 				result.Completed = true
 				return result, err
 			}
+			p.lockForegroundClose()
+			defer p.foregroundMu.Unlock()
 			if closeErr := p.registry.closeAll(); closeErr != nil {
 				multierr.AppendInto(&err, closeErr)
 			}

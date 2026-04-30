@@ -82,6 +82,45 @@ func TestPoolPartitionApplyPoolBudgetTargetsRejectsMissingPool(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionApplyPoolBudgetTargetsRejectsMissingPoolWithoutPartialMutation
+// verifies pool budget batches validate all targets before mutating any owned
+// Pool.
+func TestPoolPartitionApplyPoolBudgetTargetsRejectsMissingPoolWithoutPartialMutation(t *testing.T) {
+	t.Parallel()
+
+	config := poolBudgetTestPartitionConfig()
+	config.Pools = append(config.Pools, PartitionPoolConfig{Name: "secondary", Config: PoolConfig{Policy: poolTestSmallSingleShardPolicy()}})
+	partition := MustNewPoolPartition(config)
+	t.Cleanup(func() {
+		requirePartitionNoError(t, partition.Close())
+	})
+
+	before, ok := partition.PoolSnapshot("primary")
+	if !ok {
+		t.Fatal("PoolSnapshot(primary) not found")
+	}
+	err := partition.applyPoolBudgetTargets([]PoolBudgetTarget{
+		{
+			Generation: Generation(82),
+			PoolName:   "primary",
+			ClassTargets: []ClassBudgetTarget{
+				{Generation: Generation(82), ClassID: ClassID(0), TargetBytes: 2 * KiB},
+			},
+		},
+		{Generation: Generation(82), PoolName: "missing", RetainedBytes: KiB},
+	})
+	if !errors.Is(err, ErrInvalidOptions) {
+		t.Fatalf("applyPoolBudgetTargets(partial invalid) error = %v, want ErrInvalidOptions", err)
+	}
+	after, ok := partition.PoolSnapshot("primary")
+	if !ok {
+		t.Fatal("PoolSnapshot(primary) after apply not found")
+	}
+	if after.Generation != before.Generation {
+		t.Fatalf("primary generation changed after rejected batch: got %s want %s", after.Generation, before.Generation)
+	}
+}
+
 func TestPoolGroupApplyPartitionBudgetTargetsUpdatesPartitionPolicy(t *testing.T) {
 	t.Parallel()
 

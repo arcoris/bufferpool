@@ -19,6 +19,18 @@ package bufferpool
 const (
 	// defaultPartitionTrimMaxPoolsPerCycle bounds planning when trim is enabled.
 	defaultPartitionTrimMaxPoolsPerCycle = 1
+
+	// defaultPartitionTrimMaxBuffersPerCycle bounds physical buffer removals in
+	// one partition trim cycle.
+	defaultPartitionTrimMaxBuffersPerCycle uint64 = 1024
+
+	// defaultPartitionTrimMaxClassesPerPoolPerCycle bounds class fan-out for one
+	// Pool during a partition trim cycle.
+	defaultPartitionTrimMaxClassesPerPoolPerCycle = 64
+
+	// defaultPartitionTrimMaxShardsPerClassPerCycle bounds shard fan-out for one
+	// class during a partition trim cycle.
+	defaultPartitionTrimMaxShardsPerClassPerCycle = 32
 )
 
 // PartitionTrimPolicy defines bounded partition trim defaults.
@@ -29,8 +41,20 @@ type PartitionTrimPolicy struct {
 	// MaxPoolsPerCycle bounds the number of candidate Pools in one plan.
 	MaxPoolsPerCycle int
 
+	// MaxBuffersPerCycle bounds the number of retained buffers removed by one
+	// physical trim cycle.
+	MaxBuffersPerCycle uint64
+
 	// MaxBytesPerCycle bounds retained bytes that one physical trim may remove.
 	MaxBytesPerCycle Size
+
+	// MaxClassesPerPoolPerCycle bounds how many classes may be visited in each
+	// Pool.
+	MaxClassesPerPoolPerCycle int
+
+	// MaxShardsPerClassPerCycle bounds how many shards may be visited for each
+	// class.
+	MaxShardsPerClassPerCycle int
 
 	// TrimOnPressure means trim planning is enabled only while pressure is above
 	// normal. Normal pressure produces a disabled "no_pressure" plan.
@@ -54,8 +78,17 @@ type PartitionTrimPlan struct {
 	// MaxPoolsPerCycle is the effective pool-visit bound for the plan.
 	MaxPoolsPerCycle int
 
+	// MaxBuffersPerCycle is the effective retained-buffer removal bound.
+	MaxBuffersPerCycle uint64
+
 	// MaxBytesPerCycle is the effective byte bound for the plan.
 	MaxBytesPerCycle uint64
+
+	// MaxClassesPerPoolPerCycle is the effective class-visit bound per Pool.
+	MaxClassesPerPoolPerCycle int
+
+	// MaxShardsPerClassPerCycle is the effective shard-visit bound per class.
+	MaxShardsPerClassPerCycle int
 }
 
 // PartitionTrimResult reports a bounded physical trim attempt.
@@ -90,25 +123,48 @@ func (p PartitionTrimPolicy) Normalize() PartitionTrimPolicy {
 	if p.Enabled && p.MaxPoolsPerCycle == 0 {
 		p.MaxPoolsPerCycle = defaultPartitionTrimMaxPoolsPerCycle
 	}
+	if p.Enabled && p.MaxBuffersPerCycle == 0 {
+		p.MaxBuffersPerCycle = defaultPartitionTrimMaxBuffersPerCycle
+	}
+	if p.Enabled && p.MaxClassesPerPoolPerCycle == 0 {
+		p.MaxClassesPerPoolPerCycle = defaultPartitionTrimMaxClassesPerPoolPerCycle
+	}
+	if p.Enabled && p.MaxShardsPerClassPerCycle == 0 {
+		p.MaxShardsPerClassPerCycle = defaultPartitionTrimMaxShardsPerClassPerCycle
+	}
 	return p
 }
 
 // IsZero reports whether p contains no trim settings.
 func (p PartitionTrimPolicy) IsZero() bool {
-	return !p.Enabled && p.MaxPoolsPerCycle == 0 && p.MaxBytesPerCycle.IsZero() && !p.TrimOnPressure
+	return !p.Enabled &&
+		p.MaxPoolsPerCycle == 0 &&
+		p.MaxBuffersPerCycle == 0 &&
+		p.MaxBytesPerCycle.IsZero() &&
+		p.MaxClassesPerPoolPerCycle == 0 &&
+		p.MaxShardsPerClassPerCycle == 0 &&
+		!p.TrimOnPressure
 }
 
 // Validate validates partition trim settings.
 func (p PartitionTrimPolicy) Validate() error {
-	p = p.Normalize()
 	if !p.Enabled {
 		return nil
 	}
 	if p.MaxPoolsPerCycle <= 0 {
 		return newError(ErrInvalidPolicy, "bufferpool.PartitionTrimPolicy: max pools per cycle must be positive")
 	}
+	if p.MaxBuffersPerCycle == 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionTrimPolicy: max buffers per cycle must be positive")
+	}
 	if p.MaxBytesPerCycle.IsZero() {
 		return newError(ErrInvalidPolicy, "bufferpool.PartitionTrimPolicy: max bytes per cycle must be positive")
+	}
+	if p.MaxClassesPerPoolPerCycle <= 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionTrimPolicy: max classes per pool per cycle must be positive")
+	}
+	if p.MaxShardsPerClassPerCycle <= 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionTrimPolicy: max shards per class per cycle must be positive")
 	}
 	return nil
 }
@@ -131,6 +187,11 @@ func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 // partition registry order.
 func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 	p.mustBeInitialized()
+	if err := p.beginForegroundOperation(); err != nil {
+		return PartitionTrimResult{Reason: err.Error()}
+	}
+	defer p.endForegroundOperation()
+
 	plan := p.PlanTrim()
 	return p.executeTrimPlan(plan)
 }
@@ -138,7 +199,16 @@ func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 // newPartitionTrimPlan derives a non-mutating trim execution plan.
 func newPartitionTrimPlan(policy PartitionTrimPolicy, pressure PartitionPressureSnapshot, sample PoolPartitionSample) PartitionTrimPlan {
 	policy = policy.Normalize()
-	plan := PartitionTrimPlan{Enabled: policy.Enabled, PressureLevel: pressure.Level, CandidatePools: sample.PoolCount, MaxPoolsPerCycle: policy.MaxPoolsPerCycle, MaxBytesPerCycle: policy.MaxBytesPerCycle.Bytes()}
+	plan := PartitionTrimPlan{
+		Enabled:                   policy.Enabled,
+		PressureLevel:             pressure.Level,
+		CandidatePools:            sample.PoolCount,
+		MaxPoolsPerCycle:          policy.MaxPoolsPerCycle,
+		MaxBuffersPerCycle:        policy.MaxBuffersPerCycle,
+		MaxBytesPerCycle:          policy.MaxBytesPerCycle.Bytes(),
+		MaxClassesPerPoolPerCycle: policy.MaxClassesPerPoolPerCycle,
+		MaxShardsPerClassPerCycle: policy.MaxShardsPerClassPerCycle,
+	}
 	if !policy.Enabled {
 		plan.Reason = "trim_disabled"
 		return plan
@@ -163,17 +233,22 @@ func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimRes
 
 	result := PartitionTrimResult{Attempted: true, Reason: plan.Reason}
 	remainingBytes := plan.MaxBytesPerCycle
-	maxBuffers := partitionTrimMaxBuffersFromBytes(remainingBytes)
+	remainingBuffers := plan.MaxBuffersPerCycle
 	for _, entry := range p.registry.entries {
 		if plan.MaxPoolsPerCycle > 0 && int(result.VisitedPools) >= plan.MaxPoolsPerCycle {
 			break
 		}
-		if remainingBytes == 0 {
+		if remainingBytes == 0 || remainingBuffers == 0 {
 			break
 		}
 
 		result.VisitedPools++
-		poolResult := entry.pool.Trim(PoolTrimPlan{MaxBuffers: maxBuffers, MaxBytes: SizeFromBytes(remainingBytes)})
+		poolResult := entry.pool.Trim(PoolTrimPlan{
+			MaxBuffers:        partitionTrimUint64ToInt(remainingBuffers),
+			MaxBytes:          SizeFromBytes(remainingBytes),
+			MaxClasses:        plan.MaxClassesPerPoolPerCycle,
+			MaxShardsPerClass: plan.MaxShardsPerClassPerCycle,
+		})
 		result.VisitedClasses += poolResult.VisitedClasses
 		result.VisitedShards += poolResult.VisitedShards
 		result.TrimmedBuffers += poolResult.TrimmedBuffers
@@ -186,7 +261,11 @@ func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimRes
 			break
 		}
 		remainingBytes -= poolResult.TrimmedBytes
-		maxBuffers = partitionTrimMaxBuffersFromBytes(remainingBytes)
+		if poolResult.TrimmedBuffers >= remainingBuffers {
+			remainingBuffers = 0
+			break
+		}
+		remainingBuffers -= poolResult.TrimmedBuffers
 	}
 
 	if result.Executed {
@@ -195,13 +274,13 @@ func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimRes
 	return result
 }
 
-func partitionTrimMaxBuffersFromBytes(maxBytes uint64) int {
-	if maxBytes == 0 {
+func partitionTrimUint64ToInt(value uint64) int {
+	if value == 0 {
 		return 0
 	}
 	maxInt := uint64(^uint(0) >> 1)
-	if maxBytes > maxInt {
+	if value > maxInt {
 		return int(maxInt)
 	}
-	return int(maxBytes)
+	return int(value)
 }

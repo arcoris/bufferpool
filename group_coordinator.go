@@ -111,11 +111,11 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 }
 
 // newGroupBudgetSnapshot projects group aggregate sample usage against group limits.
-func newGroupBudgetSnapshot(policy PartitionBudgetPolicy, sample PoolGroupSample) PartitionBudgetSnapshot {
-	return newPartitionBudgetSnapshot(policy, sample.Aggregate)
+func newGroupBudgetSnapshot(policy PartitionBudgetPolicy, sample PoolGroupSample) PoolGroupBudgetSnapshot {
+	return PoolGroupBudgetSnapshot(newPartitionBudgetSnapshot(policy, sample.Aggregate))
 }
 
 // newGroupPressureSnapshot projects group aggregate sample usage against pressure policy.
-func newGroupPressureSnapshot(policy PartitionPressurePolicy, sample PoolGroupSample) PartitionPressureSnapshot {
-	return newPartitionPressureSnapshot(policy, sample.Aggregate)
+func newGroupPressureSnapshot(policy PartitionPressurePolicy, sample PoolGroupSample) PoolGroupPressureSnapshot {
+	return PoolGroupPressureSnapshot(newPartitionPressureSnapshot(policy, sample.Aggregate))
 }

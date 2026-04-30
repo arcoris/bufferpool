@@ -301,6 +301,141 @@ func TestPoolPartitionReleaseConcurrentWithClose(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionTickIntoConcurrentWithClose verifies applied controller work
+// is serialized with hard child cleanup.
+func TestPoolPartitionTickIntoConcurrentWithClose(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	start := make(chan struct{})
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		var report PartitionControllerReport
+		for {
+			err := partition.TickInto(&report)
+			if errors.Is(err, ErrClosed) {
+				return
+			}
+			if err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+
+	close(start)
+	requirePartitionNoError(t, partition.Close())
+	<-done
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+}
+
+// TestPoolPartitionApplyBudgetConcurrentWithClose verifies budget publication
+// cannot race with LeaseRegistry and Pool cleanup.
+func TestPoolPartitionApplyBudgetConcurrentWithClose(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	start := make(chan struct{})
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		for {
+			err := partition.applyPartitionBudget(PartitionBudgetTarget{
+				Generation:    partition.generation.Load().Next(),
+				PartitionName: partition.Name(),
+				RetainedBytes: 4 * KiB,
+			})
+			if errors.Is(err, ErrClosed) {
+				return
+			}
+			if err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+
+	close(start)
+	requirePartitionNoError(t, partition.Close())
+	<-done
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+}
+
+// TestPoolPartitionSetPressureConcurrentWithClose verifies pressure publication
+// uses the same foreground gate as other applied partition work.
+func TestPoolPartitionSetPressureConcurrentWithClose(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	start := make(chan struct{})
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		for {
+			err := partition.SetPressure(PressureLevelHigh)
+			if errors.Is(err, ErrClosed) {
+				return
+			}
+			if err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+
+	close(start)
+	requirePartitionNoError(t, partition.Close())
+	<-done
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+}
+
+// TestPoolPartitionExecuteTrimConcurrentWithClose verifies bounded physical trim
+// cannot run while hard close is cleaning up owned children.
+func TestPoolPartitionExecuteTrimConcurrentWithClose(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        16,
+		MaxBytesPerCycle:          16 * KiB,
+		MaxClassesPerPoolPerCycle: 64,
+		MaxShardsPerClassPerCycle: 32,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	seedPartitionRetainedBuffers(t, partition, "primary", 4, 300)
+
+	start := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		for !partition.IsClosed() {
+			_ = partition.ExecuteTrim()
+		}
+	}()
+
+	close(start)
+	requirePartitionNoError(t, partition.Close())
+	<-done
+}
+
 // TestPoolPartitionCloseGracefullyWithoutActiveLeases verifies successful drain close.
 func TestPoolPartitionCloseGracefullyWithoutActiveLeases(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))

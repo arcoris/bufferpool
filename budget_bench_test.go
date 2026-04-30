@@ -77,6 +77,10 @@ func BenchmarkPoolApplyClassBudgets(b *testing.B) {
 		targets[0].Generation = Generation(100 + i)
 		targets[1].Generation = Generation(100 + i)
 		targets[2].Generation = Generation(100 + i)
-		budgetGenerationSink = pool.applyClassBudgets(targets)
+		generation, err := pool.applyClassBudgets(targets)
+		if err != nil {
+			b.Fatalf("applyClassBudgets failed: %v", err)
+		}
+		budgetGenerationSink = generation
 	}
 }

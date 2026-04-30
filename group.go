@@ -137,8 +137,8 @@ func NewPoolGroup(config PoolGroupConfig) (*PoolGroup, error) {
 		registry:       registry,
 		poolDirectory:  directory,
 		scoreEvaluator: NewPoolGroupScoreEvaluator(normalized.Policy.Score),
-		coordinator:    newGroupCoordinator(normalized.Policy),
 	}
+	group.coordinator.init(normalized.Policy)
 	group.generation.Store(InitialGeneration)
 	group.publishRuntimeSnapshot(newGroupRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	group.lifecycle.Activate()

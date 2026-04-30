@@ -16,7 +16,10 @@
 
 package bufferpool
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // TestPartitionActiveRegistryInitialState verifies deterministic active state.
 func TestPartitionActiveRegistryInitialState(t *testing.T) {
@@ -77,6 +80,117 @@ func TestPartitionActiveRegistryDirtySet(t *testing.T) {
 	dirty = registry.dirtyIndexes(dirty)
 	if len(dirty) != 0 {
 		t.Fatalf("dirty after reset = %v, want empty", dirty)
+	}
+}
+
+// TestPartitionActiveRegistryConcurrentMarkDirty verifies atomic dirty marking
+// remains deterministic under concurrent managed activity.
+func TestPartitionActiveRegistryConcurrentMarkDirty(t *testing.T) {
+	registry := newPartitionActiveRegistry([]string{"alpha", "beta", "gamma", "delta"})
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, len(registry.names)*128)
+	for index := range registry.names {
+		index := index
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for iteration := 0; iteration < 128; iteration++ {
+				if err := registry.markDirtyIndex(index); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+
+	dirty := registry.dirtyIndexes(nil)
+	want := []int{0, 1, 2, 3}
+	for index := range want {
+		if dirty[index] != want[index] {
+			t.Fatalf("dirty[%d] = %d, want %d", index, dirty[index], want[index])
+		}
+	}
+}
+
+// TestPartitionActiveRegistryConcurrentMarkActive verifies atomic active marking
+// can restore inactive Pools without a global hot-path mutex.
+func TestPartitionActiveRegistryConcurrentMarkActive(t *testing.T) {
+	registry := newPartitionActiveRegistry([]string{"alpha", "beta", "gamma", "delta"})
+	for index := range registry.names {
+		requirePartitionNoError(t, registry.markInactiveIndex(index))
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, len(registry.names)*128)
+	for index := range registry.names {
+		index := index
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for iteration := 0; iteration < 128; iteration++ {
+				if err := registry.markActiveIndex(index); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+
+	active := registry.activeIndexes(nil)
+	want := []int{0, 1, 2, 3}
+	for index := range want {
+		if active[index] != want[index] {
+			t.Fatalf("active[%d] = %d, want %d", index, active[index], want[index])
+		}
+	}
+}
+
+// TestPartitionActiveRegistryResetDirtyDoesNotLoseConcurrentMarks verifies
+// dirty reset and concurrent marking can leave new work visible for the next
+// controller pass.
+func TestPartitionActiveRegistryResetDirtyDoesNotLoseConcurrentMarks(t *testing.T) {
+	registry := newPartitionActiveRegistry([]string{"alpha", "beta"})
+	requirePartitionNoError(t, registry.markDirtyIndex(0))
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := registry.markDirtyIndex(1); err != nil {
+			errs <- err
+		}
+	}()
+
+	close(start)
+	registry.resetDirty()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		requirePartitionNoError(t, err)
+	}
+
+	requirePartitionNoError(t, registry.markDirtyIndex(1))
+	dirty := registry.dirtyIndexes(nil)
+	if len(dirty) != 1 || dirty[0] != 1 {
+		t.Fatalf("dirty after concurrent reset/mark = %v, want [1]", dirty)
 	}
 }
 

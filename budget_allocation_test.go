@@ -75,6 +75,81 @@ func TestAllocateClassBudgetTargetsPreservesExactParentBound(t *testing.T) {
 	}
 }
 
+// TestBudgetAllocatorReportsInfeasibleMinimums verifies hard-budget callers can
+// detect child minimums that exceed the parent target.
+func TestBudgetAllocatorReportsInfeasibleMinimums(t *testing.T) {
+	t.Parallel()
+
+	report := allocateBudgetTargetsReport(100, []budgetAllocationInput{
+		{MinBytes: 80},
+		{MinBytes: 70},
+	})
+
+	if report.Feasible {
+		t.Fatal("Feasible = true, want false when minimums exceed parent budget")
+	}
+	if report.AssignedBytes != 150 || report.OvercommittedBytes != 50 {
+		t.Fatalf("allocation report = %+v, want assigned 150 and overcommit 50", report)
+	}
+	if report.Reason != budgetAllocationReasonMinimumsExceedParent {
+		t.Fatalf("Reason = %q, want %q", report.Reason, budgetAllocationReasonMinimumsExceedParent)
+	}
+}
+
+// TestGroupPartitionBudgetAllocationReportsOvercommit verifies group
+// partition-target allocation exposes infeasible minimums.
+func TestGroupPartitionBudgetAllocationReportsOvercommit(t *testing.T) {
+	t.Parallel()
+
+	report := allocatePartitionBudgetTargetsReport(Generation(12), SizeFromBytes(100), []partitionBudgetAllocationInput{
+		{PartitionName: "alpha", MinRetainedBytes: SizeFromBytes(80)},
+		{PartitionName: "beta", MinRetainedBytes: SizeFromBytes(70)},
+	})
+
+	if report.Allocation.Feasible {
+		t.Fatal("partition allocation Feasible = true, want false")
+	}
+	if got := partitionBudgetTargetBytes(report.Targets); got != 150 {
+		t.Fatalf("partition target bytes = %d, want 150 visible overcommit", got)
+	}
+}
+
+// TestPartitionPoolBudgetAllocationReportsOvercommit verifies partition
+// Pool-target allocation exposes infeasible minimums.
+func TestPartitionPoolBudgetAllocationReportsOvercommit(t *testing.T) {
+	t.Parallel()
+
+	report := allocatePoolBudgetTargetsReport(Generation(13), SizeFromBytes(100), []poolBudgetAllocationInput{
+		{PoolName: "alpha", MinRetainedBytes: SizeFromBytes(80)},
+		{PoolName: "beta", MinRetainedBytes: SizeFromBytes(70)},
+	})
+
+	if report.Allocation.Feasible {
+		t.Fatal("pool allocation Feasible = true, want false")
+	}
+	if got := poolBudgetTargetBytes(report.Targets); got != 150 {
+		t.Fatalf("pool target bytes = %d, want 150 visible overcommit", got)
+	}
+}
+
+// TestPoolClassBudgetAllocationReportsOvercommit verifies Pool class-target
+// allocation exposes infeasible minimums.
+func TestPoolClassBudgetAllocationReportsOvercommit(t *testing.T) {
+	t.Parallel()
+
+	report := allocateClassBudgetTargetsReport(Generation(14), SizeFromBytes(100), []classBudgetAllocationInput{
+		{ClassID: ClassID(0), MinTargetBytes: SizeFromBytes(80)},
+		{ClassID: ClassID(1), MinTargetBytes: SizeFromBytes(70)},
+	})
+
+	if report.Allocation.Feasible {
+		t.Fatal("class allocation Feasible = true, want false")
+	}
+	if got := classBudgetTargetBytes(report.Targets); got != 150 {
+		t.Fatalf("class target bytes = %d, want 150 visible overcommit", got)
+	}
+}
+
 func TestBudgetWeightedShareHandlesLargeProducts(t *testing.T) {
 	t.Parallel()
 
@@ -153,6 +228,14 @@ func poolBudgetTargetBytes(targets []PoolBudgetTarget) uint64 {
 	var total uint64
 	for _, target := range targets {
 		total = poolSaturatingAdd(total, target.RetainedBytes.Bytes())
+	}
+	return total
+}
+
+func classBudgetTargetBytes(targets []ClassBudgetTarget) uint64 {
+	var total uint64
+	for _, target := range targets {
+		total = poolSaturatingAdd(total, target.TargetBytes.Bytes())
 	}
 	return total
 }

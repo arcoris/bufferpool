@@ -16,12 +16,6 @@
 
 package bufferpool
 
-import (
-	"sync/atomic"
-
-	"arcoris.dev/bufferpool/internal/randx"
-)
-
 const (
 	// errPoolInvalidShardSelectionMode is used when the effective policy contains
 	// a shard selection mode that standalone Pool cannot execute.
@@ -169,7 +163,7 @@ func newPoolShardSelector(mode ShardSelectionMode, classIndex int) (shardSelecto
 		return newProcessorInspiredShardSelector(classIndex), nil
 
 	case ShardSelectionModeAffinity:
-		return newAffinityShardSelector(classIndex), nil
+		return nil, newError(ErrInvalidPolicy, errPoolUnsupportedAffinityShardSelection)
 
 	default:
 		return nil, newError(ErrInvalidPolicy, errPoolInvalidShardSelectionMode)
@@ -335,108 +329,4 @@ func poolMinUint64(left, right uint64) uint64 {
 	}
 
 	return right
-}
-
-// poolRandomShardSelector implements ShardSelectionModeRandom for Pool-owned
-// classState operations.
-//
-// The selector is deterministic and non-cryptographic. It uses an atomic
-// sequence counter and randx bounded mixing to avoid shared mutable random state,
-// allocations, or global randomness on the data path.
-type poolRandomShardSelector struct {
-	next atomic.Uint64
-}
-
-// SelectShard returns a mixed bounded shard index in [0, shardCount).
-func (s *poolRandomShardSelector) SelectShard(shardCount int) int {
-	if s == nil {
-		panic(errShardSelectorNil)
-	}
-
-	validateShardSelectorShardCount(shardCount)
-
-	value := s.next.Add(1)
-	return int(randx.BoundedIndexUint64(value, uint64(shardCount)))
-}
-
-const (
-	// processorInspiredShardSelectorStep is the odd golden-ratio increment used
-	// to advance per-class selector sequences.
-	//
-	// The exact value is not a public contract. It gives neighboring sequence
-	// values different bit patterns before randx bounded mapping and avoids a
-	// cheap "+1 then low-bit mask" pattern when shard counts are powers of two.
-	processorInspiredShardSelectorStep = uint64(0x9e3779b97f4a7c15)
-)
-
-// processorInspiredShardSelector implements ShardSelectionModeProcessorInspired.
-//
-// It uses one owner-local sequence per class and mixes it with a class seed.
-// This avoids one pool-wide atomic counter, does not call private runtime P
-// APIs, and keeps selection allocation-free.
-type processorInspiredShardSelector struct {
-	// next is the class-local monotonic sequence. It is atomic because Pool.Get
-	// may call the same class selector concurrently from many goroutines.
-	next atomic.Uint64
-
-	// seed differentiates selectors for different class indexes so all classes
-	// do not walk the same shard sequence at the same time.
-	seed uint64
-}
-
-// newProcessorInspiredShardSelector returns one selector for one Pool-owned
-// class index.
-//
-// The class index is construction-time metadata, not public affinity. It only
-// perturbs the local sequence so adjacent classes do not share identical shard
-// walk order.
-func newProcessorInspiredShardSelector(classIndex int) *processorInspiredShardSelector {
-	return &processorInspiredShardSelector{
-		seed: randx.MixUint64(uint64(classIndex) + processorInspiredShardSelectorStep),
-	}
-}
-
-// SelectShard returns a mixed bounded shard index in [0, shardCount).
-func (s *processorInspiredShardSelector) SelectShard(shardCount int) int {
-	if s == nil {
-		panic(errShardSelectorNil)
-	}
-
-	validateShardSelectorShardCount(shardCount)
-
-	sequence := s.next.Add(processorInspiredShardSelectorStep)
-	value := sequence ^ s.seed
-	return int(randx.BoundedIndexUint64(value, uint64(shardCount)))
-}
-
-// affinityShardSelector is the current standalone Pool implementation for
-// ShardSelectionModeAffinity.
-//
-// No public Pool API supplies an affinity key yet. Until that exists, the
-// selector uses the same cheap owner-local entropy as processor-inspired mode so
-// the mode is executable without pretending to provide external affinity.
-type affinityShardSelector struct {
-	// inner owns the temporary sequence behavior used until a public affinity
-	// key reaches this layer.
-	inner *processorInspiredShardSelector
-}
-
-// newAffinityShardSelector returns an executable selector for affinity mode
-// while standalone Pool still has no public affinity input.
-//
-// Keeping this constructor separate prevents future affinity implementation from
-// changing processor-inspired selector semantics.
-func newAffinityShardSelector(classIndex int) *affinityShardSelector {
-	return &affinityShardSelector{
-		inner: newProcessorInspiredShardSelector(classIndex),
-	}
-}
-
-// SelectShard returns a mixed bounded shard index in [0, shardCount).
-func (s *affinityShardSelector) SelectShard(shardCount int) int {
-	if s == nil || s.inner == nil {
-		panic(errShardSelectorNil)
-	}
-
-	return s.inner.SelectShard(shardCount)
 }

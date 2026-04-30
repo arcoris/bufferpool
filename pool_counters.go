@@ -44,9 +44,21 @@ const (
 	// returned-buffer retention before class routing was attempted.
 	PoolDropReasonReturnedBuffersDisabled
 
+	// PoolDropReasonPressureRetentionDisabled means runtime pressure disabled
+	// retention before class routing was attempted.
+	PoolDropReasonPressureRetentionDisabled
+
 	// PoolDropReasonOversized means the returned buffer capacity exceeded the
 	// effective maximum retained-buffer capacity.
 	PoolDropReasonOversized
+
+	// PoolDropReasonPressureCapacityThreshold means runtime pressure rejected a
+	// return because its capacity exceeded a pressure-specific threshold.
+	PoolDropReasonPressureCapacityThreshold
+
+	// PoolDropReasonPolicyContraction means an applied policy contraction
+	// rejected new retention before class routing.
+	PoolDropReasonPolicyContraction
 
 	// PoolDropReasonUnsupportedClass means the returned capacity could not be
 	// mapped to any configured size class.
@@ -68,8 +80,14 @@ func (r PoolDropReason) String() string {
 		return "closed_pool"
 	case PoolDropReasonReturnedBuffersDisabled:
 		return "returned_buffers_disabled"
+	case PoolDropReasonPressureRetentionDisabled:
+		return "pressure_retention_disabled"
 	case PoolDropReasonOversized:
 		return "oversized"
+	case PoolDropReasonPressureCapacityThreshold:
+		return "pressure_capacity_threshold"
+	case PoolDropReasonPolicyContraction:
+		return "policy_contraction"
 	case PoolDropReasonUnsupportedClass:
 		return "unsupported_class"
 	case PoolDropReasonInvalidPolicy:
@@ -93,8 +111,20 @@ type PoolDropReasonCounters struct {
 	// retention is disabled by policy.
 	ReturnedBuffersDisabled uint64
 
+	// PressureRetentionDisabled counts valid returns dropped because runtime
+	// pressure disabled retention.
+	PressureRetentionDisabled uint64
+
 	// Oversized counts returns whose capacity exceeded policy limits.
 	Oversized uint64
+
+	// PressureCapacityThreshold counts returns whose capacity exceeded a
+	// pressure-specific threshold.
+	PressureCapacityThreshold uint64
+
+	// PolicyContraction counts returns rejected by an applied policy contraction
+	// before class routing.
+	PolicyContraction uint64
 
 	// UnsupportedClass counts returns whose capacity could not be classified.
 	UnsupportedClass uint64
@@ -107,7 +137,10 @@ type PoolDropReasonCounters struct {
 func (c PoolDropReasonCounters) IsZero() bool {
 	return c.ClosedPool == 0 &&
 		c.ReturnedBuffersDisabled == 0 &&
+		c.PressureRetentionDisabled == 0 &&
 		c.Oversized == 0 &&
+		c.PressureCapacityThreshold == 0 &&
+		c.PolicyContraction == 0 &&
 		c.UnsupportedClass == 0 &&
 		c.InvalidPolicy == 0
 }
@@ -116,7 +149,10 @@ func (c PoolDropReasonCounters) IsZero() bool {
 func (c PoolDropReasonCounters) Total() uint64 {
 	return c.ClosedPool +
 		c.ReturnedBuffersDisabled +
+		c.PressureRetentionDisabled +
 		c.Oversized +
+		c.PressureCapacityThreshold +
+		c.PolicyContraction +
 		c.UnsupportedClass +
 		c.InvalidPolicy
 }
@@ -201,11 +237,14 @@ func (c *poolOwnerCounters) snapshot() poolOwnerCountersSnapshot {
 		Drops:         c.drops.Load(),
 		DroppedBytes:  c.droppedBytes.Load(),
 		DropReasons: PoolDropReasonCounters{
-			ClosedPool:              c.dropReasons[PoolDropReasonClosedPool].Load(),
-			ReturnedBuffersDisabled: c.dropReasons[PoolDropReasonReturnedBuffersDisabled].Load(),
-			Oversized:               c.dropReasons[PoolDropReasonOversized].Load(),
-			UnsupportedClass:        c.dropReasons[PoolDropReasonUnsupportedClass].Load(),
-			InvalidPolicy:           c.dropReasons[PoolDropReasonInvalidPolicy].Load(),
+			ClosedPool:                c.dropReasons[PoolDropReasonClosedPool].Load(),
+			ReturnedBuffersDisabled:   c.dropReasons[PoolDropReasonReturnedBuffersDisabled].Load(),
+			PressureRetentionDisabled: c.dropReasons[PoolDropReasonPressureRetentionDisabled].Load(),
+			Oversized:                 c.dropReasons[PoolDropReasonOversized].Load(),
+			PressureCapacityThreshold: c.dropReasons[PoolDropReasonPressureCapacityThreshold].Load(),
+			PolicyContraction:         c.dropReasons[PoolDropReasonPolicyContraction].Load(),
+			UnsupportedClass:          c.dropReasons[PoolDropReasonUnsupportedClass].Load(),
+			InvalidPolicy:             c.dropReasons[PoolDropReasonInvalidPolicy].Load(),
 		},
 	}
 }

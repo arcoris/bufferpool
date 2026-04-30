@@ -127,3 +127,30 @@ func TestValidatePolicyForContextRejectsUnsupportedReturnFallback(t *testing.T) 
 		t.Fatalf("ValidatePolicyForContext(return fallback, pool group) = %v, want ErrInvalidPolicy", err)
 	}
 }
+
+// TestValidatePolicyForContextRejectsAffinityWithoutKey verifies that affinity
+// selection remains fail-closed until managed operations can pass an explicit
+// affinity key to Pool shard routing.
+func TestValidatePolicyForContextRejectsAffinityWithoutKey(t *testing.T) {
+	t.Parallel()
+
+	policy := DefaultPolicy()
+	policy.Shards.Selection = ShardSelectionModeAffinity
+
+	for _, context := range []PolicyValidationContext{
+		PolicyValidationContextStandalonePool,
+		PolicyValidationContextPartitionOwnedPool,
+		PolicyValidationContextPoolPartition,
+		PolicyValidationContextPoolGroup,
+	} {
+		context := context
+		t.Run(context.String(), func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidatePolicyForContext(policy, context)
+			if !errors.Is(err, ErrInvalidPolicy) {
+				t.Fatalf("ValidatePolicyForContext(affinity, %s) = %v, want ErrInvalidPolicy", context, err)
+			}
+		})
+	}
+}

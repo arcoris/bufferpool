@@ -73,18 +73,19 @@ type partitionController struct {
 	cycles uint64
 }
 
-// newPartitionController returns initialized partition controller state.
-func newPartitionController(clk clock.Clock, policy PartitionPolicy) partitionController {
+// init prepares partition controller state in place.
+//
+// partitionController contains sync.Mutex, so it must not be returned by value
+// from a constructor after initialization. PoolPartition allocates the parent
+// struct first and initializes this field in place to avoid copying lock state.
+func (c *partitionController) init(clk clock.Clock, policy PartitionPolicy) {
 	if clk == nil {
 		clk = clockDefault()
 	}
-	controller := partitionController{
-		clock:           clk,
-		policy:          policy.Normalize(),
-		ewmaByPoolClass: make(map[poolClassKey]PoolClassEWMAState),
-	}
-	controller.generation.Store(InitialGeneration)
-	return controller
+	c.clock = clk
+	c.policy = policy.Normalize()
+	c.ewmaByPoolClass = make(map[poolClassKey]PoolClassEWMAState)
+	c.generation.Store(InitialGeneration)
 }
 
 // clockDefault isolates the concrete production clock constructor for tests that

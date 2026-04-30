@@ -50,6 +50,19 @@ type PoolPartition struct {
 	// graceful timeout while preventing duplicate LeaseRegistry/Pool cleanup.
 	closeMu sync.Mutex
 
+	// foregroundMu gates partition-level foreground operations against hard
+	// Close.
+	//
+	// This lock is deliberately above Pool and LeaseRegistry. It is taken by
+	// PoolPartition-managed acquire/release and explicit control-plane work such
+	// as TickInto, pressure publication, budget publication, and trim execution.
+	// It is not taken by raw Pool.Get, Pool.Put, shard, or bucket paths. Hard
+	// Close owns the write side before closing the LeaseRegistry and owned Pools,
+	// so admitted partition work finishes before child cleanup starts. Lease
+	// release uses the read side but does not require AllowsWork, allowing active
+	// leases to complete diagnostically after shutdown begins.
+	foregroundMu sync.RWMutex
+
 	// generation tracks partition-visible state and controller events.
 	generation AtomicGeneration
 
@@ -96,9 +109,9 @@ func NewPoolPartition(config PoolPartitionConfig) (*PoolPartition, error) {
 		config:         clonePartitionConfig(normalized),
 		registry:       registry,
 		activeRegistry: newPartitionActiveRegistry(registry.names),
-		controller:     newPartitionController(clock.Default(), normalized.Policy),
 		leases:         leases,
 	}
+	partition.controller.init(clock.Default(), normalized.Policy)
 	partition.generation.Store(InitialGeneration)
 	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	partition.lifecycle.Activate()
@@ -162,9 +175,11 @@ func (p *PoolPartition) PoolNames() []string { p.mustBeInitialized(); return p.r
 // Acquire obtains an ownership lease from the named Pool.
 func (p *PoolPartition) Acquire(poolName string, size int) (Lease, error) {
 	p.mustBeInitialized()
-	if !p.lifecycle.AllowsWork() {
-		return Lease{}, newError(ErrClosed, errPartitionClosed)
+	if err := p.beginForegroundOperation(); err != nil {
+		return Lease{}, err
 	}
+	defer p.endForegroundOperation()
+
 	pool, ok := p.pool(poolName)
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+poolName)
@@ -181,9 +196,11 @@ func (p *PoolPartition) Acquire(poolName string, size int) (Lease, error) {
 // AcquireSize is the Size-typed form of Acquire.
 func (p *PoolPartition) AcquireSize(poolName string, size Size) (Lease, error) {
 	p.mustBeInitialized()
-	if !p.lifecycle.AllowsWork() {
-		return Lease{}, newError(ErrClosed, errPartitionClosed)
+	if err := p.beginForegroundOperation(); err != nil {
+		return Lease{}, err
 	}
+	defer p.endForegroundOperation()
+
 	pool, ok := p.pool(poolName)
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+poolName)
@@ -200,6 +217,9 @@ func (p *PoolPartition) AcquireSize(poolName string, size Size) (Lease, error) {
 // Release releases a lease through the partition-owned LeaseRegistry.
 func (p *PoolPartition) Release(lease Lease, buffer []byte) error {
 	p.mustBeInitialized()
+	p.beginReleaseOperation()
+	defer p.endForegroundOperation()
+
 	if err := p.leases.Release(lease, buffer); err != nil {
 		return err
 	}

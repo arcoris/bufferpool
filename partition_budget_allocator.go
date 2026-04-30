@@ -45,6 +45,15 @@ type poolBudgetAllocationInput struct {
 	Score             float64
 }
 
+// poolBudgetAllocationReport describes partition-to-Pool target feasibility.
+type poolBudgetAllocationReport struct {
+	// Targets are deterministic Pool targets derived from the allocation.
+	Targets []PoolBudgetTarget
+
+	// Allocation reports whether child minimums fit the parent partition target.
+	Allocation budgetAllocationReport
+}
+
 // applyPartitionBudget publishes the retained target into the partition policy
 // stream.
 //
@@ -52,6 +61,17 @@ type poolBudgetAllocationInput struct {
 // budgets, publish class targets, execute trim, or start controller work.
 func (p *PoolPartition) applyPartitionBudget(target PartitionBudgetTarget) error {
 	p.mustBeInitialized()
+	if err := p.beginForegroundOperation(); err != nil {
+		return err
+	}
+	defer p.endForegroundOperation()
+
+	return p.applyPartitionBudgetLocked(target)
+}
+
+// applyPartitionBudgetLocked publishes a partition target while the foreground
+// gate is already held.
+func (p *PoolPartition) applyPartitionBudgetLocked(target PartitionBudgetTarget) error {
 	if !p.lifecycle.AllowsWork() {
 		return newError(ErrClosed, errPartitionClosed)
 	}
@@ -75,19 +95,48 @@ func (p *PoolPartition) applyPartitionBudget(target PartitionBudgetTarget) error
 // and shard-credit publication.
 func (p *PoolPartition) applyPoolBudgetTargets(targets []PoolBudgetTarget) error {
 	p.mustBeInitialized()
+	if err := p.beginForegroundOperation(); err != nil {
+		return err
+	}
+	defer p.endForegroundOperation()
+
+	return p.applyPoolBudgetTargetsLocked(targets)
+}
+
+// applyPoolBudgetTargetsLocked validates and publishes Pool targets while the
+// partition foreground gate is already held.
+func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget) error {
 	if !p.lifecycle.AllowsWork() {
 		return newError(ErrClosed, errPartitionClosed)
 	}
 
+	prepared := make([]struct {
+		target PoolBudgetTarget
+		pool   *Pool
+		index  int
+	}, 0, len(targets))
 	for _, target := range targets {
 		pool, ok := p.registry.pool(target.PoolName)
 		if !ok {
 			return newError(ErrInvalidOptions, errPartitionPoolMissing+": "+target.PoolName)
 		}
+		if err := pool.validatePoolBudgetTarget(target); err != nil {
+			return err
+		}
+		index, _ := p.registry.poolIndex(target.PoolName)
+		prepared = append(prepared, struct {
+			target PoolBudgetTarget
+			pool   *Pool
+			index  int
+		}{target: target, pool: pool, index: index})
+	}
 
-		_ = pool.applyPoolBudget(target)
-		if index, ok := p.registry.poolIndex(target.PoolName); ok {
-			_ = p.activeRegistry.markDirtyIndex(index)
+	for _, item := range prepared {
+		if _, err := item.pool.applyPoolBudget(item.target); err != nil {
+			return err
+		}
+		if item.index >= 0 {
+			_ = p.activeRegistry.markDirtyIndex(item.index)
 		}
 	}
 
@@ -101,6 +150,16 @@ func allocatePoolBudgetTargets(
 	retainedBytes Size,
 	inputs []poolBudgetAllocationInput,
 ) []PoolBudgetTarget {
+	return allocatePoolBudgetTargetsReport(generation, retainedBytes, inputs).Targets
+}
+
+// allocatePoolBudgetTargetsReport applies the common allocator and returns
+// feasibility diagnostics for hard-budget callers.
+func allocatePoolBudgetTargetsReport(
+	generation Generation,
+	retainedBytes Size,
+	inputs []poolBudgetAllocationInput,
+) poolBudgetAllocationReport {
 	allocationInputs := make([]budgetAllocationInput, len(inputs))
 	for index, input := range inputs {
 		allocationInputs[index] = budgetAllocationInput{
@@ -111,9 +170,9 @@ func allocatePoolBudgetTargets(
 		}
 	}
 
-	results := allocateBudgetTargets(retainedBytes.Bytes(), allocationInputs)
+	allocation := allocateBudgetTargetsReport(retainedBytes.Bytes(), allocationInputs)
 	targets := make([]PoolBudgetTarget, len(inputs))
-	for index, result := range results {
+	for index, result := range allocation.Results {
 		targets[index] = PoolBudgetTarget{
 			Generation:    generation,
 			PoolName:      inputs[index].PoolName,
@@ -121,5 +180,5 @@ func allocatePoolBudgetTargets(
 		}
 	}
 
-	return targets
+	return poolBudgetAllocationReport{Targets: targets, Allocation: allocation}
 }

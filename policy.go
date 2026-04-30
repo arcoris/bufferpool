@@ -342,13 +342,13 @@ const (
 	// mixed indexing, but it does not inspect or pin to Go scheduler P state.
 	ShardSelectionModeProcessorInspired
 
-	// ShardSelectionModeAffinity selects by affinity metadata when a caller
-	// supplies it. Standalone Pool has no public affinity input yet, so it uses
-	// the same owner-local entropy as processor-inspired selection.
+	// ShardSelectionModeAffinity is reserved for a future routing path that
+	// supplies an explicit affinity key with the operation.
 	//
-	// The mode exists as an explicit policy value for managed routing. Pool
-	// construction must still execute it safely without adding a hot-path
-	// dependency on higher-level ownership or group code.
+	// Current Pool and managed acquisition APIs do not pass such a key to the
+	// data plane. Construction rejects this mode instead of silently degrading it
+	// to processor-inspired entropy, because doing so would make the policy name
+	// claim affinity behavior the runtime cannot prove.
 	ShardSelectionModeAffinity
 )
 

@@ -50,7 +50,7 @@ func poolPressureReturnOutcome(input poolReturnInput, policy Policy, signal Pres
 			AdmissionActionDrop,
 			nil,
 			"",
-			PoolDropReasonReturnedBuffersDisabled,
+			PoolDropReasonPressureRetentionDisabled,
 			input.Capacity,
 		), true
 	}
@@ -60,7 +60,7 @@ func poolPressureReturnOutcome(input poolReturnInput, policy Policy, signal Pres
 			policy.Admission.OversizedReturn,
 			ErrBufferTooLarge,
 			errPoolPutBufferTooLarge,
-			PoolDropReasonOversized,
+			PoolDropReasonPressureCapacityThreshold,
 			input.Capacity,
 		), true
 	}
@@ -70,7 +70,7 @@ func poolPressureReturnOutcome(input poolReturnInput, policy Policy, signal Pres
 			policy.Admission.OversizedReturn,
 			ErrBufferTooLarge,
 			errPoolPutBufferTooLarge,
-			PoolDropReasonOversized,
+			PoolDropReasonPressureCapacityThreshold,
 			input.Capacity,
 		), true
 	}

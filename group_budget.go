@@ -18,6 +18,20 @@ package bufferpool
 
 import "errors"
 
+// PoolGroupBudgetSnapshot describes aggregate group budget usage.
+//
+// The group currently evaluates budget pressure by projecting its aggregate
+// partition sample through partition-shaped retained-byte policy fields. This
+// type gives report-facing group APIs group vocabulary while keeping the shared
+// internal math reusable and explicit.
+type PoolGroupBudgetSnapshot PartitionBudgetSnapshot
+
+// IsOverBudget reports whether the aggregate group sample exceeds any enabled
+// retained-byte budget limit.
+func (s PoolGroupBudgetSnapshot) IsOverBudget() bool {
+	return PartitionBudgetSnapshot(s).IsOverBudget()
+}
+
 // PartitionBudgetTarget is a retained-memory budget publication for one
 // group-owned partition.
 //
@@ -50,6 +64,16 @@ type partitionBudgetAllocationInput struct {
 	MinRetainedBytes  Size
 	MaxRetainedBytes  Size
 	Score             float64
+}
+
+// partitionBudgetAllocationReport describes group-to-partition target
+// feasibility.
+type partitionBudgetAllocationReport struct {
+	// Targets are deterministic partition targets derived from the allocation.
+	Targets []PartitionBudgetTarget
+
+	// Allocation reports whether child minimums fit the parent group target.
+	Allocation budgetAllocationReport
 }
 
 // computePartitionBudgetTargets computes group-to-partition budget targets.
@@ -123,6 +147,16 @@ func allocatePartitionBudgetTargets(
 	retainedBytes Size,
 	inputs []partitionBudgetAllocationInput,
 ) []PartitionBudgetTarget {
+	return allocatePartitionBudgetTargetsReport(generation, retainedBytes, inputs).Targets
+}
+
+// allocatePartitionBudgetTargetsReport applies the common allocator and returns
+// feasibility diagnostics for hard-budget callers.
+func allocatePartitionBudgetTargetsReport(
+	generation Generation,
+	retainedBytes Size,
+	inputs []partitionBudgetAllocationInput,
+) partitionBudgetAllocationReport {
 	allocationInputs := make([]budgetAllocationInput, len(inputs))
 	for index, input := range inputs {
 		allocationInputs[index] = budgetAllocationInput{
@@ -133,9 +167,9 @@ func allocatePartitionBudgetTargets(
 		}
 	}
 
-	results := allocateBudgetTargets(retainedBytes.Bytes(), allocationInputs)
+	allocation := allocateBudgetTargetsReport(retainedBytes.Bytes(), allocationInputs)
 	targets := make([]PartitionBudgetTarget, len(inputs))
-	for index, result := range results {
+	for index, result := range allocation.Results {
 		targets[index] = PartitionBudgetTarget{
 			Generation:       generation,
 			PartitionName:    inputs[index].PartitionName,
@@ -145,5 +179,5 @@ func allocatePartitionBudgetTargets(
 		}
 	}
 
-	return targets
+	return partitionBudgetAllocationReport{Targets: targets, Allocation: allocation}
 }

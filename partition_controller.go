@@ -93,9 +93,11 @@ func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 // goroutines, coordinate with PoolGroup, or redistribute group-level budgets.
 func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	p.mustBeInitialized()
-	if !p.lifecycle.AllowsWork() {
-		return newError(ErrClosed, errPartitionClosed)
+	if err := p.beginForegroundOperation(); err != nil {
+		return err
 	}
+	defer p.endForegroundOperation()
+
 	if dst == nil {
 		return nil
 	}
@@ -131,7 +133,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		return err
 	}
 	poolBudgetTargets := p.controllerPoolBudgetTargets(generation, runtime, window, elapsed)
-	if err := p.applyPoolBudgetTargets(poolBudgetTargets); err != nil {
+	if err := p.applyPoolBudgetTargetsLocked(poolBudgetTargets); err != nil {
 		return err
 	}
 	trimResult := p.executeTrimPlan(trimPlan)

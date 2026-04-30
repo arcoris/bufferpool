@@ -655,10 +655,13 @@ func poolCountersApplyOwner(dst *PoolCountersSnapshot, owner poolOwnerCountersSn
 // this helper is only for merging owner-side reason projections.
 func poolDropReasonCountersAdd(left, right PoolDropReasonCounters) PoolDropReasonCounters {
 	return PoolDropReasonCounters{
-		ClosedPool:              left.ClosedPool + right.ClosedPool,
-		ReturnedBuffersDisabled: left.ReturnedBuffersDisabled + right.ReturnedBuffersDisabled,
-		Oversized:               left.Oversized + right.Oversized,
-		UnsupportedClass:        left.UnsupportedClass + right.UnsupportedClass,
-		InvalidPolicy:           left.InvalidPolicy + right.InvalidPolicy,
+		ClosedPool:                left.ClosedPool + right.ClosedPool,
+		ReturnedBuffersDisabled:   left.ReturnedBuffersDisabled + right.ReturnedBuffersDisabled,
+		PressureRetentionDisabled: left.PressureRetentionDisabled + right.PressureRetentionDisabled,
+		Oversized:                 left.Oversized + right.Oversized,
+		PressureCapacityThreshold: left.PressureCapacityThreshold + right.PressureCapacityThreshold,
+		PolicyContraction:         left.PolicyContraction + right.PolicyContraction,
+		UnsupportedClass:          left.UnsupportedClass + right.UnsupportedClass,
+		InvalidPolicy:             left.InvalidPolicy + right.InvalidPolicy,
 	}
 }

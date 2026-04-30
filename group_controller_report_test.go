@@ -25,7 +25,7 @@ func TestNewPoolGroupControllerEvaluation(t *testing.T) {
 	previous := testGroupSampleWithCounters(Generation(1), PoolCountersSnapshot{Gets: 10, Hits: 5, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 1, Releases: 1})
 	current := testGroupSampleWithCounters(Generation(2), PoolCountersSnapshot{Gets: 20, Hits: 15, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 5, Releases: 3})
 	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
-	evaluation := NewPoolGroupControllerEvaluation(previous, current, time.Second, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{}, evaluator)
+	evaluation := NewPoolGroupControllerEvaluation(previous, current, time.Second, PoolGroupBudgetSnapshot{}, PoolGroupPressureSnapshot{}, evaluator)
 	if evaluation.Window.Generation != Generation(2) {
 		t.Fatalf("Window.Generation = %v, want 2", evaluation.Window.Generation)
 	}
@@ -43,7 +43,7 @@ func TestPoolGroupControllerEvaluationUsesWindowRates(t *testing.T) {
 	current := testGroupSampleWithCounters(Generation(2), PoolCountersSnapshot{Gets: 110, Hits: 105, Misses: 5}, LeaseCountersSnapshot{Acquisitions: 101, Releases: 101})
 	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
 
-	evaluation := NewPoolGroupControllerEvaluation(previous, current, time.Second, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{}, evaluator)
+	evaluation := NewPoolGroupControllerEvaluation(previous, current, time.Second, PoolGroupBudgetSnapshot{}, PoolGroupPressureSnapshot{}, evaluator)
 	if evaluation.Rates.Aggregate.GetsPerSecond != 100 {
 		t.Fatalf("GetsPerSecond = %v, want 100", evaluation.Rates.Aggregate.GetsPerSecond)
 	}

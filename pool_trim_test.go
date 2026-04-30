@@ -128,8 +128,37 @@ func TestPoolPressureCriticalDiscardsReturns(t *testing.T) {
 	if metrics.Retains != 0 || metrics.Drops != 1 || metrics.CurrentRetainedBytes != 0 {
 		t.Fatalf("critical pressure metrics = %+v, want dropped return and no retention", metrics)
 	}
-	if metrics.DropReasons.ReturnedBuffersDisabled != 1 {
-		t.Fatalf("returned-buffer-disabled drops = %d, want 1", metrics.DropReasons.ReturnedBuffersDisabled)
+	if metrics.DropReasons.PressureRetentionDisabled != 1 {
+		t.Fatalf("pressure-retention-disabled drops = %d, want 1", metrics.DropReasons.PressureRetentionDisabled)
+	}
+}
+
+// TestPoolPressureCapacityThresholdDropReason verifies pressure-driven capacity
+// drops stay distinguishable from static oversized-return policy drops.
+func TestPoolPressureCapacityThresholdDropReason(t *testing.T) {
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Pressure = poolTestPressurePolicy()
+	policy.Pressure.High.DropReturnedCapacityAbove = SizeFromBytes(256)
+	policy.Admission.OversizedReturn = AdmissionActionDrop
+	pool := MustNew(PoolConfig{Policy: policy})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+
+	if err := pool.applyPressure(PressureSignal{Level: PressureLevelHigh, Source: PressureSourceManual, Generation: Generation(10)}); err != nil {
+		t.Fatalf("applyPressure(high) error = %v", err)
+	}
+	if err := pool.Put(make([]byte, 0, 512)); err != nil {
+		t.Fatalf("Put() under high pressure error = %v", err)
+	}
+	metrics := pool.Metrics()
+	if metrics.DropReasons.PressureCapacityThreshold != 1 {
+		t.Fatalf("pressure-capacity-threshold drops = %d, want 1", metrics.DropReasons.PressureCapacityThreshold)
+	}
+	if metrics.DropReasons.Oversized != 0 {
+		t.Fatalf("oversized drops = %d, want 0 for pressure threshold", metrics.DropReasons.Oversized)
 	}
 }
 

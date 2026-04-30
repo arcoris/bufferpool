@@ -20,7 +20,7 @@ import "testing"
 
 func TestPoolGroupScoreEvaluatorZeroValue(t *testing.T) {
 	var evaluator PoolGroupScoreEvaluator
-	values := evaluator.ScoreValues(PoolGroupWindowRates{}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	values := evaluator.ScoreValues(PoolGroupWindowRates{}, PoolGroupBudgetSnapshot{}, PoolGroupPressureSnapshot{})
 	if !values.IsZero() {
 		t.Fatalf("zero evaluator ScoreValues = %#v, want zero", values)
 	}
@@ -28,7 +28,7 @@ func TestPoolGroupScoreEvaluatorZeroValue(t *testing.T) {
 
 func TestPoolGroupScoreEvaluatorUsesAggregateRates(t *testing.T) {
 	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
-	values := evaluator.ScoreValues(PoolGroupWindowRates{Aggregate: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, LeaseOpsPerSecond: 100}}, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+	values := evaluator.ScoreValues(PoolGroupWindowRates{Aggregate: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, LeaseOpsPerSecond: 100}}, PoolGroupBudgetSnapshot{}, PoolGroupPressureSnapshot{})
 	if values.Usefulness == 0 {
 		t.Fatalf("Usefulness = 0, want non-zero for useful aggregate rates")
 	}

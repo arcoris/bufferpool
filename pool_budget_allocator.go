@@ -51,13 +51,22 @@ type classBudgetAllocationInput struct {
 	Score           float64
 }
 
+// classBudgetAllocationReport describes Pool-to-class target feasibility.
+type classBudgetAllocationReport struct {
+	// Targets are deterministic class targets derived from the allocation.
+	Targets []ClassBudgetTarget
+
+	// Allocation reports whether child minimums fit the parent Pool target.
+	Allocation budgetAllocationReport
+}
+
 // applyPoolBudget publishes a Pool-level budget target into class budgets.
 //
 // When target.ClassTargets is empty, the Pool computes class targets from
 // target.RetainedBytes using static class caps and equal zero-score distribution.
 // The method does not trim over-target retained storage and is never called from
 // Pool.Get or Pool.Put.
-func (p *Pool) applyPoolBudget(target PoolBudgetTarget) Generation {
+func (p *Pool) applyPoolBudget(target PoolBudgetTarget) (Generation, error) {
 	p.mustBeInitialized()
 
 	classTargets := target.ClassTargets
@@ -73,14 +82,16 @@ func (p *Pool) applyPoolBudget(target PoolBudgetTarget) Generation {
 // The method validates the complete target batch before applying any class so a
 // malformed publication cannot partially update a Pool. It returns the latest
 // Pool runtime generation published for the batch.
-func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) Generation {
+func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) (Generation, error) {
 	p.mustBeInitialized()
 
 	if len(targets) == 0 {
-		return p.currentRuntimeSnapshot().Generation
+		return p.currentRuntimeSnapshot().Generation, nil
 	}
 
-	p.mustValidateClassBudgetTargets(targets)
+	if err := p.validateClassBudgetTargets(targets); err != nil {
+		return p.currentRuntimeSnapshot().Generation, err
+	}
 
 	var generation Generation
 	for _, target := range targets {
@@ -95,7 +106,7 @@ func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) Generation {
 	runtime := p.currentRuntimeSnapshot()
 	poolGeneration := budgetPublicationGeneration(runtime.Generation, generation)
 	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(poolGeneration, runtime.Policy, runtime.Pressure))
-	return poolGeneration
+	return poolGeneration, nil
 }
 
 // defaultClassBudgetTargets computes class targets for a Pool-level retained
@@ -112,23 +123,34 @@ func (p *Pool) defaultClassBudgetTargets(generation Generation, retainedBytes Si
 	return allocateClassBudgetTargets(generation, retainedBytes, inputs)
 }
 
-// mustValidateClassBudgetTargets validates class target identity before
+// validatePoolBudgetTarget validates the full class target batch implied by one
+// Pool target before publication.
+func (p *Pool) validatePoolBudgetTarget(target PoolBudgetTarget) error {
+	classTargets := target.ClassTargets
+	if len(classTargets) == 0 {
+		classTargets = p.defaultClassBudgetTargets(target.Generation, target.RetainedBytes)
+	}
+	return p.validateClassBudgetTargets(classTargets)
+}
+
+// validateClassBudgetTargets validates class target identity before
 // publication.
-func (p *Pool) mustValidateClassBudgetTargets(targets []ClassBudgetTarget) {
+func (p *Pool) validateClassBudgetTargets(targets []ClassBudgetTarget) error {
 	seen := make(map[ClassID]struct{}, len(targets))
 	for _, target := range targets {
 		index := target.ClassID.Index()
 		if index < 0 || index >= len(p.classes) {
-			panic(errPoolBudgetTargetClassMissing)
+			return newError(ErrInvalidOptions, errPoolBudgetTargetClassMissing)
 		}
 		if p.classes[index].classID() != target.ClassID {
-			panic(errPoolBudgetTargetClassMissing)
+			return newError(ErrInvalidOptions, errPoolBudgetTargetClassMissing)
 		}
 		if _, ok := seen[target.ClassID]; ok {
-			panic(errPoolBudgetTargetDuplicateClass)
+			return newError(ErrInvalidOptions, errPoolBudgetTargetDuplicateClass)
 		}
 		seen[target.ClassID] = struct{}{}
 	}
+	return nil
 }
 
 // allocateClassBudgetTargets applies the common base-plus-adaptive allocator to
@@ -138,6 +160,16 @@ func allocateClassBudgetTargets(
 	retainedBytes Size,
 	inputs []classBudgetAllocationInput,
 ) []ClassBudgetTarget {
+	return allocateClassBudgetTargetsReport(generation, retainedBytes, inputs).Targets
+}
+
+// allocateClassBudgetTargetsReport applies the common allocator and returns
+// feasibility diagnostics for hard-budget callers.
+func allocateClassBudgetTargetsReport(
+	generation Generation,
+	retainedBytes Size,
+	inputs []classBudgetAllocationInput,
+) classBudgetAllocationReport {
 	allocationInputs := make([]budgetAllocationInput, len(inputs))
 	for index, input := range inputs {
 		allocationInputs[index] = budgetAllocationInput{
@@ -148,9 +180,9 @@ func allocateClassBudgetTargets(
 		}
 	}
 
-	results := allocateBudgetTargets(retainedBytes.Bytes(), allocationInputs)
+	allocation := allocateBudgetTargetsReport(retainedBytes.Bytes(), allocationInputs)
 	targets := make([]ClassBudgetTarget, len(inputs))
-	for index, result := range results {
+	for index, result := range allocation.Results {
 		targets[index] = ClassBudgetTarget{
 			Generation:  generation,
 			ClassID:     inputs[index].ClassID,
@@ -158,5 +190,5 @@ func allocateClassBudgetTargets(
 		}
 	}
 
-	return targets
+	return classBudgetAllocationReport{Targets: targets, Allocation: allocation}
 }

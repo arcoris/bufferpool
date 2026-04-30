@@ -58,6 +58,40 @@ type PartitionPressureSnapshot struct {
 	CriticalOwnedBytes uint64
 }
 
+// PoolPartitionPressurePublication reports one partition pressure publication.
+//
+// AppliedPools and SkippedPools make partial propagation explicit. A closed Pool
+// is skipped instead of being silently ignored or mutated after close.
+type PoolPartitionPressurePublication struct {
+	// Generation identifies the partition pressure publication.
+	Generation Generation
+
+	// Signal is the partition-level pressure signal.
+	Signal PressureSignal
+
+	// AppliedPools contains partition-local Pool names that accepted the signal.
+	AppliedPools []PoolPressurePublicationEntry
+
+	// SkippedPools contains partition-local Pool names that did not accept the
+	// signal.
+	SkippedPools []PoolPressurePublicationEntry
+}
+
+// FullyApplied reports whether every owned Pool accepted the pressure signal.
+func (p PoolPartitionPressurePublication) FullyApplied() bool {
+	return len(p.SkippedPools) == 0
+}
+
+// PoolPressurePublicationEntry describes one Pool in a partition pressure
+// publication.
+type PoolPressurePublicationEntry struct {
+	// PoolName is the partition-local Pool name.
+	PoolName string
+
+	// Reason is empty for applied entries and diagnostic for skipped entries.
+	Reason string
+}
+
 // IsZero reports whether p contains no pressure settings.
 func (p PartitionPressurePolicy) IsZero() bool {
 	return !p.Enabled && p.MediumOwnedBytes.IsZero() && p.HighOwnedBytes.IsZero() && p.CriticalOwnedBytes.IsZero()
@@ -99,14 +133,30 @@ func (p *PoolPartition) Pressure() PartitionPressureSnapshot {
 
 // SetPressure publishes a manual pressure signal to this partition and its
 // owned Pools.
+//
+// The compatibility API returns ErrClosed when publication is only partially
+// applied. Call PublishPressure when the caller needs the structured applied and
+// skipped Pool list.
 func (p *PoolPartition) SetPressure(level PressureLevel) error {
-	p.mustBeInitialized()
-	if err := (PressureSignal{Level: level}).validate(); err != nil {
+	publication, err := p.PublishPressure(level)
+	if err != nil {
 		return err
 	}
+	if !publication.FullyApplied() {
+		return newError(ErrClosed, errPartitionClosed)
+	}
+	return nil
+}
 
-	generation := p.generation.Advance()
-	return p.applyPressure(PressureSignal{Level: level, Source: PressureSourceManual, Generation: generation})
+// PublishPressure publishes a manual pressure signal and returns exact
+// propagation diagnostics.
+func (p *PoolPartition) PublishPressure(level PressureLevel) (PoolPartitionPressurePublication, error) {
+	p.mustBeInitialized()
+	if err := (PressureSignal{Level: level}).validate(); err != nil {
+		return PoolPartitionPressurePublication{}, err
+	}
+
+	return p.publishPressureSignal(PressureSignal{Level: level, Source: PressureSourceManual})
 }
 
 // applyPressure publishes pressure to partition runtime state and owned Pools.
@@ -119,22 +169,75 @@ func (p *PoolPartition) applyPressure(signal PressureSignal) error {
 	if err := signal.validate(); err != nil {
 		return err
 	}
-	if !p.lifecycle.AllowsWork() {
+	publication, err := p.publishPressureSignal(signal)
+	if err != nil {
+		return err
+	}
+	if !publication.FullyApplied() {
 		return newError(ErrClosed, errPartitionClosed)
+	}
+	return nil
+}
+
+// publishPressureSignal publishes an already validated source signal through the
+// partition foreground gate.
+func (p *PoolPartition) publishPressureSignal(signal PressureSignal) (PoolPartitionPressurePublication, error) {
+	if err := p.beginForegroundOperation(); err != nil {
+		return PoolPartitionPressurePublication{}, err
+	}
+	defer p.endForegroundOperation()
+
+	return p.applyPressureLocked(signal)
+}
+
+// applyPressureLocked publishes pressure while the partition foreground gate is
+// already held.
+func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitionPressurePublication, error) {
+	if err := signal.validate(); err != nil {
+		return PoolPartitionPressurePublication{}, err
+	}
+	if !p.lifecycle.AllowsWork() {
+		return PoolPartitionPressurePublication{}, newError(ErrClosed, errPartitionClosed)
+	}
+
+	publication := PoolPartitionPressurePublication{
+		Generation: signal.Generation,
+		Signal:     signal,
+	}
+	for _, entry := range p.registry.entries {
+		if entry.pool.IsClosed() {
+			publication.SkippedPools = append(publication.SkippedPools, PoolPressurePublicationEntry{
+				PoolName: entry.name,
+				Reason:   errPoolClosed,
+			})
+			continue
+		}
+	}
+	if len(publication.SkippedPools) > 0 {
+		return publication, nil
 	}
 
 	runtime := p.currentRuntimeSnapshot()
 	generation := budgetPublicationGeneration(runtime.Generation, signal.Generation)
+	if signal.Generation.IsZero() {
+		generation = p.generation.Advance()
+	}
+	signal.Generation = generation
+	publication.Generation = generation
+	publication.Signal = signal
 	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))
 
 	for _, entry := range p.registry.entries {
 		partitionSignal := signal
 		partitionSignal.Source = PressureSourcePartition
 		if err := entry.pool.applyPressure(partitionSignal); err != nil {
-			return err
+			return publication, err
 		}
+		publication.AppliedPools = append(publication.AppliedPools, PoolPressurePublicationEntry{PoolName: entry.name})
 	}
-	return nil
+	publication.Generation = generation
+	publication.Signal.Generation = generation
+	return publication, nil
 }
 
 // newPartitionPressureSnapshot maps sampled owned bytes to a pressure level.

@@ -31,6 +31,16 @@ const (
 	budgetAllocationScoreScale = 1_000_000
 )
 
+const (
+	// budgetAllocationReasonFeasible reports a target set that fits the parent
+	// retained-byte budget.
+	budgetAllocationReasonFeasible = "feasible"
+
+	// budgetAllocationReasonMinimumsExceedParent reports a malformed target set
+	// whose child minimums alone exceed the parent retained-byte budget.
+	budgetAllocationReasonMinimumsExceedParent = "minimums_exceed_parent_budget"
+)
+
 // budgetAllocationInput describes one child target in a retained-byte budget
 // distribution.
 //
@@ -52,6 +62,21 @@ type budgetAllocationResult struct {
 	MaxBytes      uint64
 }
 
+// budgetAllocationReport describes one allocation attempt.
+//
+// Feasible is false only when the child minimums force assignments above the
+// parent budget. In that case Results still contains deterministic assignments,
+// but callers in hard-budget contexts must surface the overcommit instead of
+// treating the targets as an ordinary successful publication.
+type budgetAllocationReport struct {
+	Results            []budgetAllocationResult
+	Feasible           bool
+	RequestedBytes     uint64
+	AssignedBytes      uint64
+	OvercommittedBytes uint64
+	Reason             string
+}
+
 // allocateBudgetTargets distributes parentBytes across inputs.
 //
 // The algorithm is base-first:
@@ -68,9 +93,20 @@ type budgetAllocationResult struct {
 // violating the hard minimum is the least surprising deterministic behavior for
 // a malformed target set.
 func allocateBudgetTargets(parentBytes uint64, inputs []budgetAllocationInput) []budgetAllocationResult {
+	return allocateBudgetTargetsReport(parentBytes, inputs).Results
+}
+
+// allocateBudgetTargetsReport distributes parentBytes and reports feasibility.
+func allocateBudgetTargetsReport(parentBytes uint64, inputs []budgetAllocationInput) budgetAllocationReport {
 	results := make([]budgetAllocationResult, len(inputs))
+	report := budgetAllocationReport{
+		Results:        results,
+		Feasible:       true,
+		RequestedBytes: parentBytes,
+		Reason:         budgetAllocationReasonFeasible,
+	}
 	if len(inputs) == 0 {
-		return results
+		return report
 	}
 
 	for index, input := range inputs {
@@ -92,11 +128,18 @@ func allocateBudgetTargets(parentBytes uint64, inputs []budgetAllocationInput) [
 		total = reduceBudgetAssignmentsToLimit(results, parentBytes)
 	}
 	if total >= parentBytes {
-		return results
+		report.AssignedBytes = total
+		if total > parentBytes {
+			report.Feasible = false
+			report.OvercommittedBytes = total - parentBytes
+			report.Reason = budgetAllocationReasonMinimumsExceedParent
+		}
+		return report
 	}
 
 	distributeBudgetRemainder(results, inputs, parentBytes-total)
-	return results
+	report.AssignedBytes = budgetAllocationTotal(results)
+	return report
 }
 
 // reduceBudgetAssignmentsToLimit reduces assignments toward minimums.

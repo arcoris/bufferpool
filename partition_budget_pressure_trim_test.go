@@ -164,6 +164,9 @@ func TestPartitionTrimPolicyValidateNormalizeAndPlan(t *testing.T) {
 	if err := (PartitionTrimPolicy{Enabled: true}).Validate(); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("enabled trim without max bytes error = %v, want ErrInvalidPolicy", err)
 	}
+	if err := (PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}).Validate(); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("enabled trim without max buffers error = %v, want ErrInvalidPolicy", err)
+	}
 
 	disabled := newPartitionTrimPlan(PartitionTrimPolicy{}, PartitionPressureSnapshot{}, PoolPartitionSample{})
 	if disabled.Enabled || disabled.Reason != "trim_disabled" {
@@ -286,5 +289,116 @@ func TestPoolPartitionPressureSignalSchedulesTrim(t *testing.T) {
 	result := partition.ExecuteTrim()
 	if !result.Executed || result.TrimmedBytes == 0 {
 		t.Fatalf("ExecuteTrim() = %+v, want pressure-triggered physical trim", result)
+	}
+}
+
+// TestPartitionTrimRespectsMaxBuffersPerCycle verifies partition trim cannot
+// remove more retained buffers than the configured cycle bound.
+func TestPartitionTrimRespectsMaxBuffersPerCycle(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          16 * KiB,
+		MaxClassesPerPoolPerCycle: 64,
+		MaxShardsPerClassPerCycle: 32,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	seedPartitionRetainedBuffers(t, partition, "primary", 3, 300)
+
+	result := partition.ExecuteTrim()
+	if result.TrimmedBuffers > 1 {
+		t.Fatalf("TrimmedBuffers = %d, want <= 1", result.TrimmedBuffers)
+	}
+}
+
+// TestPartitionTrimRespectsMaxBytesPerCycle verifies byte bounds stop physical
+// trim work in the same cycle.
+func TestPartitionTrimRespectsMaxBytesPerCycle(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        64,
+		MaxBytesPerCycle:          SizeFromBytes(512),
+		MaxClassesPerPoolPerCycle: 64,
+		MaxShardsPerClassPerCycle: 32,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	seedPartitionRetainedBuffers(t, partition, "primary", 3, 300)
+
+	result := partition.ExecuteTrim()
+	if result.TrimmedBytes > 512 {
+		t.Fatalf("TrimmedBytes = %d, want <= 512", result.TrimmedBytes)
+	}
+}
+
+// TestPartitionTrimRespectsMaxPoolsPerCycle verifies partition trim does not
+// visit more Pools than the configured bound.
+func TestPartitionTrimRespectsMaxPoolsPerCycle(t *testing.T) {
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        64,
+		MaxBytesPerCycle:          16 * KiB,
+		MaxClassesPerPoolPerCycle: 64,
+		MaxShardsPerClassPerCycle: 32,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	seedPartitionRetainedBuffers(t, partition, "alpha", 1, 300)
+	seedPartitionRetainedBuffers(t, partition, "beta", 1, 300)
+
+	result := partition.ExecuteTrim()
+	if result.VisitedPools > 1 {
+		t.Fatalf("VisitedPools = %d, want <= 1", result.VisitedPools)
+	}
+}
+
+// TestPartitionTrimPassesClassAndShardBoundsToPoolTrim verifies class and shard
+// visit bounds are propagated into Pool.Trim instead of being advisory only.
+func TestPartitionTrimPassesClassAndShardBoundsToPoolTrim(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        64,
+		MaxBytesPerCycle:          16 * KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	seedPartitionRetainedBuffers(t, partition, "primary", 2, 300)
+
+	result := partition.ExecuteTrim()
+	if result.VisitedClasses > 1 {
+		t.Fatalf("VisitedClasses = %d, want <= 1", result.VisitedClasses)
+	}
+	if result.VisitedShards > 1 {
+		t.Fatalf("VisitedShards = %d, want <= 1", result.VisitedShards)
+	}
+}
+
+// seedPartitionRetainedBuffers creates retained storage through managed
+// Acquire/Release so trim tests exercise LeaseRegistry-compatible state.
+func seedPartitionRetainedBuffers(t *testing.T, partition *PoolPartition, poolName string, count int, size int) {
+	t.Helper()
+	for index := 0; index < count; index++ {
+		lease, err := partition.Acquire(poolName, size)
+		requirePartitionNoError(t, err)
+		requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
 	}
 }

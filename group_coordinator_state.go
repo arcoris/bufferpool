@@ -54,12 +54,13 @@ type groupCoordinator struct {
 	policy PoolGroupPolicy
 }
 
-// newGroupCoordinator returns initialized group coordinator state.
-func newGroupCoordinator(policy PoolGroupPolicy) groupCoordinator {
-	coordinator := groupCoordinator{
-		clock:  clockDefault(),
-		policy: policy.Normalize(),
-	}
-	coordinator.generation.Store(InitialGeneration)
-	return coordinator
+// init prepares group coordinator state in place.
+//
+// groupCoordinator contains sync.Mutex, so it must not be returned by value from
+// a constructor after initialization. PoolGroup allocates the parent first and
+// initializes this field in place to avoid copying lock state.
+func (c *groupCoordinator) init(policy PoolGroupPolicy) {
+	c.clock = clockDefault()
+	c.policy = policy.Normalize()
+	c.generation.Store(InitialGeneration)
 }

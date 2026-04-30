@@ -86,13 +86,6 @@ func TestShardSelectorsRejectInvalidShardCount(t *testing.T) {
 				_ = selector.SelectShard(0)
 			},
 		},
-		{
-			name: "affinity zero",
-			fn: func() {
-				selector := newAffinityShardSelector(0)
-				_ = selector.SelectShard(0)
-			},
-		},
 	}
 
 	for _, tt := range tests {

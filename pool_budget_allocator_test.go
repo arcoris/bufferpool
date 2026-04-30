@@ -17,11 +17,10 @@
 package bufferpool
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
-
-	"arcoris.dev/bufferpool/internal/testutil"
 )
 
 func TestPoolApplyClassBudgetsUpdatesClassTargetsAndShardCredits(t *testing.T) {
@@ -30,10 +29,13 @@ func TestPoolApplyClassBudgetsUpdatesClassTargetsAndShardCredits(t *testing.T) {
 	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
 	defer closePoolForTest(t, pool)
 
-	generation := pool.applyClassBudgets([]ClassBudgetTarget{
+	generation, err := pool.applyClassBudgets([]ClassBudgetTarget{
 		{Generation: Generation(50), ClassID: ClassID(0), TargetBytes: 2 * KiB},
 		{Generation: Generation(50), ClassID: ClassID(1), TargetBytes: 4 * KiB},
 	})
+	if err != nil {
+		t.Fatalf("applyClassBudgets failed: %v", err)
+	}
 
 	if generation.Before(Generation(50)) {
 		t.Fatalf("generation = %s, want >= 50", generation)
@@ -65,11 +67,11 @@ func TestPoolApplyClassBudgetsRejectsUnknownClass(t *testing.T) {
 	defer closePoolForTest(t, pool)
 
 	before := pool.Snapshot()
-	testutil.MustPanicWithMessage(t, errPoolBudgetTargetClassMissing, func() {
-		_ = pool.applyClassBudgets([]ClassBudgetTarget{
-			{Generation: Generation(60), ClassID: ClassID(99), TargetBytes: KiB},
-		})
-	})
+	if _, err := pool.applyClassBudgets([]ClassBudgetTarget{
+		{Generation: Generation(60), ClassID: ClassID(99), TargetBytes: KiB},
+	}); !errors.Is(err, ErrInvalidOptions) {
+		t.Fatalf("applyClassBudgets error = %v, want %v", err, ErrInvalidOptions)
+	}
 
 	after := pool.Snapshot()
 	if after.Generation != before.Generation {
@@ -83,12 +85,12 @@ func TestPoolApplyClassBudgetsRejectsDuplicateClass(t *testing.T) {
 	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
 	defer closePoolForTest(t, pool)
 
-	testutil.MustPanicWithMessage(t, errPoolBudgetTargetDuplicateClass, func() {
-		_ = pool.applyClassBudgets([]ClassBudgetTarget{
-			{Generation: Generation(61), ClassID: ClassID(0), TargetBytes: KiB},
-			{Generation: Generation(61), ClassID: ClassID(0), TargetBytes: 2 * KiB},
-		})
-	})
+	if _, err := pool.applyClassBudgets([]ClassBudgetTarget{
+		{Generation: Generation(61), ClassID: ClassID(0), TargetBytes: KiB},
+		{Generation: Generation(61), ClassID: ClassID(0), TargetBytes: 2 * KiB},
+	}); !errors.Is(err, ErrInvalidOptions) {
+		t.Fatalf("applyClassBudgets error = %v, want %v", err, ErrInvalidOptions)
+	}
 }
 
 func TestPoolApplyPoolBudgetComputesDefaultClassTargets(t *testing.T) {
@@ -97,11 +99,14 @@ func TestPoolApplyPoolBudgetComputesDefaultClassTargets(t *testing.T) {
 	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
 	defer closePoolForTest(t, pool)
 
-	generation := pool.applyPoolBudget(PoolBudgetTarget{
+	generation, err := pool.applyPoolBudget(PoolBudgetTarget{
 		Generation:    Generation(70),
 		PoolName:      "primary",
 		RetainedBytes: 3 * KiB,
 	})
+	if err != nil {
+		t.Fatalf("applyPoolBudget failed: %v", err)
+	}
 
 	snapshot := pool.Snapshot()
 	if snapshot.Generation != generation || snapshot.Generation.Before(Generation(70)) {
@@ -118,12 +123,18 @@ func TestPoolApplyClassBudgetsKeepsPoolGenerationMonotonic(t *testing.T) {
 	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
 	defer closePoolForTest(t, pool)
 
-	first := pool.applyClassBudgets([]ClassBudgetTarget{
+	first, err := pool.applyClassBudgets([]ClassBudgetTarget{
 		{Generation: Generation(100), ClassID: ClassID(0), TargetBytes: 2 * KiB},
 	})
-	second := pool.applyClassBudgets([]ClassBudgetTarget{
+	if err != nil {
+		t.Fatalf("first applyClassBudgets failed: %v", err)
+	}
+	second, err := pool.applyClassBudgets([]ClassBudgetTarget{
 		{Generation: Generation(90), ClassID: ClassID(0), TargetBytes: KiB},
 	})
+	if err != nil {
+		t.Fatalf("second applyClassBudgets failed: %v", err)
+	}
 	if !second.After(first) {
 		t.Fatalf("second pool generation = %s, want after %s", second, first)
 	}

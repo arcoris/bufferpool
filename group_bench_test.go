@@ -320,7 +320,7 @@ func BenchmarkPoolGroupScoreEvaluatorScoreValues(b *testing.B) {
 	rates := PoolGroupWindowRates{Aggregate: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, LeaseOpsPerSecond: 100}}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = evaluator.ScoreValues(rates, PartitionBudgetSnapshot{}, PartitionPressureSnapshot{})
+		_ = evaluator.ScoreValues(rates, PoolGroupBudgetSnapshot{}, PoolGroupPressureSnapshot{})
 	}
 }
 

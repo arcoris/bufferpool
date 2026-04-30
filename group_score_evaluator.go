@@ -49,13 +49,18 @@ func NewPoolGroupScoreEvaluator(config PoolGroupScoreEvaluatorConfig) PoolGroupS
 // ScoreValues returns scalar aggregate group score values.
 func (e PoolGroupScoreEvaluator) ScoreValues(
 	rates PoolGroupWindowRates,
-	budget PartitionBudgetSnapshot,
-	pressure PartitionPressureSnapshot,
+	budget PoolGroupBudgetSnapshot,
+	pressure PoolGroupPressureSnapshot,
 ) PoolGroupScoreValues {
 	if !e.initialized {
 		return PoolGroupScoreValues{}
 	}
-	partitionValues := e.partition.ScoreValues(rates.Aggregate, PoolPartitionEWMAState{}, budget, pressure)
+	partitionValues := e.partition.ScoreValues(
+		rates.Aggregate,
+		PoolPartitionEWMAState{},
+		PartitionBudgetSnapshot(budget),
+		PartitionPressureSnapshot(pressure),
+	)
 	return PoolGroupScoreValues{
 		Usefulness: partitionValues.Usefulness,
 		Waste:      partitionValues.Waste,

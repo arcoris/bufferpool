@@ -42,6 +42,10 @@ const (
 	// errPoolUnsupportedReturnFallbackShards is returned when Pool construction
 	// is asked to probe additional shards on Put.
 	errPoolUnsupportedReturnFallbackShards = "bufferpool.Pool.New: return fallback shards are not supported by standalone Pool"
+
+	// errPoolUnsupportedAffinityShardSelection is returned when construction is
+	// asked to use affinity routing without an operation affinity key.
+	errPoolUnsupportedAffinityShardSelection = "bufferpool.Pool.New: affinity shard selection requires an affinity key"
 )
 
 // PolicyValidationContext identifies the runtime owner that will enforce a
@@ -180,6 +184,10 @@ func validatePoolSupportedPolicy(policy Policy, mode poolConstructionMode) error
 
 	if policy.Shards.ReturnFallbackShards > 0 {
 		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedReturnFallbackShards))
+	}
+
+	if policy.Shards.Selection == ShardSelectionModeAffinity {
+		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedAffinityShardSelection))
 	}
 
 	return err

@@ -55,10 +55,10 @@ type PoolGroupCoordinatorReport struct {
 	Rates PoolGroupWindowRates
 
 	// Budget is the group budget projection from Sample.
-	Budget PartitionBudgetSnapshot
+	Budget PoolGroupBudgetSnapshot
 
 	// Pressure is the group pressure interpretation from Sample.
-	Pressure PartitionPressureSnapshot
+	Pressure PoolGroupPressureSnapshot
 
 	// Scores contains aggregate scalar score values for the group window.
 	Scores PoolGroupScoreValues
@@ -100,7 +100,7 @@ type PoolGroupSkippedPartition struct {
 // advisory score values. It does not mutate PoolGroup state, publish runtime
 // policy, execute trim, redistribute budgets, or start background work.
 type PoolGroupControllerEvaluation struct {
-	// Window contains the aggregate counter movement.
+	// Window contains the aggregate countermovement.
 	Window PoolGroupWindow
 
 	// Rates contains aggregate window-derived ratios and throughput.
@@ -115,8 +115,8 @@ func NewPoolGroupControllerEvaluation(
 	previous PoolGroupSample,
 	current PoolGroupSample,
 	elapsed time.Duration,
-	budget PartitionBudgetSnapshot,
-	pressure PartitionPressureSnapshot,
+	budget PoolGroupBudgetSnapshot,
+	pressure PoolGroupPressureSnapshot,
 	evaluator PoolGroupScoreEvaluator,
 ) PoolGroupControllerEvaluation {
 	window := NewPoolGroupWindow(previous, current)

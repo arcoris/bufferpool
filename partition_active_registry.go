@@ -16,7 +16,11 @@
 
 package bufferpool
 
-import "sync"
+import (
+	"math/bits"
+	"sync"
+	"sync/atomic"
+)
 
 const (
 	// errPartitionActiveRegistryPoolMissing reports an activity mark for an
@@ -49,7 +53,12 @@ const (
 // does not advance generation. generation is the version of active/dirty state,
 // not a count of Pool operations.
 type partitionActiveRegistry struct {
-	// mu protects active, dirty, and generation.
+	// mu protects controller-side idle window state and generation movement.
+	//
+	// Hot-path active/dirty marking uses atomic bitsets below; it takes mu only
+	// when a bit actually changes and generation must advance. Controller-side
+	// idle expiry remains locked because it is sampled foreground work rather
+	// than per-acquire/per-release activity.
 	mu sync.Mutex
 
 	// names preserves deterministic partition registry order.
@@ -58,11 +67,11 @@ type partitionActiveRegistry struct {
 	// byName maps partition-local names to immutable registry indexes.
 	byName map[string]int
 
-	// active marks Pools eligible for controller sampling.
-	active []bool
+	// activeBits marks Pools eligible for controller sampling.
+	activeBits []atomic.Uint64
 
-	// dirty marks Pools changed by partition-owned cold/control paths.
-	dirty []bool
+	// dirtyBits marks Pools changed by partition-owned cold/control paths.
+	dirtyBits []atomic.Uint64
 
 	// idleWindows counts consecutive sampled windows without activity while a Pool
 	// is active and clean.
@@ -77,14 +86,14 @@ func newPartitionActiveRegistry(names []string) *partitionActiveRegistry {
 	registry := &partitionActiveRegistry{
 		names:       append([]string(nil), names...),
 		byName:      make(map[string]int, len(names)),
-		active:      make([]bool, len(names)),
-		dirty:       make([]bool, len(names)),
+		activeBits:  make([]atomic.Uint64, partitionActiveRegistryChunkCount(len(names))),
+		dirtyBits:   make([]atomic.Uint64, partitionActiveRegistryChunkCount(len(names))),
 		idleWindows: make([]uint8, len(names)),
 		generation:  InitialGeneration,
 	}
 	for index, name := range registry.names {
 		registry.byName[name] = index
-		registry.active[index] = true
+		partitionActiveRegistrySetBit(registry.activeBits, index)
 	}
 	return registry
 }
@@ -94,14 +103,11 @@ func (r *partitionActiveRegistry) markActive(name string) error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	index, ok := r.byName[name]
 	if !ok {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryPoolMissing+": "+name)
 	}
-	r.markActiveIndexLocked(index)
-	return nil
+	return r.markActiveIndex(index)
 }
 
 // markActiveIndex marks a Pool active by immutable registry index.
@@ -109,12 +115,15 @@ func (r *partitionActiveRegistry) markActiveIndex(index int) error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.validIndexLocked(index) {
+	if !r.validIndex(index) {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 	}
-	r.markActiveIndexLocked(index)
+	if partitionActiveRegistrySetBit(r.activeBits, index) {
+		r.mu.Lock()
+		r.idleWindows[index] = 0
+		r.advanceLocked()
+		r.mu.Unlock()
+	}
 	return nil
 }
 
@@ -128,15 +137,14 @@ func (r *partitionActiveRegistry) markInactiveIndex(index int) error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.validIndexLocked(index) {
+	if !r.validIndex(index) {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 	}
-	if r.active[index] {
-		r.active[index] = false
+	if partitionActiveRegistryClearBit(r.activeBits, index) {
+		r.mu.Lock()
 		r.idleWindows[index] = 0
 		r.advanceLocked()
+		r.mu.Unlock()
 	}
 	return nil
 }
@@ -155,13 +163,16 @@ func (r *partitionActiveRegistry) deactivateCleanIndexes(indexes []int) error {
 	defer r.mu.Unlock()
 	changed := false
 	for _, index := range indexes {
-		if !r.validIndexLocked(index) {
+		if !r.validIndex(index) {
 			return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 		}
-		if r.active[index] && !r.dirty[index] {
-			r.active[index] = false
+		if partitionActiveRegistryBitSet(r.activeBits, index) && !partitionActiveRegistryBitSet(r.dirtyBits, index) {
+			changed = partitionActiveRegistryClearBit(r.activeBits, index) || changed
+			if partitionActiveRegistryBitSet(r.dirtyBits, index) {
+				changed = partitionActiveRegistrySetBit(r.activeBits, index) || changed
+				continue
+			}
 			r.idleWindows[index] = 0
-			changed = true
 		}
 	}
 	if changed {
@@ -175,14 +186,11 @@ func (r *partitionActiveRegistry) markDirty(name string) error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	index, ok := r.byName[name]
 	if !ok {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryPoolMissing+": "+name)
 	}
-	r.markDirtyIndexLocked(index)
-	return nil
+	return r.markDirtyIndex(index)
 }
 
 // markDirtyIndex marks a Pool dirty by immutable registry index.
@@ -190,12 +198,14 @@ func (r *partitionActiveRegistry) markDirtyIndex(index int) error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.validIndexLocked(index) {
+	if !r.validIndex(index) {
 		return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 	}
-	r.markDirtyIndexLocked(index)
+	if partitionActiveRegistrySetBit(r.dirtyBits, index) {
+		r.mu.Lock()
+		r.advanceLocked()
+		r.mu.Unlock()
+	}
 	return nil
 }
 
@@ -207,11 +217,8 @@ func (r *partitionActiveRegistry) markAllDirty() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	changed := false
-	for index := range r.dirty {
-		if !r.dirty[index] {
-			r.dirty[index] = true
-			changed = true
-		}
+	for index := range r.names {
+		changed = partitionActiveRegistrySetBit(r.dirtyBits, index) || changed
 	}
 	if changed {
 		r.advanceLocked()
@@ -226,9 +233,8 @@ func (r *partitionActiveRegistry) resetDirty() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	changed := false
-	for index := range r.dirty {
-		if r.dirty[index] {
-			r.dirty[index] = false
+	for chunk := range r.dirtyBits {
+		if r.dirtyBits[chunk].Swap(0) != 0 {
 			changed = true
 		}
 	}
@@ -252,22 +258,19 @@ func (r *partitionActiveRegistry) observeControllerActivity(indexes []int, activ
 	defer r.mu.Unlock()
 	changed := false
 	for offset, index := range indexes {
-		if !r.validIndexLocked(index) {
+		if !r.validIndex(index) {
 			return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
 		}
 		activeDelta := offset < len(activeDeltas) && activeDeltas[offset]
 		if activeDelta {
-			if !r.active[index] {
-				r.active[index] = true
-				changed = true
-			}
+			changed = partitionActiveRegistrySetBit(r.activeBits, index) || changed
 			if r.idleWindows[index] != 0 {
 				r.idleWindows[index] = 0
 				changed = true
 			}
 			continue
 		}
-		if !r.active[index] || r.dirty[index] {
+		if !partitionActiveRegistryBitSet(r.activeBits, index) || partitionActiveRegistryBitSet(r.dirtyBits, index) {
 			continue
 		}
 		if r.idleWindows[index] < partitionActiveRegistryIdleWindowLimit {
@@ -275,8 +278,7 @@ func (r *partitionActiveRegistry) observeControllerActivity(indexes []int, activ
 			changed = true
 		}
 		if r.idleWindows[index] >= partitionActiveRegistryIdleWindowLimit {
-			r.active[index] = false
-			changed = true
+			changed = partitionActiveRegistryClearBit(r.activeBits, index) || changed
 		}
 	}
 	if changed {
@@ -290,15 +292,7 @@ func (r *partitionActiveRegistry) activeIndexes(dst []int) []int {
 	if r == nil {
 		return dst[:0]
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	dst = dst[:0]
-	for index, active := range r.active {
-		if active {
-			dst = append(dst, index)
-		}
-	}
-	return dst
+	return partitionActiveRegistryIndexes(dst, r.activeBits, len(r.names))
 }
 
 // dirtyIndexes appends dirty Pool indexes to dst in deterministic order.
@@ -306,15 +300,7 @@ func (r *partitionActiveRegistry) dirtyIndexes(dst []int) []int {
 	if r == nil {
 		return dst[:0]
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	dst = dst[:0]
-	for index, dirty := range r.dirty {
-		if dirty {
-			dst = append(dst, index)
-		}
-	}
-	return dst
+	return partitionActiveRegistryIndexes(dst, r.dirtyBits, len(r.names))
 }
 
 // generationSnapshot returns the current active-registry generation.
@@ -344,8 +330,8 @@ func (p *PoolPartition) markDirtyProcessed() {
 	p.activeRegistry.resetDirty()
 }
 
-// validIndexLocked reports whether index names a configured Pool.
-func (r *partitionActiveRegistry) validIndexLocked(index int) bool {
+// validIndex reports whether index names a configured Pool.
+func (r *partitionActiveRegistry) validIndex(index int) bool {
 	return index >= 0 && index < len(r.names)
 }
 
@@ -354,19 +340,87 @@ func (r *partitionActiveRegistry) advanceLocked() {
 	r.generation = r.generation.Next()
 }
 
-// markActiveIndexLocked marks index active under mu.
-func (r *partitionActiveRegistry) markActiveIndexLocked(index int) {
-	if !r.active[index] {
-		r.active[index] = true
-		r.advanceLocked()
+// partitionActiveRegistryChunkCount returns the number of uint64 words needed
+// to hold size marker bits.
+func partitionActiveRegistryChunkCount(size int) int {
+	if size <= 0 {
+		return 0
 	}
-	r.idleWindows[index] = 0
+	return (size + 63) / 64
 }
 
-// markDirtyIndexLocked marks index dirty under mu.
-func (r *partitionActiveRegistry) markDirtyIndexLocked(index int) {
-	if !r.dirty[index] {
-		r.dirty[index] = true
-		r.advanceLocked()
+// partitionActiveRegistryBit returns the word index and bit mask for one
+// registry index.
+func partitionActiveRegistryBit(index int) (int, uint64) {
+	return index / 64, uint64(1) << uint(index%64)
+}
+
+// partitionActiveRegistryBitSet reports whether index is currently marked.
+func partitionActiveRegistryBitSet(words []atomic.Uint64, index int) bool {
+	chunk, mask := partitionActiveRegistryBit(index)
+	return chunk >= 0 && chunk < len(words) && words[chunk].Load()&mask != 0
+}
+
+// partitionActiveRegistrySetBit atomically sets one marker bit.
+//
+// It returns true only when the call changed the bit from clear to set, allowing
+// hot-path callers to avoid taking the registry mutex for repeated activity on
+// an already-marked Pool.
+func partitionActiveRegistrySetBit(words []atomic.Uint64, index int) bool {
+	chunk, mask := partitionActiveRegistryBit(index)
+	if chunk < 0 || chunk >= len(words) {
+		return false
 	}
+	for {
+		current := words[chunk].Load()
+		if current&mask != 0 {
+			return false
+		}
+		if words[chunk].CompareAndSwap(current, current|mask) {
+			return true
+		}
+	}
+}
+
+// partitionActiveRegistryClearBit atomically clears one marker bit.
+//
+// It returns true only when the bit changed from set to clear. Controller-side
+// code uses that result to advance the active-registry generation once for real
+// state movement.
+func partitionActiveRegistryClearBit(words []atomic.Uint64, index int) bool {
+	chunk, mask := partitionActiveRegistryBit(index)
+	if chunk < 0 || chunk >= len(words) {
+		return false
+	}
+	for {
+		current := words[chunk].Load()
+		if current&mask == 0 {
+			return false
+		}
+		if words[chunk].CompareAndSwap(current, current&^mask) {
+			return true
+		}
+	}
+}
+
+// partitionActiveRegistryIndexes appends marked indexes in deterministic
+// registry order.
+//
+// The function reads atomic words without locking. The result is a diagnostic or
+// controller observation of nearby marker state, not a transactional snapshot.
+func partitionActiveRegistryIndexes(dst []int, words []atomic.Uint64, total int) []int {
+	dst = dst[:0]
+	for chunk := range words {
+		word := words[chunk].Load()
+		for word != 0 {
+			offset := bits.TrailingZeros64(word)
+			index := chunk*64 + offset
+			if index >= total {
+				return dst
+			}
+			dst = append(dst, index)
+			word &^= uint64(1) << uint(offset)
+		}
+	}
+	return dst
 }
