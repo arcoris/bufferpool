@@ -49,6 +49,13 @@ func TestPoolRuntimePolicyCompatible(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "dynamic acquisition fallback change",
+			mutate: func(policy *Policy) {
+				policy.Shards.AcquisitionFallbackShards++
+			},
+			want: true,
+		},
+		{
 			name: "class sizes changed",
 			mutate: func(policy *Policy) {
 				policy.Classes.Sizes[0] = ClassSizeFromBytes(384)
@@ -161,6 +168,7 @@ func TestPoolRuntimeSnapshotPublicationAcceptsDynamicPolicyChanges(t *testing.T)
 	policy := pool.Policy()
 	policy.Admission.ZeroDroppedBuffers = !policy.Admission.ZeroDroppedBuffers
 	policy.Retention.MaxRequestSize = policy.Retention.MaxRequestSize / 2
+	policy.Shards.AcquisitionFallbackShards++
 
 	pool.publishRuntimeSnapshot(newPoolRuntimeSnapshot(InitialGeneration.Next(), policy))
 
@@ -173,5 +181,8 @@ func TestPoolRuntimeSnapshotPublicationAcceptsDynamicPolicyChanges(t *testing.T)
 	}
 	if snapshot.Policy.Retention.MaxRequestSize != policy.Retention.MaxRequestSize {
 		t.Fatal("dynamic retention limit change was not published")
+	}
+	if snapshot.Policy.Shards.AcquisitionFallbackShards != policy.Shards.AcquisitionFallbackShards {
+		t.Fatal("dynamic acquisition fallback change was not published")
 	}
 }

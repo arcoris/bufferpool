@@ -35,10 +35,6 @@ const (
 	// construction is asked to detect repeated returns without ownership state.
 	errPoolUnsupportedDoubleReleaseDetection = "bufferpool.Pool.New: double-release detection requires a lease-aware ownership layer"
 
-	// errPoolUnsupportedAcquisitionFallbackShards is returned when direct Pool
-	// construction is asked to probe additional shards on Get.
-	errPoolUnsupportedAcquisitionFallbackShards = "bufferpool.Pool.New: acquisition fallback shards are not supported by standalone Pool"
-
 	// errPoolUnsupportedReturnFallbackShards is returned when direct Pool
 	// construction is asked to probe additional shards on Put.
 	errPoolUnsupportedReturnFallbackShards = "bufferpool.Pool.New: return fallback shards are not supported by standalone Pool"
@@ -58,8 +54,8 @@ const (
 // class/shard storage, lifecycle safety, counters, snapshots, metrics, and
 // immutable runtime snapshot consumption. It does not own checked-out buffer
 // identity, in-use registries, origin-class growth checks, double-release
-// detection, or fallback shard probing. Those features require additional API or
-// controller layers and must not be silently treated as active.
+// detection, or return fallback probing. Those features require additional API
+// or controller layers and must not be silently treated as active.
 //
 // OwnershipModeUnset is allowed only as "no ownership policy configured"; it is
 // treated the same as OwnershipModeNone when no active tracking flags are set.
@@ -82,10 +78,6 @@ func validatePoolSupportedPolicy(policy Policy) error {
 
 	if policy.Ownership.DetectDoubleRelease {
 		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedDoubleReleaseDetection))
-	}
-
-	if policy.Shards.AcquisitionFallbackShards > 0 {
-		multierr.AppendInto(&err, newError(ErrInvalidPolicy, errPoolUnsupportedAcquisitionFallbackShards))
 	}
 
 	if policy.Shards.ReturnFallbackShards > 0 {

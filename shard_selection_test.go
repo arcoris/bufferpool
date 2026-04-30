@@ -79,6 +79,20 @@ func TestShardSelectorsRejectInvalidShardCount(t *testing.T) {
 				_ = selector.SelectShard(-1)
 			},
 		},
+		{
+			name: "processor inspired zero",
+			fn: func() {
+				selector := newProcessorInspiredShardSelector(0)
+				_ = selector.SelectShard(0)
+			},
+		},
+		{
+			name: "affinity zero",
+			fn: func() {
+				selector := newAffinityShardSelector(0)
+				_ = selector.SelectShard(0)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +103,40 @@ func TestShardSelectorsRejectInvalidShardCount(t *testing.T) {
 
 			testutil.MustPanicWithMessage(t, errShardSelectorInvalidShardCount, tt.fn)
 		})
+	}
+}
+
+// TestProcessorInspiredShardSelectorProducesValidIndexes verifies the default
+// selector stays bounded without private runtime APIs.
+func TestProcessorInspiredShardSelectorProducesValidIndexes(t *testing.T) {
+	t.Parallel()
+
+	selector := newProcessorInspiredShardSelector(3)
+	seen := make(map[int]bool)
+
+	for iteration := 0; iteration < 1024; iteration++ {
+		index := selector.SelectShard(16)
+		if index < 0 || index >= 16 {
+			t.Fatalf("SelectShard(16) = %d, want in [0, 16)", index)
+		}
+
+		seen[index] = true
+	}
+
+	if len(seen) < 8 {
+		t.Fatalf("processor-inspired selector visited %d shards, want broad spread", len(seen))
+	}
+}
+
+// TestProcessorInspiredShardSelectorDoesNotAllocate verifies the selection hot
+// path remains allocation-free.
+func TestProcessorInspiredShardSelectorDoesNotAllocate(t *testing.T) {
+	selector := newProcessorInspiredShardSelector(0)
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = selector.SelectShard(32)
+	})
+	if allocs != 0 {
+		t.Fatalf("SelectShard allocations = %v, want zero", allocs)
 	}
 }
 

@@ -47,6 +47,33 @@ func BenchmarkPoolShardSelectorSequential(b *testing.B) {
 	}
 }
 
+// BenchmarkShardSelectionProcessorInspired measures the default selector mode.
+func BenchmarkShardSelectionProcessorInspired(b *testing.B) {
+	benchmarkShardSelectionMode(b, ShardSelectionModeProcessorInspired)
+}
+
+// BenchmarkShardSelectionRoundRobin measures the retained legacy selector mode.
+func BenchmarkShardSelectionRoundRobin(b *testing.B) {
+	benchmarkShardSelectionMode(b, ShardSelectionModeRoundRobin)
+}
+
+// benchmarkShardSelectionMode isolates selector cost for one mode and a fixed
+// 32-shard topology.
+//
+// Pool construction, shard locks, counters, lifecycle gates, and retained
+// storage are intentionally outside this helper so the benchmark measures only
+// the hot shard-index selection primitive.
+func benchmarkShardSelectionMode(b *testing.B, mode ShardSelectionMode) {
+	selector := poolBenchmarkSelector(b, mode)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		poolBenchmarkIntSink = selector.SelectShard(32)
+	}
+}
+
 // BenchmarkPoolShardSelectorParallel measures selector cost under concurrent
 // calls. It is useful for checking whether selector state, independent of shard
 // storage, is a contention point.
@@ -75,6 +102,7 @@ func poolBenchmarkSelectorCases() []poolBenchmarkCase {
 		ShardSelectionModeSingle,
 		ShardSelectionModeRoundRobin,
 		ShardSelectionModeRandom,
+		ShardSelectionModeProcessorInspired,
 	} {
 		for _, shards := range []int{1, 2, 8, 32, 128} {
 			cases = append(cases, poolBenchmarkCase{
@@ -88,10 +116,15 @@ func poolBenchmarkSelectorCases() []poolBenchmarkCase {
 	return cases
 }
 
+// poolBenchmarkSelector constructs one selector instance for selector
+// microbenchmarks.
+//
+// The class index is fixed at zero because these benchmarks compare selector
+// mechanics, not cross-class seed variation.
 func poolBenchmarkSelector(b *testing.B, mode ShardSelectionMode) shardSelector {
 	b.Helper()
 
-	selector, err := newPoolShardSelector(mode)
+	selector, err := newPoolShardSelector(mode, 0)
 	if err != nil {
 		b.Fatalf("newPoolShardSelector() returned error: %v", err)
 	}

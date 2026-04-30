@@ -334,6 +334,10 @@ func poolBenchmarkSelectorName(mode ShardSelectionMode) string {
 		return "round_robin"
 	case ShardSelectionModeRandom:
 		return "random"
+	case ShardSelectionModeProcessorInspired:
+		return "processor_inspired"
+	case ShardSelectionModeAffinity:
+		return "affinity"
 	default:
 		return "unknown"
 	}

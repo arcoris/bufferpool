@@ -619,6 +619,178 @@ func TestClassStateSelectedRetainAndGet(t *testing.T) {
 	assertClassStateRetainedConsistency(t, state.state())
 }
 
+// classFixedShardSelector is a deterministic selector used by fallback tests to
+// force a known primary shard without depending on production selector state.
+type classFixedShardSelector int
+
+// SelectShard returns the configured shard index. selectShardIndex remains
+// responsible for bounds validation, matching production selector contracts.
+func (s classFixedShardSelector) SelectShard(int) int {
+	return int(s)
+}
+
+// TestClassStateGetFallbackHitsSecondaryShard verifies bounded acquisition
+// fallback can reuse retained storage outside the primary shard.
+func TestClassStateGetFallbackHitsSecondaryShard(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 2, 4)
+	state.updateBudget(4 * KiB)
+
+	retain := state.tryRetain(1, make([]byte, 0, 1024))
+	if !retain.Retained() {
+		t.Fatalf("tryRetain Retained() = false, decision=%s", retain.CreditDecision())
+	}
+
+	get := state.tryGetSelectedWithFallback(classFixedShardSelector(0), 512, 1)
+	if !get.Hit() {
+		t.Fatal("tryGetSelectedWithFallback Hit() = false, want true")
+	}
+	if get.ShardIndex != 1 {
+		t.Fatalf("fallback ShardIndex = %d, want 1", get.ShardIndex)
+	}
+
+	snapshot := state.state()
+	if snapshot.Shards[0].Counters.Misses != 1 {
+		t.Fatalf("primary shard misses = %d, want 1", snapshot.Shards[0].Counters.Misses)
+	}
+	if snapshot.Shards[1].Counters.Hits != 1 {
+		t.Fatalf("fallback shard hits = %d, want 1", snapshot.Shards[1].Counters.Hits)
+	}
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+// TestClassStateGetFallbackDoesNotScanBeyondConfiguredCount verifies fallback
+// probing remains bounded by policy.
+func TestClassStateGetFallbackDoesNotScanBeyondConfiguredCount(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 4, 4)
+	state.updateBudget(4 * KiB)
+
+	retain := state.tryRetain(3, make([]byte, 0, 1024))
+	if !retain.Retained() {
+		t.Fatalf("tryRetain Retained() = false, decision=%s", retain.CreditDecision())
+	}
+
+	get := state.tryGetSelectedWithFallback(classFixedShardSelector(0), 512, 1)
+	if !get.Miss() {
+		t.Fatal("tryGetSelectedWithFallback Miss() = false, want true")
+	}
+	if get.ShardIndex != 0 {
+		t.Fatalf("miss ShardIndex = %d, want primary 0", get.ShardIndex)
+	}
+
+	snapshot := state.state()
+	if snapshot.Shards[0].Counters.Misses != 1 {
+		t.Fatalf("shard 0 misses = %d, want 1", snapshot.Shards[0].Counters.Misses)
+	}
+	if snapshot.Shards[1].Counters.Misses != 1 {
+		t.Fatalf("shard 1 misses = %d, want 1", snapshot.Shards[1].Counters.Misses)
+	}
+	if snapshot.Shards[2].Counters.Gets != 0 || snapshot.Shards[3].Counters.Gets != 0 {
+		t.Fatalf("fallback scanned beyond configured count: shard2=%d shard3=%d",
+			snapshot.Shards[2].Counters.Gets,
+			snapshot.Shards[3].Counters.Gets,
+		)
+	}
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+// TestClassStateGetFallbackClampsToAvailableShards verifies high configured
+// fallback counts do not duplicate probes.
+func TestClassStateGetFallbackClampsToAvailableShards(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(1), ClassSizeFromSize(KiB))
+	state := newClassState(class, 2, 4)
+	state.updateBudget(4 * KiB)
+
+	retain := state.tryRetain(1, make([]byte, 0, 1024))
+	if !retain.Retained() {
+		t.Fatalf("tryRetain Retained() = false, decision=%s", retain.CreditDecision())
+	}
+
+	get := state.tryGetSelectedWithFallback(classFixedShardSelector(0), 512, 99)
+	if !get.Hit() {
+		t.Fatal("tryGetSelectedWithFallback Hit() = false, want true")
+	}
+
+	snapshot := state.state()
+	if snapshot.Counters.Gets != 1 {
+		t.Fatalf("class gets = %d, want 1", snapshot.Counters.Gets)
+	}
+	assertClassStateRetainedConsistency(t, snapshot)
+}
+
+// TestClassStateFallbackHelpers verifies probe-count clamping and candidate
+// selection for both mask and modulo paths.
+func TestClassStateFallbackHelpers(t *testing.T) {
+	t.Parallel()
+
+	countTests := []struct {
+		name       string
+		configured int
+		shards     int
+		want       int
+	}{
+		{name: "disabled", configured: 0, shards: 8, want: 0},
+		{name: "single shard clamps to zero", configured: 1, shards: 1, want: 0},
+		{name: "negative treated as disabled", configured: -1, shards: 8, want: 0},
+		{name: "below max", configured: 2, shards: 8, want: 2},
+		{name: "above max", configured: 99, shards: 4, want: 3},
+	}
+
+	for _, tt := range countTests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := boundedFallbackShardCount(tt.configured, tt.shards); got != tt.want {
+				t.Fatalf("boundedFallbackShardCount(%d, %d) = %d, want %d",
+					tt.configured,
+					tt.shards,
+					got,
+					tt.want,
+				)
+			}
+		})
+	}
+
+	indexTests := []struct {
+		name    string
+		primary int
+		offset  int
+		shards  int
+		want    int
+	}{
+		{name: "power of two wraps by mask", primary: 7, offset: 1, shards: 8, want: 0},
+		{name: "power of two advances", primary: 3, offset: 2, shards: 8, want: 5},
+		{name: "non power of two wraps by modulo", primary: 4, offset: 2, shards: 5, want: 1},
+	}
+
+	for _, tt := range indexTests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := fallbackShardIndex(tt.primary, tt.offset, tt.shards); got != tt.want {
+				t.Fatalf("fallbackShardIndex(%d, %d, %d) = %d, want %d",
+					tt.primary,
+					tt.offset,
+					tt.shards,
+					got,
+					tt.want,
+				)
+			}
+		})
+	}
+}
+
 // TestClassStateTryRetainRejectsCapacityBelowClassSize verifies that retained
 // buffers must be able to serve the class.
 func TestClassStateTryRetainRejectsCapacityBelowClassSize(t *testing.T) {

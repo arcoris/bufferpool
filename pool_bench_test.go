@@ -167,6 +167,63 @@ func BenchmarkPoolGetMiss(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGetFallback0 measures the no-fallback miss path as the baseline
+// for bounded acquisition probing cost.
+func BenchmarkPoolGetFallback0(b *testing.B) {
+	benchmarkPoolGetFallback(b, 0)
+}
+
+// BenchmarkPoolGetFallback1 measures Get miss cost with one configured fallback
+// probe, matching the default policy shape.
+func BenchmarkPoolGetFallback1(b *testing.B) {
+	benchmarkPoolGetFallback(b, 1)
+}
+
+// BenchmarkPoolGetFallback2 measures the incremental cost of two configured
+// fallback probes for throughput-oriented policies.
+func BenchmarkPoolGetFallback2(b *testing.B) {
+	benchmarkPoolGetFallback(b, 2)
+}
+
+// benchmarkPoolGetFallback measures empty-storage Get behavior for a fixed
+// eight-shard topology.
+//
+// The benchmark intentionally leaves retained storage empty so the measured path
+// performs primary probing, configured fallback probing, allocation, and
+// allocation accounting. Setup stays outside the timed loop; the fallback count
+// is the only variable.
+func benchmarkPoolGetFallback(b *testing.B, fallbackShards int) {
+	benchCase := poolBenchmarkCase{
+		size:     300,
+		capacity: 512,
+		shards:   8,
+		selector: ShardSelectionModeSingle,
+	}
+	policy := poolBenchmarkPolicyForCase(benchCase)
+	policy.Shards.AcquisitionFallbackShards = fallbackShards
+	pool := poolBenchmarkNewPool(b, policy)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		buffer, err := pool.Get(benchCase.size)
+		if err != nil {
+			b.Fatalf("Get() returned error: %v", err)
+		}
+		if len(buffer) != benchCase.size || cap(buffer) != benchCase.capacity {
+			b.Fatalf("Get() len/cap = %d/%d, want %d/%d",
+				len(buffer),
+				cap(buffer),
+				benchCase.size,
+				benchCase.capacity,
+			)
+		}
+
+		poolBenchmarkBufferSink = buffer
+	}
+}
+
 // BenchmarkPoolGetReject measures request validation and rejection paths.
 //
 // The unsupported-class case uses disabled policy validation to construct a

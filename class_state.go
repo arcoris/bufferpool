@@ -244,13 +244,25 @@ func (s *classState) applyShardCreditPlan(plan classShardCreditPlan) {
 //   - shard.tryGet records shard counters;
 //   - classState records class counters from the observed shard result.
 func (s *classState) tryGet(shardIndex int, requestedSize Size) classGetResult {
+	result := s.tryGetShard(shardIndex, requestedSize)
+	s.counters.recordGetResult(requestedSize, result.Shard)
+
+	return result
+}
+
+// tryGetShard performs one shard-local get and returns its class-shaped result
+// without updating class-level counters.
+//
+// Ordinary single-shard get paths use tryGet, which records the class outcome
+// immediately. Fallback probing needs several shard-local attempts to collapse
+// into one logical class get, so it uses this helper and records exactly one
+// class-level hit or miss after the final outcome is known.
+func (s *classState) tryGetShard(shardIndex int, requestedSize Size) classGetResult {
 	if requestedSize > s.class.ByteSize() {
 		panic(errClassStateRequestExceedsClassSize)
 	}
 
 	shardResult := s.mustShardAt(shardIndex).tryGet(requestedSize)
-	s.counters.recordGetResult(requestedSize, shardResult)
-
 	return classGetResult{
 		Class:      s.class,
 		ShardIndex: shardIndex,
@@ -261,6 +273,38 @@ func (s *classState) tryGet(shardIndex int, requestedSize Size) classGetResult {
 // tryGetSelected attempts to reuse a retained buffer through a selected shard.
 func (s *classState) tryGetSelected(selector shardSelector, requestedSize Size) classGetResult {
 	return s.tryGet(s.selectShard(selector), requestedSize)
+}
+
+// tryGetSelectedWithFallback attempts the primary selected shard first and then
+// probes a bounded sequence of neighboring shards on miss.
+//
+// The configured fallback count is clamped to shardCount-1 so callers may keep
+// one default policy across single-shard and multi-shard runtimes. Allocation on
+// all-miss paths remains associated with the primary shard.
+//
+// Shard counters observe every physical probe. Class counters observe one
+// logical Get: a fallback hit records one class hit, and an all-miss fallback
+// records one class miss. This keeps aggregate hit ratio aligned with public Get
+// calls while still making probe behavior visible in shard diagnostics.
+func (s *classState) tryGetSelectedWithFallback(selector shardSelector, requestedSize Size, fallbackShards int) classGetResult {
+	primaryShardIndex := s.selectShard(selector)
+	primaryResult := s.tryGetShard(primaryShardIndex, requestedSize)
+	if primaryResult.Hit() {
+		s.counters.recordGetResult(requestedSize, primaryResult.Shard)
+		return primaryResult
+	}
+
+	shardCount := len(s.shards)
+	for offset := 1; offset <= boundedFallbackShardCount(fallbackShards, shardCount); offset++ {
+		result := s.tryGetShard(fallbackShardIndex(primaryShardIndex, offset, shardCount), requestedSize)
+		if result.Hit() {
+			s.counters.recordGetResult(requestedSize, result.Shard)
+			return result
+		}
+	}
+
+	s.counters.recordGetResult(requestedSize, primaryResult.Shard)
+	return primaryResult
 }
 
 // recordAllocation records an allocation associated with one selected shard and
@@ -396,6 +440,43 @@ func (s *classState) clear() classStorageReductionResult {
 // selectShard chooses and validates a shard index for this class state.
 func (s *classState) selectShard(selector shardSelector) int {
 	return selectShardIndex(selector, len(s.shards))
+}
+
+// boundedFallbackShardCount returns the number of additional shards that may be
+// probed after the primary shard.
+//
+// The function intentionally clamps instead of rejecting counts larger than the
+// local shard set. This lets defaults enable one fallback probe while still
+// constructing valid single-shard pools. Negative configured values should be
+// rejected by policy validation, but the hot-path helper treats them as disabled
+// defensively.
+func boundedFallbackShardCount(configured int, shardCount int) int {
+	if configured <= 0 || shardCount <= 1 {
+		return 0
+	}
+
+	maxFallback := shardCount - 1
+	if configured > maxFallback {
+		return maxFallback
+	}
+
+	return configured
+}
+
+// fallbackShardIndex maps a primary shard and one-based fallback offset to the
+// next shard candidate.
+//
+// Power-of-two shard counts use a mask, matching the default resolver shape and
+// avoiding division. Non-power-of-two counts are still supported for explicit
+// policies and use modulo. The caller must pass an offset in
+// [1, boundedFallbackShardCount].
+func fallbackShardIndex(primaryShardIndex int, offset int, shardCount int) int {
+	candidate := primaryShardIndex + offset
+	if shardCount > 0 && shardCount&(shardCount-1) == 0 {
+		return candidate & (shardCount - 1)
+	}
+
+	return candidate % shardCount
 }
 
 func (s *classState) validateAllocationCapacity(capacity uint64) {

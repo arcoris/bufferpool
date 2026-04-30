@@ -76,7 +76,8 @@ func TestPoolSupportedPolicyAcceptsCurrentSubset(t *testing.T) {
 }
 
 // TestPoolNewRejectsUnsupportedStandalonePolicyFeatures verifies that Pool.New
-// rejects policy fields that require lease ownership or fallback probing.
+// rejects policy fields that require lease ownership or unsupported return
+// fallback probing.
 func TestPoolNewRejectsUnsupportedStandalonePolicyFeatures(t *testing.T) {
 	t.Parallel()
 
@@ -128,13 +129,6 @@ func TestPoolNewRejectsUnsupportedStandalonePolicyFeatures(t *testing.T) {
 				policy.Ownership.DetectDoubleRelease = true
 			},
 			message: errPoolUnsupportedDoubleReleaseDetection,
-		},
-		{
-			name: "acquisition fallback shards",
-			mutate: func(policy *Policy) {
-				policy.Shards.AcquisitionFallbackShards = 1
-			},
-			message: errPoolUnsupportedAcquisitionFallbackShards,
 		},
 		{
 			name: "return fallback shards",

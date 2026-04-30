@@ -256,9 +256,10 @@ func (c ClassPolicy) Validate() error {
 // shape. It does not decide byte budgets; byte and buffer credit are projected
 // later from RetentionPolicy through class budgets into shard credits.
 //
-// Fallback counts are validated relative to ShardsPerClass because probing more
-// fallback shards than exist would either duplicate work or hide a caller-side
-// configuration bug.
+// Acquisition fallback is a bounded data-plane probe count. Runtime clamps it
+// to the available shard count so a default policy remains valid when the
+// resolved shard count is one. Return fallback is not implemented yet and is
+// rejected rather than accepted as a silent no-op.
 func (s ShardPolicy) Validate() error {
 	var errs []error
 
@@ -289,24 +290,11 @@ func (s ShardPolicy) Validate() error {
 		errs = appendPolicyValidationError(errs, "bufferpool.ShardPolicy: return fallback shards must not be negative")
 	}
 
-	if s.ShardsPerClass > 0 {
-		maxFallback := s.ShardsPerClass - 1
-
-		if s.AcquisitionFallbackShards > maxFallback {
-			errs = appendPolicyValidationError(
-				errs,
-				"bufferpool.ShardPolicy: acquisition fallback shards "+strconv.Itoa(s.AcquisitionFallbackShards)+
-					" must be less than shards per class "+strconv.Itoa(s.ShardsPerClass),
-			)
-		}
-
-		if s.ReturnFallbackShards > maxFallback {
-			errs = appendPolicyValidationError(
-				errs,
-				"bufferpool.ShardPolicy: return fallback shards "+strconv.Itoa(s.ReturnFallbackShards)+
-					" must be less than shards per class "+strconv.Itoa(s.ShardsPerClass),
-			)
-		}
+	if s.ReturnFallbackShards > 0 {
+		errs = appendPolicyValidationError(
+			errs,
+			"bufferpool.ShardPolicy: return fallback shards are not supported yet",
+		)
 	}
 
 	return multierr.Combine(errs...)
@@ -796,7 +784,9 @@ func isKnownShardSelectionMode(mode ShardSelectionMode) bool {
 	case ShardSelectionModeUnset,
 		ShardSelectionModeSingle,
 		ShardSelectionModeRoundRobin,
-		ShardSelectionModeRandom:
+		ShardSelectionModeRandom,
+		ShardSelectionModeProcessorInspired,
+		ShardSelectionModeAffinity:
 		return true
 	default:
 		return false

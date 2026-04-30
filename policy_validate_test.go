@@ -34,6 +34,56 @@ func TestValidatePolicyAcceptsCompleteStaticPolicy(t *testing.T) {
 	}
 }
 
+// TestValidatePolicyAcceptsDefaultPolicy verifies dynamic shard defaults remain
+// internally consistent across the current process runtime shape.
+func TestValidatePolicyAcceptsDefaultPolicy(t *testing.T) {
+	t.Parallel()
+
+	if err := ValidatePolicy(DefaultPolicy()); err != nil {
+		t.Fatalf("ValidatePolicy(DefaultPolicy()) = %v, want nil", err)
+	}
+}
+
+// TestShardPolicyAcceptsProcessorInspiredAndAcquisitionFallback verifies the
+// default selector and bounded get-side fallback are valid policy concepts.
+func TestShardPolicyAcceptsProcessorInspiredAndAcquisitionFallback(t *testing.T) {
+	t.Parallel()
+
+	shards := ShardPolicy{
+		Selection:                 ShardSelectionModeProcessorInspired,
+		ShardsPerClass:            1,
+		BucketSlotsPerShard:       1,
+		AcquisitionFallbackShards: 1,
+		ReturnFallbackShards:      0,
+	}
+
+	if err := shards.Validate(); err != nil {
+		t.Fatalf("ShardPolicy.Validate() = %v, want nil", err)
+	}
+}
+
+// TestShardPolicyRejectsPositiveReturnFallback verifies put-side fallback is
+// not accepted while the runtime does not implement it.
+func TestShardPolicyRejectsPositiveReturnFallback(t *testing.T) {
+	t.Parallel()
+
+	shards := ShardPolicy{
+		Selection:                 ShardSelectionModeProcessorInspired,
+		ShardsPerClass:            2,
+		BucketSlotsPerShard:       1,
+		AcquisitionFallbackShards: 0,
+		ReturnFallbackShards:      1,
+	}
+
+	err := shards.Validate()
+	if err == nil {
+		t.Fatal("ShardPolicy.Validate() returned nil")
+	}
+	if !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("ShardPolicy.Validate() error does not match ErrInvalidPolicy: %v", err)
+	}
+}
+
 // TestValidatePolicyRejectsZeroPolicy verifies top-level classification for an
 // unset policy.
 func TestValidatePolicyRejectsZeroPolicy(t *testing.T) {

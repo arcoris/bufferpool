@@ -196,7 +196,7 @@ func TestPoolClassStateLookupPanicsForForeignClass(t *testing.T) {
 func TestPoolRandomShardSelectorProducesValidIndexes(t *testing.T) {
 	t.Parallel()
 
-	selector, err := newPoolShardSelector(ShardSelectionModeRandom)
+	selector, err := newPoolShardSelector(ShardSelectionModeRandom, 0)
 	if err != nil {
 		t.Fatalf("newPoolShardSelector(random) returned error: %v", err)
 	}
@@ -207,6 +207,24 @@ func TestPoolRandomShardSelectorProducesValidIndexes(t *testing.T) {
 		index := selector.SelectShard(shardCount)
 		if index < 0 || index >= shardCount {
 			t.Fatalf("SelectShard(%d) = %d, want in [0, %d)", shardCount, index, shardCount)
+		}
+	}
+}
+
+// TestPoolProcessorInspiredShardSelectorProducesValidIndexes verifies Pool can
+// construct the default selector mode.
+func TestPoolProcessorInspiredShardSelectorProducesValidIndexes(t *testing.T) {
+	t.Parallel()
+
+	selector, err := newPoolShardSelector(ShardSelectionModeProcessorInspired, 1)
+	if err != nil {
+		t.Fatalf("newPoolShardSelector(processor-inspired) returned error: %v", err)
+	}
+
+	for iteration := 0; iteration < 1024; iteration++ {
+		index := selector.SelectShard(11)
+		if index < 0 || index >= 11 {
+			t.Fatalf("SelectShard(11) = %d, want in [0, 11)", index)
 		}
 	}
 }

@@ -128,8 +128,14 @@ func (p *Pool) currentRuntimeSnapshot() *poolRuntimeSnapshot {
 //
 // Pool construction builds class table, class states, shards, buckets, and
 // selector state once. Runtime snapshot publication may change dynamic
-// admission and retention values, but it must not silently change structural
-// topology that would require rebuilding those objects.
+// admission, retention, and acquisition-fallback values, but it must not
+// silently change structural topology that would require rebuilding those
+// objects.
+//
+// AcquisitionFallbackShards is intentionally not a topology field: it only
+// changes how many already-built shards may be probed after the selected shard
+// misses. Selection mode, shard count, bucket slots, and class sizes are topology
+// fields and must remain fixed.
 func poolRuntimePolicyCompatible(construction Policy, runtime Policy) bool {
 	if construction.Shards.Selection != runtime.Shards.Selection {
 		return false

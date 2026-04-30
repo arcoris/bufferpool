@@ -190,8 +190,10 @@ type ShardPolicy struct {
 	// AcquisitionFallbackShards is the maximum number of additional shards that
 	// an acquisition path may probe after the primary selected shard misses.
 	//
-	// Zero means no fallback probing. A small value keeps get operations local
-	// while allowing optional reuse improvement.
+	// Zero means no fallback probing. Positive values are bounded at runtime by
+	// the available shard count, so a shared policy can be valid for both
+	// single-shard and multi-shard owners. A small value keeps Get local while
+	// allowing one nearby reuse opportunity before allocation.
 	AcquisitionFallbackShards int
 
 	// ReturnFallbackShards is the maximum number of additional shards that a
@@ -199,7 +201,8 @@ type ShardPolicy struct {
 	// bucket is full.
 	//
 	// Zero means returned buffers are either retained by the selected shard or
-	// dropped. This should remain the default for predictable return-path cost.
+	// dropped. Positive values are reserved until return fallback is implemented;
+	// validation rejects them so callers do not configure a silent no-op.
 	ReturnFallbackShards int
 }
 
@@ -233,6 +236,23 @@ const (
 	//
 	// The implementation must not use private Go runtime P-local APIs.
 	ShardSelectionModeRandom
+
+	// ShardSelectionModeProcessorInspired uses owner-local striped entropy to
+	// map operations to class shards without private runtime P-local APIs.
+	//
+	// The selector is processor-inspired in shape, not runtime-coupled: it uses
+	// GOMAXPROCS-derived shard defaults, per-class sequence state, and bounded
+	// mixed indexing, but it does not inspect or pin to Go scheduler P state.
+	ShardSelectionModeProcessorInspired
+
+	// ShardSelectionModeAffinity selects by affinity metadata when a caller
+	// supplies it. Standalone Pool has no public affinity input yet, so it uses
+	// the same owner-local entropy as processor-inspired selection.
+	//
+	// The mode exists as an explicit policy value for future managed routing, but
+	// current Pool construction must still execute it safely without adding a
+	// hot-path dependency on higher-level ownership or group code.
+	ShardSelectionModeAffinity
 )
 
 // String returns a stable diagnostic label for m.
@@ -246,6 +266,10 @@ func (m ShardSelectionMode) String() string {
 		return "round_robin"
 	case ShardSelectionModeRandom:
 		return "random"
+	case ShardSelectionModeProcessorInspired:
+		return "processor_inspired"
+	case ShardSelectionModeAffinity:
+		return "affinity"
 	default:
 		return "unknown"
 	}

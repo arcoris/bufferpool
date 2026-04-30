@@ -437,6 +437,16 @@ func TestShardSelectionModeString(t *testing.T) {
 			want: "random",
 		},
 		{
+			name: "processor inspired",
+			mode: ShardSelectionModeProcessorInspired,
+			want: "processor_inspired",
+		},
+		{
+			name: "affinity",
+			mode: ShardSelectionModeAffinity,
+			want: "affinity",
+		},
+		{
 			name: "unknown",
 			mode: ShardSelectionMode(255),
 			want: "unknown",
@@ -451,6 +461,73 @@ func TestShardSelectionModeString(t *testing.T) {
 
 			if got := tt.mode.String(); got != tt.want {
 				t.Fatalf("ShardSelectionMode.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDefaultShardPolicyUsesRuntimeDerivedShards verifies the default shard
+// shape follows the GOMAXPROCS-derived resolver and keeps bounded acquisition
+// fallback enabled.
+func TestDefaultShardPolicyUsesRuntimeDerivedShards(t *testing.T) {
+	t.Parallel()
+
+	shards := DefaultPolicyShardsPerClass()
+	if shards < DefaultPolicyMinShardsPerClass || shards > DefaultPolicyMaxShardsPerClass {
+		t.Fatalf("DefaultPolicyShardsPerClass() = %d, want in [%d, %d]",
+			shards,
+			DefaultPolicyMinShardsPerClass,
+			DefaultPolicyMaxShardsPerClass,
+		)
+	}
+	if shards&(shards-1) != 0 {
+		t.Fatalf("DefaultPolicyShardsPerClass() = %d, want power of two", shards)
+	}
+
+	policy := DefaultShardPolicy()
+	if policy.Selection != ShardSelectionModeProcessorInspired {
+		t.Fatalf("default selection = %s, want processor-inspired", policy.Selection)
+	}
+	if policy.ShardsPerClass != shards {
+		t.Fatalf("default shards per class = %d, want %d", policy.ShardsPerClass, shards)
+	}
+	if policy.AcquisitionFallbackShards != DefaultPolicyAcquisitionFallbackShards {
+		t.Fatalf("default acquisition fallback = %d, want %d",
+			policy.AcquisitionFallbackShards,
+			DefaultPolicyAcquisitionFallbackShards,
+		)
+	}
+	if policy.ReturnFallbackShards != 0 {
+		t.Fatalf("default return fallback = %d, want zero", policy.ReturnFallbackShards)
+	}
+}
+
+// TestDefaultPolicyShardsPerClassForGOMAXPROCS verifies resolver boundaries
+// without mutating process-wide GOMAXPROCS in a parallel test.
+func TestDefaultPolicyShardsPerClassForGOMAXPROCS(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		procs int
+		want  int
+	}{
+		{name: "zero", procs: 0, want: 1},
+		{name: "one", procs: 1, want: 1},
+		{name: "two", procs: 2, want: 2},
+		{name: "round up", procs: 3, want: 4},
+		{name: "cap boundary", procs: 17, want: 32},
+		{name: "above cap", procs: 64, want: 32},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := defaultPolicyShardsPerClassForGOMAXPROCS(tt.procs); got != tt.want {
+				t.Fatalf("defaultPolicyShardsPerClassForGOMAXPROCS(%d) = %d, want %d", tt.procs, got, tt.want)
 			}
 		})
 	}

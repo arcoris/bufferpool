@@ -45,8 +45,8 @@ const (
 //
 // On reuse hit, Get returns a retained buffer resized to len == size. On miss,
 // Get allocates a new buffer with len == size and capacity equal to the selected
-// normalized class size. Allocation is recorded against the shard selected for
-// the miss.
+// normalized class size. Allocation is recorded against the primary shard
+// selected for the miss, even when bounded fallback probing also misses.
 //
 // Get never returns retained buffers for requests that policy rejects or that
 // cannot be represented by the configured class table.
@@ -108,9 +108,17 @@ func (p *Pool) getSize(requestedSize Size) ([]byte, error) {
 // This method owns retained reuse attempt, allocation on miss, and allocation
 // accounting. Pure request validation and class routing are done before lifecycle
 // admission by planGet.
+//
+// Bounded fallback is still part of the acquisition data plane. It probes only
+// the configured number of additional shards after the primary miss and does not
+// call any controller, scheduler, group runtime, or adaptive policy code.
 func (p *Pool) get(plan poolGetPlan) ([]byte, error) {
 	state := p.mustClassStateFor(plan.class)
-	result := state.tryGetSelected(p.shardSelectorFor(plan.class), plan.requestedSize)
+	result := state.tryGetSelectedWithFallback(
+		p.shardSelectorFor(plan.class),
+		plan.requestedSize,
+		plan.acquisitionFallbackShards,
+	)
 	if result.Hit() {
 		return result.Buffer()[:plan.requestedSizeInt], nil
 	}
@@ -139,6 +147,10 @@ type poolGetPlan struct {
 
 	// classSizeInt is class.ByteSize converted for allocation capacity.
 	classSizeInt int
+
+	// acquisitionFallbackShards is the maximum additional shards to probe after
+	// the selected shard misses.
+	acquisitionFallbackShards int
 
 	// empty means policy resolved the request without retained storage or
 	// allocation. The public call returns a non-nil empty slice for this case.
@@ -176,10 +188,11 @@ func (p *Pool) planGet(requestedSize Size, runtime *poolRuntimeSnapshot) (poolGe
 	}
 
 	return poolGetPlan{
-		requestedSize:    requestedSize,
-		requestedSizeInt: requestedSizeInt,
-		class:            class,
-		classSizeInt:     classSizeInt,
+		requestedSize:             requestedSize,
+		requestedSizeInt:          requestedSizeInt,
+		class:                     class,
+		classSizeInt:              classSizeInt,
+		acquisitionFallbackShards: runtime.Policy.Shards.AcquisitionFallbackShards,
 	}, nil
 }
 

@@ -281,11 +281,11 @@ func ThroughputPolicy() Policy {
 			Sizes: ThroughputClassSizes(),
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeRoundRobin,
-			ShardsPerClass:            16,
+			Selection:                 ShardSelectionModeProcessorInspired,
+			ShardsPerClass:            64,
 			BucketSlotsPerShard:       64,
 			AcquisitionFallbackShards: 1,
-			ReturnFallbackShards:      1,
+			ReturnFallbackShards:      0,
 		},
 		Admission: AdmissionPolicy{
 			ZeroSizeRequests:    ZeroSizeRequestEmptyBuffer,
@@ -367,10 +367,10 @@ func ThroughputPolicy() Policy {
 // side of the same bound, so retained storage is limited by both slot count and
 // retained capacity.
 //
-// Fallback probing is disabled. This keeps get and return operations predictable:
-// one selected shard is checked, and missed reuse is allowed instead of scanning
-// other shards. Trim runs more often and with smaller per-cycle limits so memory
-// correction happens steadily without large cleanup bursts.
+// Acquisition fallback probing is conservative and return fallback is disabled.
+// This keeps return operations predictable while allowing one bounded get-side
+// reuse probe before allocation. Trim runs more often and with smaller per-cycle
+// limits so memory correction happens steadily without large cleanup bursts.
 //
 // Pressure handling is conservative. Medium and high pressure reduce retained
 // capacity thresholds, while critical pressure disables new retention. This makes
@@ -393,7 +393,7 @@ func MemoryConstrainedPolicy() Policy {
 			Sizes: MemoryConstrainedClassSizes(),
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeRoundRobin,
+			Selection:                 ShardSelectionModeProcessorInspired,
 			ShardsPerClass:            4,
 			BucketSlotsPerShard:       16,
 			AcquisitionFallbackShards: 0,
@@ -505,7 +505,7 @@ func BurstyPolicy() Policy {
 			Sizes: BurstyClassSizes(),
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeRoundRobin,
+			Selection:                 ShardSelectionModeProcessorInspired,
 			ShardsPerClass:            16,
 			BucketSlotsPerShard:       64,
 			AcquisitionFallbackShards: 1,
@@ -615,7 +615,7 @@ func StrictBoundedPolicy() Policy {
 			Sizes: StrictBoundedClassSizes(),
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeRoundRobin,
+			Selection:                 ShardSelectionModeProcessorInspired,
 			ShardsPerClass:            8,
 			BucketSlotsPerShard:       16,
 			AcquisitionFallbackShards: 0,
@@ -727,7 +727,7 @@ func SecurePolicy() Policy {
 			Sizes: SecureClassSizes(),
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeRoundRobin,
+			Selection:                 ShardSelectionModeProcessorInspired,
 			ShardsPerClass:            8,
 			BucketSlotsPerShard:       16,
 			AcquisitionFallbackShards: 0,

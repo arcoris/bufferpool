@@ -96,6 +96,107 @@ func TestPoolGetReusesReturnedBuffer(t *testing.T) {
 	}
 }
 
+// TestPoolGetAcquisitionFallbackUsesSecondaryShard verifies Pool.Get can reuse
+// retained storage through bounded fallback after the primary selected shard
+// misses.
+func TestPoolGetAcquisitionFallbackUsesSecondaryShard(t *testing.T) {
+	t.Parallel()
+
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Shards.ShardsPerClass = 2
+	policy.Shards.AcquisitionFallbackShards = 1
+
+	pool := MustNew(PoolConfig{Policy: policy})
+	defer closePoolForTest(t, pool)
+
+	class, ok := pool.table.classForRequest(SizeFromInt(300))
+	if !ok {
+		t.Fatal("test setup: 300 B request is unsupported")
+	}
+	state := pool.mustClassStateFor(class)
+	retain := state.tryRetain(1, make([]byte, 0, 512))
+	if !retain.Retained() {
+		t.Fatalf("test setup retain failed: %s", retain.CreditDecision())
+	}
+
+	buffer, err := pool.Get(300)
+	if err != nil {
+		t.Fatalf("Get(300) returned error: %v", err)
+	}
+	if len(buffer) != 300 || cap(buffer) != 512 {
+		t.Fatalf("Get(300) len/cap = %d/%d, want 300/512", len(buffer), cap(buffer))
+	}
+
+	snapshot := pool.Snapshot()
+	if snapshot.Counters.Hits != 1 {
+		t.Fatalf("pool hits = %d, want 1", snapshot.Counters.Hits)
+	}
+	if snapshot.Counters.Misses != 0 {
+		t.Fatalf("pool misses = %d, want zero for fallback-served get", snapshot.Counters.Misses)
+	}
+	if snapshot.Classes[0].Shards[0].Counters.Misses != 1 {
+		t.Fatalf("primary shard misses = %d, want 1", snapshot.Classes[0].Shards[0].Counters.Misses)
+	}
+	if snapshot.Classes[0].Shards[1].Counters.Hits != 1 {
+		t.Fatalf("fallback shard hits = %d, want 1", snapshot.Classes[0].Shards[1].Counters.Hits)
+	}
+	if poolTestRetainedUsage(pool).buffers != 0 {
+		t.Fatal("retained buffer was not consumed by fallback hit")
+	}
+}
+
+// TestPoolGetAcquisitionFallbackImprovesControlledHitRatio compares identical
+// seeded storage with and without one fallback probe.
+func TestPoolGetAcquisitionFallbackImprovesControlledHitRatio(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		fallback int
+		wantHit  bool
+	}{
+		{name: "fallback disabled", fallback: 0, wantHit: false},
+		{name: "fallback one", fallback: 1, wantHit: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			policy := poolTestSmallSingleShardPolicy()
+			policy.Shards.ShardsPerClass = 2
+			policy.Shards.AcquisitionFallbackShards = tt.fallback
+
+			pool := MustNew(PoolConfig{Policy: policy})
+			defer closePoolForTest(t, pool)
+
+			class, ok := pool.table.classForRequest(SizeFromInt(300))
+			if !ok {
+				t.Fatal("test setup: 300 B request is unsupported")
+			}
+			state := pool.mustClassStateFor(class)
+			if retain := state.tryRetain(1, make([]byte, 0, 512)); !retain.Retained() {
+				t.Fatalf("test setup retain failed: %s", retain.CreditDecision())
+			}
+
+			buffer, err := pool.Get(300)
+			if err != nil {
+				t.Fatalf("Get(300) returned error: %v", err)
+			}
+			if len(buffer) != 300 || cap(buffer) != 512 {
+				t.Fatalf("Get(300) len/cap = %d/%d, want 300/512", len(buffer), cap(buffer))
+			}
+
+			gotHit := pool.Snapshot().Counters.Hits == 1
+			if gotHit != tt.wantHit {
+				t.Fatalf("hit = %v, want %v", gotHit, tt.wantHit)
+			}
+		})
+	}
+}
+
 // TestPoolGetZeroSizePolicy verifies policy-owned zero-size behavior.
 func TestPoolGetZeroSizePolicy(t *testing.T) {
 	t.Parallel()

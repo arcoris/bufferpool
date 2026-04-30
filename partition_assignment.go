@@ -142,7 +142,7 @@ func DefaultPoolGroupPartitioningPolicy() PoolGroupPartitioningPolicy {
 		MaxPartitions:                 maxPartitions,
 		TargetActiveEntries:           defaultPoolGroupTargetActiveEntries,
 		EstimatedActiveClassesPerPool: defaultPoolGroupEstimatedActiveClassesPerPool,
-		EstimatedActiveShardsPerClass: DefaultPolicyShardsPerClass,
+		EstimatedActiveShardsPerClass: DefaultPolicyShardsPerClass(),
 		Placement:                     PoolPlacementPolicyHash,
 	}
 }

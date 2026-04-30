@@ -16,7 +16,12 @@
 
 package bufferpool
 
-import "time"
+import (
+	"runtime"
+	"time"
+
+	"arcoris.dev/bufferpool/internal/mathx"
+)
 
 const (
 	// DefaultPolicySoftRetainedBytes is the preferred retained-memory target for
@@ -66,13 +71,6 @@ const (
 	// adaptive redistribution exists.
 	DefaultPolicyMaxClassRetainedBytes Size = 16 * MiB
 
-	// DefaultPolicyMaxClassRetainedBuffers limits retained buffer count assigned
-	// to one size class under the default policy.
-	//
-	// The value matches the default physical shape of 8 shards × 32 slots. Class
-	// budget may still assign fewer buffers than this maximum.
-	DefaultPolicyMaxClassRetainedBuffers uint64 = 256
-
 	// DefaultPolicyMaxShardRetainedBytes limits retained backing capacity assigned
 	// to one class shard under the default policy.
 	//
@@ -89,12 +87,13 @@ const (
 )
 
 const (
-	// DefaultPolicyShardsPerClass defines the default lock-striping width for
-	// each size class.
-	//
-	// Eight shards are enough to avoid a single class-wide hot lock while keeping
-	// the default memory and metadata footprint moderate.
-	DefaultPolicyShardsPerClass = 8
+	// DefaultPolicyMinShardsPerClass is the lower bound for automatic default
+	// class-local lock striping.
+	DefaultPolicyMinShardsPerClass = 1
+
+	// DefaultPolicyMaxShardsPerClass is the upper bound for automatic default
+	// class-local lock striping.
+	DefaultPolicyMaxShardsPerClass = 32
 
 	// DefaultPolicyBucketSlotsPerShard defines the default physical retained
 	// buffer slots per shard.
@@ -104,13 +103,9 @@ const (
 	// used.
 	DefaultPolicyBucketSlotsPerShard = 32
 
-	// DefaultPolicyAcquisitionFallbackShards disables default get-side fallback
-	// probing.
-	//
-	// The default policy keeps acquisition cost predictable: one selected shard is
-	// checked first, and broader probing can be enabled by a future throughput
-	// profile if benchmarks justify it.
-	DefaultPolicyAcquisitionFallbackShards = 0
+	// DefaultPolicyAcquisitionFallbackShards enables one bounded get-side
+	// fallback probe after the primary selected shard misses.
+	DefaultPolicyAcquisitionFallbackShards = 1
 
 	// DefaultPolicyReturnFallbackShards disables default put-side fallback
 	// probing.
@@ -120,6 +115,41 @@ const (
 	// rather than search other shards.
 	DefaultPolicyReturnFallbackShards = 0
 )
+
+// DefaultPolicyShardsPerClass returns the default lock-striping width for each
+// size class.
+//
+// The value follows the current GOMAXPROCS, rounded up to the next power of two
+// and bounded to keep metadata growth predictable. Shards remain data-plane
+// contention units; this resolver does not imply any control-plane partitioning.
+func DefaultPolicyShardsPerClass() int {
+	return defaultPolicyShardsPerClassForGOMAXPROCS(runtime.GOMAXPROCS(0))
+}
+
+// defaultPolicyShardsPerClassForGOMAXPROCS resolves a processor count into the
+// default shard count used by DefaultShardPolicy.
+//
+// The helper is private so tests can cover boundary behavior without changing
+// the process-wide GOMAXPROCS value. Inputs below one are treated as one because
+// the public resolver receives runtime.GOMAXPROCS(0), which should already be
+// positive, and negative test inputs should not reach mathx.NextPowerOfTwo.
+func defaultPolicyShardsPerClassForGOMAXPROCS(procs int) int {
+	if procs < DefaultPolicyMinShardsPerClass {
+		procs = DefaultPolicyMinShardsPerClass
+	}
+
+	shards := int(mathx.NextPowerOfTwo(uint64(procs)))
+	return mathx.Clamp(shards, DefaultPolicyMinShardsPerClass, DefaultPolicyMaxShardsPerClass)
+}
+
+// DefaultPolicyMaxClassRetainedBuffers returns the default retained-buffer
+// count limit assigned to one size class.
+//
+// The value tracks the resolved default shard shape so DefaultPolicy remains
+// valid even when GOMAXPROCS is small.
+func DefaultPolicyMaxClassRetainedBuffers() uint64 {
+	return uint64(DefaultPolicyShardsPerClass()) * DefaultPolicyMaxShardRetainedBuffers
+}
 
 const (
 	// DefaultPolicyMediumPressureRetentionScale retains 75% of the normal target
@@ -252,7 +282,7 @@ func DefaultRetentionPolicy() RetentionPolicy {
 		MaxRequestSize:            DefaultPolicyMaxRequestSize,
 		MaxRetainedBufferCapacity: DefaultPolicyMaxRetainedBufferCapacity,
 		MaxClassRetainedBytes:     DefaultPolicyMaxClassRetainedBytes,
-		MaxClassRetainedBuffers:   DefaultPolicyMaxClassRetainedBuffers,
+		MaxClassRetainedBuffers:   DefaultPolicyMaxClassRetainedBuffers(),
 		MaxShardRetainedBytes:     DefaultPolicyMaxShardRetainedBytes,
 		MaxShardRetainedBuffers:   DefaultPolicyMaxShardRetainedBuffers,
 	}
@@ -295,13 +325,14 @@ func DefaultClassSizes() []ClassSize {
 // DefaultShardPolicy returns the default class-local sharding and bucket-storage
 // policy.
 //
-// Round-robin selection is the default because it is deterministic, cheap, and
-// does not depend on private runtime-local APIs. Fallback probing is disabled by
-// default to keep get/put costs predictable.
+// Processor-inspired selection is the default because it avoids a single
+// class-wide round-robin sequence while staying deterministic and independent of
+// private runtime-local APIs. Acquisition fallback is bounded to one extra
+// shard; return fallback remains disabled to keep Put predictable.
 func DefaultShardPolicy() ShardPolicy {
 	return ShardPolicy{
-		Selection:                 ShardSelectionModeRoundRobin,
-		ShardsPerClass:            DefaultPolicyShardsPerClass,
+		Selection:                 ShardSelectionModeProcessorInspired,
+		ShardsPerClass:            DefaultPolicyShardsPerClass(),
 		BucketSlotsPerShard:       DefaultPolicyBucketSlotsPerShard,
 		AcquisitionFallbackShards: DefaultPolicyAcquisitionFallbackShards,
 		ReturnFallbackShards:      DefaultPolicyReturnFallbackShards,

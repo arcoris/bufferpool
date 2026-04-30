@@ -222,6 +222,9 @@ func closePoolForTest(t *testing.T, pool *Pool) {
 func poolTestSingleShardPolicy() Policy {
 	policy := DefaultPolicy()
 	policy.Shards.Selection = ShardSelectionModeSingle
+	policy.Shards.ShardsPerClass = 1
+	policy.Shards.AcquisitionFallbackShards = 0
+	policy.Retention.MaxClassRetainedBuffers = uint64(policy.Shards.BucketSlotsPerShard)
 
 	return policy
 }
