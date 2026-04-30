@@ -60,7 +60,7 @@ func (r *LeaseRegistry) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !beginOrContinueSerializedCloseCleanup(&r.lifecycle) {
+	if !beginOrContinueSerializedCloseCleanupLocked(&r.lifecycle) {
 		return nil
 	}
 	r.lifecycle.MarkClosed()

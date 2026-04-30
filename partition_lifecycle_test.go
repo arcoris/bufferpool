@@ -305,6 +305,7 @@ func TestPoolPartitionReleaseConcurrentWithClose(t *testing.T) {
 func TestPoolPartitionCloseGracefullyWithoutActiveLeases(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))
 	requirePartitionNoError(t, err)
+	before := partition.Sample().Generation
 
 	result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{Timeout: 10 * time.Millisecond})
 	requirePartitionNoError(t, err)
@@ -317,6 +318,9 @@ func TestPoolPartitionCloseGracefullyWithoutActiveLeases(t *testing.T) {
 	}
 	if !partition.IsClosed() {
 		t.Fatalf("partition should be closed after graceful close")
+	}
+	if after := partition.Sample().Generation; after != before.Next() {
+		t.Fatalf("generation after graceful close = %s, want %s", after, before.Next())
 	}
 	poolSnapshot, ok := partition.PoolSnapshot("primary")
 	if !ok {
@@ -491,6 +495,82 @@ func TestPoolPartitionHardCloseAfterGracefulTimeoutAllowsLateDiagnosticRelease(t
 	}
 }
 
+// TestPoolPartitionCloseGracefullyAfterHardCloseWithActiveLease documents terminal observation.
+func TestPoolPartitionCloseGracefullyAfterHardCloseWithActiveLease(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Close())
+
+	result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{})
+	requirePartitionNoError(t, err)
+	if result.Attempted || result.Completed || result.TimedOut {
+		t.Fatalf("CloseGracefully after hard close with active lease = %+v, want not attempted/incomplete/no timeout", result)
+	}
+	if result.ActiveLeasesBefore != 1 || result.ActiveLeasesAfter != 1 {
+		t.Fatalf("CloseGracefully active counts = %+v, want 1/1", result)
+	}
+
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	sample := partition.Sample()
+	if sample.ActiveLeases != 0 ||
+		sample.LeaseCounters.PoolReturnFailures != 1 ||
+		sample.LeaseCounters.PoolReturnClosedFailures != 1 {
+		t.Fatalf("sample after late release = active %d counters %+v, want active=0 closed-pool failure", sample.ActiveLeases, sample.LeaseCounters)
+	}
+}
+
+// TestPoolPartitionCloseGracefullyAfterHardCloseWithNoActiveLeases documents closed idle observation.
+func TestPoolPartitionCloseGracefullyAfterHardCloseWithNoActiveLeases(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Close())
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	before := partition.Sample().Generation
+
+	result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{})
+	requirePartitionNoError(t, err)
+	if result.Attempted || !result.Completed || result.TimedOut {
+		t.Fatalf("CloseGracefully after hard close with no active leases = %+v, want not attempted/completed/no timeout", result)
+	}
+	if result.ActiveLeasesBefore != 0 || result.ActiveLeasesAfter != 0 {
+		t.Fatalf("CloseGracefully active counts = %+v, want 0/0", result)
+	}
+	if after := partition.Sample().Generation; after != before {
+		t.Fatalf("generation after closed CloseGracefully = %s, want %s", after, before)
+	}
+}
+
+// TestPoolPartitionCloseGracefullyAfterTimeoutHardCloseAndRelease documents retry semantics.
+func TestPoolPartitionCloseGracefullyAfterTimeoutHardCloseAndRelease(t *testing.T) {
+	partition, err := NewPoolPartition(testPartitionConfig("primary"))
+	requirePartitionNoError(t, err)
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{})
+	requirePartitionNoError(t, err)
+	if !result.Attempted || result.Completed || !result.TimedOut {
+		t.Fatalf("first CloseGracefully result = %+v, want attempted timeout", result)
+	}
+
+	requirePartitionNoError(t, partition.Close())
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	result, err = partition.CloseGracefully(PoolPartitionDrainPolicy{})
+	requirePartitionNoError(t, err)
+	if result.Attempted || !result.Completed || result.TimedOut {
+		t.Fatalf("CloseGracefully after timeout/hard-close/release = %+v, want not attempted/completed/no timeout", result)
+	}
+	if result.ActiveLeasesBefore != 0 || result.ActiveLeasesAfter != 0 {
+		t.Fatalf("CloseGracefully active counts = %+v, want 0/0", result)
+	}
+}
+
 // TestPoolPartitionCloseGracefullyConcurrentHardCloseWithActiveLease verifies handoff.
 func TestPoolPartitionCloseGracefullyConcurrentHardCloseWithActiveLease(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))
@@ -516,13 +596,20 @@ func TestPoolPartitionCloseGracefullyConcurrentHardCloseWithActiveLease(t *testi
 
 	attempt := receivePartitionDrainAttempt(t, resultCh)
 	requirePartitionNoError(t, attempt.err)
-	if !attempt.result.Completed || attempt.result.TimedOut {
-		t.Fatalf("CloseGracefully concurrent hard close result = %+v, want completed without timeout", attempt.result)
+	if !attempt.result.Attempted || !attempt.result.Completed || attempt.result.TimedOut {
+		t.Fatalf("CloseGracefully concurrent hard close result = %+v, want attempted/completed/no timeout", attempt.result)
+	}
+	if attempt.result.ActiveLeasesBefore != 1 || attempt.result.ActiveLeasesAfter != 0 {
+		t.Fatalf("CloseGracefully concurrent active counts = %+v, want 1/0", attempt.result)
 	}
 
 	metrics := partition.Metrics()
 	if metrics.ActiveLeases != 0 || metrics.PoolReturnFailures != 1 {
 		t.Fatalf("metrics after concurrent graceful/hard close = active %d failures %d, want 0/1", metrics.ActiveLeases, metrics.PoolReturnFailures)
+	}
+	sample := partition.Sample()
+	if sample.LeaseCounters.PoolReturnClosedFailures != 1 {
+		t.Fatalf("PoolReturnClosedFailures = %d, want 1", sample.LeaseCounters.PoolReturnClosedFailures)
 	}
 }
 
@@ -531,6 +618,7 @@ func TestPoolPartitionCloseGracefullyAlreadyClosedDoesNotAttempt(t *testing.T) {
 	partition, err := NewPoolPartition(testPartitionConfig("primary"))
 	requirePartitionNoError(t, err)
 	requirePartitionNoError(t, partition.Close())
+	before := partition.Sample().Generation
 
 	result, err := partition.CloseGracefully(PoolPartitionDrainPolicy{})
 	requirePartitionNoError(t, err)
@@ -540,6 +628,9 @@ func TestPoolPartitionCloseGracefullyAlreadyClosedDoesNotAttempt(t *testing.T) {
 	}
 	if !result.Completed || result.ActiveLeasesBefore != 0 || result.ActiveLeasesAfter != 0 {
 		t.Fatalf("CloseGracefully on closed partition result = %+v, want completed zero-active observation", result)
+	}
+	if after := partition.Sample().Generation; after != before {
+		t.Fatalf("generation after closed CloseGracefully = %s, want %s", after, before)
 	}
 }
 
@@ -577,6 +668,7 @@ func receivePartitionDrainAttempt(t *testing.T, ch <-chan partitionDrainAttempt)
 	case attempt := <-ch:
 		return attempt
 	case <-time.After(time.Second):
+		// Deadlock guard only. Successful path is channel-driven.
 		t.Fatalf("CloseGracefully did not return")
 		return partitionDrainAttempt{}
 	}
@@ -585,6 +677,7 @@ func receivePartitionDrainAttempt(t *testing.T, ch <-chan partitionDrainAttempt)
 func waitForPartitionLifecycle(t *testing.T, partition *PoolPartition, state LifecycleState) {
 	t.Helper()
 
+	// Deadlock guard only. The loop exits as soon as the observed lifecycle moves.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if partition.Lifecycle() == state {

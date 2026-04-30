@@ -239,6 +239,7 @@ func TestPoolGroupTickIntoDoesNotAdvanceGenerationAfterCloseStarted(t *testing.T
 func waitForGroupRuntimeWriter(t *testing.T, group *PoolGroup) {
 	t.Helper()
 
+	// Deadlock guard only. TryRLock fails once Close is pending on runtimeMu.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if !group.runtimeMu.TryRLock() {

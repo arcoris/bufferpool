@@ -348,15 +348,17 @@ func (l *AtomicLifecycle) BeginClose() bool {
 	}
 }
 
-// beginOrContinueSerializedCloseCleanup reports whether cleanup should run.
+// beginOrContinueSerializedCloseCleanupLocked reports whether cleanup should run.
 //
 // Callers must already hold the component-specific close serialization lock.
-// That lock is what makes LifecycleClosing safe to continue: another public
-// Close caller cannot still be running the same cleanup path. LifecycleClosing
-// means shutdown was already started by an earlier phase, such as a timed-out
-// graceful partition close or an internal close-start gate, and this caller may
-// finish the terminal cleanup. LifecycleClosed means cleanup already completed.
-func beginOrContinueSerializedCloseCleanup(l *AtomicLifecycle) bool {
+// Calling this helper without that lock is incorrect. The lock is what makes
+// LifecycleClosing safe to continue: another public Close caller cannot still
+// be running the same cleanup path. LifecycleClosing means shutdown was already
+// started by an earlier phase, such as a timed-out graceful partition close or
+// an internal close-start gate, and this caller may finish the terminal cleanup.
+// LifecycleClosed means cleanup already completed. This helper must not be used
+// on normal hot-path lifecycle admission checks.
+func beginOrContinueSerializedCloseCleanupLocked(l *AtomicLifecycle) bool {
 	l.mustNotBeNil()
 
 	for {

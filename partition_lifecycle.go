@@ -50,7 +50,7 @@ func (p *PoolPartition) Close() error {
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 
-	if !beginOrContinueSerializedCloseCleanup(&p.lifecycle) {
+	if !beginOrContinueSerializedCloseCleanupLocked(&p.lifecycle) {
 		return nil
 	}
 

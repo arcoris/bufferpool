@@ -71,7 +71,12 @@ type PoolPartitionDrainResult struct {
 	// Attempted reports whether this call started or joined graceful shutdown.
 	Attempted bool
 
-	// Completed reports whether active leases reached zero and Pools were closed.
+	// Completed reports whether active leases reached zero and the partition
+	// reached or observed Closed.
+	//
+	// Completed does not guarantee that every release returned to an active Pool
+	// if hard Close raced the graceful drain. Closed-Pool handoff failures remain
+	// diagnostic lease counters.
 	Completed bool
 
 	// TimedOut reports whether Timeout elapsed while leases were still active.
@@ -93,8 +98,9 @@ type PoolPartitionDrainResult struct {
 // leases. On timeout, the partition remains closing with the LeaseRegistry
 // closed to new acquisitions; callers may retry CloseGracefully or call Close
 // for hard shutdown. Already-closed partitions return Attempted=false because no
-// new drain attempt starts. Final Pool cleanup is serialized with hard Close so
-// concurrent graceful and hard shutdown paths cannot close child Pools twice.
+// new drain attempt starts; Completed then reflects whether active leases are
+// already zero. Final Pool cleanup is serialized with hard Close so concurrent
+// graceful and hard shutdown paths cannot close child Pools twice.
 func (p *PoolPartition) CloseGracefully(policy PoolPartitionDrainPolicy) (PoolPartitionDrainResult, error) {
 	p.mustBeInitialized()
 	policy = policy.Normalize()

@@ -48,7 +48,7 @@ func (g *PoolGroup) Close() error {
 	g.runtimeMu.Lock()
 	defer g.runtimeMu.Unlock()
 
-	if !beginOrContinueSerializedCloseCleanup(&g.lifecycle) {
+	if !beginOrContinueSerializedCloseCleanupLocked(&g.lifecycle) {
 		return nil
 	}
 
