@@ -69,9 +69,9 @@ func TestPoolGroupTickDoesNotMutatePolicies(t *testing.T) {
 // TestPoolGroupTickIntoIsObservationOnly verifies Tick has no window rates.
 func TestPoolGroupTickIntoIsObservationOnly(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
-	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	lease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
-	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
 
 	var report PoolGroupCoordinatorReport
 	requireGroupNoError(t, group.TickInto(&report))

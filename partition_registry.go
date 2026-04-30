@@ -19,9 +19,6 @@ package bufferpool
 import "arcoris.dev/bufferpool/internal/multierr"
 
 const (
-	// errPartitionRegistryNoPools protects direct registry construction.
-	errPartitionRegistryNoPools = "bufferpool.PoolPartition: at least one pool must be configured"
-
 	// errPartitionRegistryEmptyPoolName protects direct registry construction.
 	errPartitionRegistryEmptyPoolName = "bufferpool.PoolPartition: pool name must not be empty"
 
@@ -61,9 +58,6 @@ type partitionPoolEntry struct {
 
 // newPartitionRegistry constructs the partition-owned Pool registry.
 func newPartitionRegistry(configs []PartitionPoolConfig) (partitionRegistry, error) {
-	if len(configs) == 0 {
-		return partitionRegistry{}, newError(ErrInvalidOptions, errPartitionRegistryNoPools)
-	}
 	registry := partitionRegistry{
 		entries:     make([]partitionPoolEntry, 0, len(configs)),
 		byName:      make(map[string]*Pool, len(configs)),

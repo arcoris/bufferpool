@@ -62,10 +62,16 @@ func TestPartitionRegistryRejectsEmptyNamesDuringConstruction(t *testing.T) {
 	requirePartitionErrorIs(t, err, ErrInvalidOptions)
 }
 
-// TestPartitionRegistryRejectsNoPoolsDuringConstruction verifies defensive pool-count validation.
-func TestPartitionRegistryRejectsNoPoolsDuringConstruction(t *testing.T) {
-	_, err := newPartitionRegistry(nil)
-	requirePartitionErrorIs(t, err, ErrInvalidOptions)
+// TestPartitionRegistryAcceptsNoPoolsDuringConstruction verifies empty partitions.
+func TestPartitionRegistryAcceptsNoPoolsDuringConstruction(t *testing.T) {
+	registry, err := newPartitionRegistry(nil)
+	requirePartitionNoError(t, err)
+	if registry.len() != 0 {
+		t.Fatalf("registry len = %d, want 0", registry.len())
+	}
+	if names := registry.namesCopy(); len(names) != 0 {
+		t.Fatalf("registry names = %#v, want empty", names)
+	}
 }
 
 // TestPartitionRegistryRejectsDuplicateNamesDuringConstruction verifies duplicate rejection.

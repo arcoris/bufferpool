@@ -30,8 +30,20 @@ const (
 	// errGroupConfigInvalidPolicy identifies invalid group policy input.
 	errGroupConfigInvalidPolicy = "bufferpool.PoolGroupConfig: invalid group policy"
 
-	// errGroupConfigNoPartitions rejects groups with no owned partition set.
-	errGroupConfigNoPartitions = "bufferpool.PoolGroupConfig: at least one partition must be configured"
+	// errGroupConfigInvalidPartitioning identifies invalid partitioning input.
+	errGroupConfigInvalidPartitioning = "bufferpool.PoolGroupConfig: invalid partitioning policy"
+
+	// errGroupConfigNoPoolsOrPartitions rejects groups with no runtime topology.
+	errGroupConfigNoPoolsOrPartitions = "bufferpool.PoolGroupConfig: at least one pool or partition must be configured"
+
+	// errGroupConfigEmptyPoolName rejects unnamed group-level Pools.
+	errGroupConfigEmptyPoolName = "bufferpool.PoolGroupConfig: pool name must not be empty"
+
+	// errGroupConfigDuplicatePool rejects duplicate group-level Pool names.
+	errGroupConfigDuplicatePool = "bufferpool.PoolGroupConfig: duplicate pool name"
+
+	// errGroupConfigInvalidPool wraps invalid group-level Pool construction config.
+	errGroupConfigInvalidPool = "bufferpool.PoolGroupConfig: invalid pool config"
 
 	// errGroupConfigEmptyPartitionName rejects unnamed group-local partitions.
 	errGroupConfigEmptyPartitionName = "bufferpool.PoolGroupConfig: partition name must not be empty"
@@ -49,8 +61,9 @@ const (
 // PoolGroupConfig configures one PoolGroup.
 //
 // PoolGroupConfig is the construction boundary above PoolPartition. It composes
-// group policy and one or more named PoolPartition configs. It contains no
-// runtime state and does not describe background coordination.
+// group policy, partitioning policy, group-level Pool configs, and optional
+// explicit PoolPartition configs. It contains no runtime state and does not
+// describe background coordination.
 type PoolGroupConfig struct {
 	// Name is diagnostic metadata for this group.
 	Name string
@@ -58,8 +71,34 @@ type PoolGroupConfig struct {
 	// Policy defines group-level observational control behavior.
 	Policy PoolGroupPolicy
 
-	// Partitions is the deterministic set of named partitions owned by the group.
+	// Partitioning controls automatic partition count and Pool placement when
+	// Pools is used as the managed construction input.
+	Partitioning PoolGroupPartitioningPolicy
+
+	// Pools is the normal managed-mode input. PoolGroup assigns these Pools to
+	// owned PoolPartitions and builds a pool-name routing directory.
+	Pools []GroupPoolConfig
+
+	// Partitions is the deterministic set of explicitly configured partitions.
+	// It remains available for advanced layouts and for explicit per-Pool
+	// placement when Partitioning.Mode is PoolGroupPartitioningModeExplicit.
 	Partitions []GroupPartitionConfig
+}
+
+// GroupPoolConfig configures one Pool owned by a PoolGroup.
+type GroupPoolConfig struct {
+	// Name is the group-global Pool name used for managed routing.
+	Name string
+
+	// Config is the Pool construction config. If Config.Name is empty,
+	// normalization sets it to Name.
+	Config PoolConfig
+
+	// Partition is the group-local partition name for explicit placement.
+	Partition string
+
+	// Priority is metadata reserved for later budget allocation.
+	Priority PoolPriority
 }
 
 // GroupPartitionConfig configures one PoolPartition owned by a PoolGroup.
@@ -74,10 +113,10 @@ type GroupPartitionConfig struct {
 
 // DefaultPoolGroupConfig returns the package default group config.
 //
-// The default has no partitions because a group without an explicit partition
-// set is ambiguous.
+// The default has no pools or partitions because a group without runtime
+// topology is invalid. Supplying Pools uses automatic partitioning by default.
 func DefaultPoolGroupConfig() PoolGroupConfig {
-	return PoolGroupConfig{Name: DefaultGroupName, Policy: DefaultPoolGroupPolicy()}
+	return PoolGroupConfig{Name: DefaultGroupName, Policy: DefaultPoolGroupPolicy(), Partitioning: DefaultPoolGroupPartitioningPolicy()}
 }
 
 // Normalize returns c with group defaults applied.
@@ -85,6 +124,14 @@ func (c PoolGroupConfig) Normalize() PoolGroupConfig {
 	normalized := c
 	normalized.Name = normalizeGroupName(normalized.Name)
 	normalized.Policy = normalized.Policy.Normalize()
+	normalized.Partitioning = normalized.Partitioning.Normalize()
+	if len(normalized.Pools) > 0 {
+		pools := make([]GroupPoolConfig, len(normalized.Pools))
+		for index, poolConfig := range normalized.Pools {
+			pools[index] = poolConfig.Normalize()
+		}
+		normalized.Pools = pools
+	}
 	if len(normalized.Partitions) > 0 {
 		partitions := make([]GroupPartitionConfig, len(normalized.Partitions))
 		for index, partitionConfig := range normalized.Partitions {
@@ -102,11 +149,17 @@ func (c PoolGroupConfig) Validate() error {
 	if policyErr := normalized.Policy.Validate(); policyErr != nil {
 		multierr.AppendInto(&err, wrapError(ErrInvalidOptions, policyErr, errGroupConfigInvalidPolicy))
 	}
-	if len(normalized.Partitions) == 0 {
-		multierr.AppendInto(&err, newError(ErrInvalidOptions, errGroupConfigNoPartitions))
+	if _, _, assignmentErr := newGroupPartitionAssignments(normalized); assignmentErr != nil {
+		multierr.AppendInto(&err, assignmentErr)
 	}
-	seen := make(map[string]struct{}, len(normalized.Partitions))
-	for _, partitionConfig := range normalized.Partitions {
+	return err
+}
+
+// validateGroupPartitions validates explicit partition config structure.
+func validateGroupPartitions(partitions []GroupPartitionConfig) error {
+	var err error
+	seen := make(map[string]struct{}, len(partitions))
+	for _, partitionConfig := range partitions {
 		if partitionConfig.Name == "" {
 			multierr.AppendInto(&err, newError(ErrInvalidOptions, errGroupConfigEmptyPartitionName))
 			continue
@@ -129,7 +182,27 @@ func (c PoolGroupConfig) Validate() error {
 
 // IsZero reports whether c contains no explicit construction settings.
 func (c PoolGroupConfig) IsZero() bool {
-	return strings.TrimSpace(c.Name) == "" && c.Policy.IsZero() && len(c.Partitions) == 0
+	return strings.TrimSpace(c.Name) == "" &&
+		c.Policy.IsZero() &&
+		c.Partitioning.IsZero() &&
+		len(c.Pools) == 0 &&
+		len(c.Partitions) == 0
+}
+
+// Normalize returns p with defaults applied.
+func (p GroupPoolConfig) Normalize() GroupPoolConfig {
+	normalized := p
+	normalized.Name = strings.TrimSpace(normalized.Name)
+	normalized.Partition = strings.TrimSpace(normalized.Partition)
+	normalized.Priority = normalized.Priority.Normalize()
+
+	poolConfig := normalized.Config
+	if normalized.Name != "" && isPoolConfigNameUnset(poolConfig.Name) {
+		poolConfig.Name = normalized.Name
+	}
+	normalized.Config = poolConfig.Normalize()
+
+	return normalized
 }
 
 // Normalize returns p with defaults applied.
@@ -167,6 +240,15 @@ func normalizeGroupName(name string) string {
 // cloneGroupConfig returns a caller-owned copy of normalized group config.
 func cloneGroupConfig(config PoolGroupConfig) PoolGroupConfig {
 	config.Policy = config.Policy.Normalize()
+	config.Partitioning = config.Partitioning.Normalize()
+	if len(config.Pools) > 0 {
+		pools := make([]GroupPoolConfig, len(config.Pools))
+		for index, poolConfig := range config.Pools {
+			pools[index] = poolConfig
+			pools[index].Config.Policy = clonePoolPolicy(poolConfig.Config.Policy)
+		}
+		config.Pools = pools
+	}
 	if len(config.Partitions) > 0 {
 		partitions := make([]GroupPartitionConfig, len(config.Partitions))
 		for index, partitionConfig := range config.Partitions {

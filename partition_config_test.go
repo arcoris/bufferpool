@@ -23,8 +23,8 @@ import (
 	"time"
 )
 
-// TestDefaultPoolPartitionConfigRequiresExplicitPools verifies default config shape.
-func TestDefaultPoolPartitionConfigRequiresExplicitPools(t *testing.T) {
+// TestDefaultPoolPartitionConfigAllowsEmptyPools verifies default config shape.
+func TestDefaultPoolPartitionConfigAllowsEmptyPools(t *testing.T) {
 	config := DefaultPoolPartitionConfig()
 
 	if config.Name != DefaultPartitionName {
@@ -37,8 +37,7 @@ func TestDefaultPoolPartitionConfigRequiresExplicitPools(t *testing.T) {
 		t.Fatalf("default lease config must be explicit and lease-aware")
 	}
 
-	err := config.Validate()
-	requirePartitionErrorIs(t, err, ErrInvalidOptions)
+	requirePartitionNoError(t, config.Validate())
 }
 
 // TestPoolPartitionConfigNormalizeCompletesDefaultsAndCopiesPools verifies normalization copies caller slices.
@@ -106,11 +105,6 @@ func TestPoolPartitionConfigValidateRejectsInvalidInputs(t *testing.T) {
 		config PoolPartitionConfig
 		want   error
 	}{
-		{
-			name:   "no pools",
-			config: DefaultPoolPartitionConfig(),
-			want:   ErrInvalidOptions,
-		},
 		{
 			name: "empty pool name",
 			config: PoolPartitionConfig{

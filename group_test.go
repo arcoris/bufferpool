@@ -38,6 +38,28 @@ func TestNewPoolGroup(t *testing.T) {
 	}
 }
 
+func TestNewPoolGroupWithGroupLevelPoolsBuildsPartitions(t *testing.T) {
+	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker"))
+	requireGroupNoError(t, err)
+	t.Cleanup(func() {
+		requireGroupNoError(t, group.Close())
+	})
+
+	if group.Lifecycle() != LifecycleActive {
+		t.Fatalf("Lifecycle() = %v, want active", group.Lifecycle())
+	}
+	if names := group.PartitionNames(); len(names) == 0 {
+		t.Fatalf("PartitionNames() empty")
+	}
+	poolNames := group.PoolNames()
+	if len(poolNames) != 2 || poolNames[0] != "api" || poolNames[1] != "worker" {
+		t.Fatalf("PoolNames() = %#v, want api/worker", poolNames)
+	}
+	lease, err := group.Acquire("api", 300)
+	requireGroupNoError(t, err)
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
+}
+
 func TestMustNewPoolGroupPanicsOnInvalidConfig(t *testing.T) {
 	requireGroupPanic(t, func() {
 		_ = MustNewPoolGroup(PoolGroupConfig{})
@@ -58,6 +80,22 @@ func TestPoolGroupAccessorsDefensiveCopies(t *testing.T) {
 	if got := group.PartitionNames()[0]; got != "alpha" {
 		t.Fatalf("PartitionNames defensive copy failed: got %q", got)
 	}
+}
+
+func TestPoolGroupConfigCopyIsReusable(t *testing.T) {
+	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker"))
+	requireGroupNoError(t, err)
+	t.Cleanup(func() {
+		requireGroupNoError(t, group.Close())
+	})
+
+	cloned := group.Config()
+	if len(cloned.Pools) != 0 {
+		t.Fatalf("Config().Pools length = %d, want 0 after effective partition assignment", len(cloned.Pools))
+	}
+	recreated, err := NewPoolGroup(cloned)
+	requireGroupNoError(t, err)
+	requireGroupNoError(t, recreated.Close())
 }
 
 func TestPoolGroupZeroValuePanics(t *testing.T) {

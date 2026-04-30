@@ -46,6 +46,41 @@ func testGroupPartitionConfig(name string, poolNames ...string) GroupPartitionCo
 	return GroupPartitionConfig{Name: name, Config: partitionConfig}
 }
 
+// testEmptyGroupPartitionConfig returns a group partition with no local Pools.
+func testEmptyGroupPartitionConfig(name string) GroupPartitionConfig {
+	partitionConfig := DefaultPoolPartitionConfig()
+	partitionConfig.Name = name
+	return GroupPartitionConfig{Name: name, Config: partitionConfig}
+}
+
+// testManagedGroupConfig returns a valid group config using group-level Pools.
+func testManagedGroupConfig(poolNames ...string) PoolGroupConfig {
+	if len(poolNames) == 0 {
+		poolNames = []string{"primary"}
+	}
+	config := DefaultPoolGroupConfig()
+	config.Name = "test-group"
+	config.Pools = make([]GroupPoolConfig, len(poolNames))
+	for index, name := range poolNames {
+		config.Pools[index] = testManagedGroupPoolConfig(name)
+	}
+	return config
+}
+
+// testManagedGroupPoolConfig returns a minimal group-level Pool config.
+func testManagedGroupPoolConfig(name string) GroupPoolConfig {
+	return GroupPoolConfig{Name: name, Config: PoolConfig{Name: name}}
+}
+
+// testManagedGroupPoolNames returns configured group-level Pool names.
+func testManagedGroupPoolNames(config PoolGroupConfig) []string {
+	names := make([]string, len(config.Pools))
+	for index, pool := range config.Pools {
+		names[index] = pool.Name
+	}
+	return names
+}
+
 // testGroupConfig returns a minimal valid PoolGroup config.
 func testGroupConfig(partitionNames ...string) PoolGroupConfig {
 	if len(partitionNames) == 0 {

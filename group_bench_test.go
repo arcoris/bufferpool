@@ -45,11 +45,11 @@ func seedPoolGroupActivity(b *testing.B, group *PoolGroup, partitions int) {
 	for index := 0; index < partitions; index++ {
 		partitionName := "partition-" + string(rune('a'+index))
 		poolName := partitionName + "-pool"
-		lease, err := group.Acquire(partitionName, poolName, 256)
+		lease, err := group.Acquire(poolName, 256)
 		if err != nil {
 			b.Fatalf("PoolGroup.Acquire() error = %v", err)
 		}
-		if err := group.Release(partitionName, lease, lease.Buffer()); err != nil {
+		if err := group.Release(lease, lease.Buffer()); err != nil {
 			b.Fatalf("PoolGroup.Release() error = %v", err)
 		}
 	}
@@ -125,13 +125,37 @@ func BenchmarkPoolGroupAcquireRelease(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		lease, err := group.Acquire("partition-a", "partition-a-pool", 256)
+		lease, err := group.Acquire("partition-a-pool", 256)
 		if err != nil {
 			b.Fatal(err)
 		}
-		if err := group.Release("partition-a", lease, lease.Buffer()); err != nil {
+		if err := group.Release(lease, lease.Buffer()); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkPoolGroupAcquireByPoolDirectory(b *testing.B) {
+	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker", "events", "batch"))
+	if err != nil {
+		b.Fatalf("NewPoolGroup() error = %v", err)
+	}
+	b.Cleanup(func() {
+		if closeErr := group.Close(); closeErr != nil {
+			b.Fatalf("PoolGroup.Close() error = %v", closeErr)
+		}
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lease, err := group.Acquire("events", 256)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := group.Release(lease, lease.Buffer()); err != nil {
+			b.Fatal(err)
+		}
+		partitionBenchmarkLeaseSink = lease
 	}
 }
 
@@ -166,16 +190,37 @@ func BenchmarkPoolGroupAcquireReleaseVsPartitionAcquireRelease(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			lease, err := group.Acquire("partition-a", "partition-a-pool", 256)
+			lease, err := group.Acquire("partition-a-pool", 256)
 			if err != nil {
 				b.Fatal(err)
 			}
-			if err := group.Release("partition-a", lease, lease.Buffer()); err != nil {
+			if err := group.Release(lease, lease.Buffer()); err != nil {
 				b.Fatal(err)
 			}
 			partitionBenchmarkLeaseSink = lease
 		}
 	})
+}
+
+func BenchmarkPoolGroupPartitionAssignment(b *testing.B) {
+	pools := make([]string, 64)
+	for index := range pools {
+		pools[index] = fmt.Sprintf("pool-%02d", index)
+	}
+	config := testManagedGroupConfig(pools...)
+	config.Partitioning.MinPartitions = 8
+	config.Partitioning.MaxPartitions = 8
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitions, directory, err := newGroupPartitionAssignments(config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(partitions) != 8 || len(directory.names) != len(pools) {
+			b.Fatalf("assignment size = partitions %d pools %d", len(partitions), len(directory.names))
+		}
+	}
 }
 
 func BenchmarkPoolGroupScoreEvaluatorScoreValues(b *testing.B) {

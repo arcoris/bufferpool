@@ -26,12 +26,12 @@ import (
 func TestPoolGroupAcquireRelease(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
-	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	lease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
 	if lease.Buffer() == nil {
 		t.Fatalf("Acquire returned nil buffer")
 	}
-	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
 
 	metrics := group.Metrics()
 	if metrics.LeaseAcquisitions != 1 || metrics.LeaseReleases != 1 {
@@ -42,28 +42,46 @@ func TestPoolGroupAcquireRelease(t *testing.T) {
 	}
 }
 
+// TestPoolGroupAcquireReleaseManagedPools verifies ordinary pool-name routing.
+func TestPoolGroupAcquireReleaseManagedPools(t *testing.T) {
+	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker"))
+	requireGroupNoError(t, err)
+	t.Cleanup(func() {
+		requireGroupNoError(t, group.Close())
+	})
+
+	lease, err := group.Acquire("worker", 300)
+	requireGroupNoError(t, err)
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
+
+	snapshot := group.Snapshot()
+	if snapshot.Metrics.PoolCount != 2 || snapshot.Metrics.LeaseAcquisitions != 1 || snapshot.Metrics.LeaseReleases != 1 {
+		t.Fatalf("snapshot metrics = %+v, want pool count 2 and one acquire/release", snapshot.Metrics)
+	}
+}
+
 // TestPoolGroupAcquireSize verifies Size-typed routing mirrors Acquire.
 func TestPoolGroupAcquireSize(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
-	lease, err := group.AcquireSize("alpha", "alpha-pool", SizeFromBytes(300))
+	lease, err := group.AcquireSize("alpha-pool", SizeFromBytes(300))
 	requireGroupNoError(t, err)
-	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
 }
 
-// TestPoolGroupAcquireMissingPartition verifies group-local lookup errors.
-func TestPoolGroupAcquireMissingPartition(t *testing.T) {
+// TestPoolGroupAcquireFromPartitionMissingPartition verifies group-local lookup errors.
+func TestPoolGroupAcquireFromPartitionMissingPartition(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
-	_, err := group.Acquire("missing", "alpha-pool", 300)
+	_, err := group.AcquireFromPartition("missing", "alpha-pool", 300)
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
 }
 
-// TestPoolGroupAcquireMissingPool verifies partition-local pool errors pass through.
+// TestPoolGroupAcquireMissingPool verifies pool-directory lookup errors.
 func TestPoolGroupAcquireMissingPool(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
-	_, err := group.Acquire("alpha", "missing", 300)
+	_, err := group.Acquire("missing", 300)
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
 }
 
@@ -73,10 +91,10 @@ func TestPoolGroupAcquireAfterCloseRejected(t *testing.T) {
 	requireGroupNoError(t, err)
 	requireGroupNoError(t, group.Close())
 
-	_, err = group.Acquire("alpha", "alpha-pool", 300)
+	_, err = group.Acquire("alpha-pool", 300)
 	requireGroupErrorIs(t, err, ErrClosed)
 
-	_, err = group.AcquireSize("alpha", "alpha-pool", SizeFromBytes(300))
+	_, err = group.AcquireSize("alpha-pool", SizeFromBytes(300))
 	requireGroupErrorIs(t, err, ErrClosed)
 }
 
@@ -84,7 +102,7 @@ func TestPoolGroupAcquireAfterCloseRejected(t *testing.T) {
 func TestPoolGroupReleaseMissingPartition(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
-	err := group.Release("missing", Lease{}, nil)
+	err := group.ReleaseToPartition("missing", Lease{}, nil)
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
 }
 
@@ -93,11 +111,11 @@ func TestPoolGroupReleaseAfterCloseCompletesLease(t *testing.T) {
 	group, err := NewPoolGroup(testGroupConfig("alpha"))
 	requireGroupNoError(t, err)
 
-	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	lease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
 	buffer := lease.Buffer()
 	requireGroupNoError(t, group.Close())
-	requireGroupNoError(t, group.Release("alpha", lease, buffer))
+	requireGroupNoError(t, group.Release(lease, buffer))
 
 	metrics := group.Metrics()
 	if metrics.ActiveLeases != 0 {
@@ -116,13 +134,13 @@ func TestPoolGroupReleaseAfterBeginCloseBeforeClosed(t *testing.T) {
 	group, err := NewPoolGroup(testGroupConfig("alpha"))
 	requireGroupNoError(t, err)
 
-	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	lease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
 	if !group.lifecycle.BeginClose() {
 		t.Fatalf("BeginClose did not start group close")
 	}
 
-	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
 	metrics := group.Metrics()
 	if metrics.ActiveLeases != 0 || metrics.LeaseReleases != 1 {
 		t.Fatalf("metrics after closing release = active %d releases %d, want 0/1", metrics.ActiveLeases, metrics.LeaseReleases)
@@ -135,9 +153,9 @@ func TestPoolGroupReleaseAfterBeginCloseBeforeClosed(t *testing.T) {
 func TestPoolGroupReleaseWrongExistingPartitionRejected(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
 
-	lease, err := group.Acquire("alpha", "alpha-pool", 300)
+	lease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
-	err = group.Release("beta", lease, lease.Buffer())
+	err = group.ReleaseToPartition("beta", lease, lease.Buffer())
 	if !errors.Is(err, ErrInvalidLease) {
 		t.Fatalf("Release through wrong group partition error = %v, want ErrInvalidLease", err)
 	}
@@ -161,8 +179,8 @@ func TestPoolGroupReleaseWrongExistingPartitionRejected(t *testing.T) {
 		t.Fatalf("group sample after wrong release = active %d counters %+v, want active=1 invalid=1", afterWrong.Aggregate.ActiveLeases, afterWrong.Aggregate.LeaseCounters)
 	}
 
-	requireGroupNoError(t, group.Release("alpha", lease, lease.Buffer()))
-	err = group.Release("alpha", lease, lease.Buffer())
+	requireGroupNoError(t, group.Release(lease, lease.Buffer()))
+	err = group.Release(lease, lease.Buffer())
 	if !errors.Is(err, ErrDoubleRelease) {
 		t.Fatalf("double Release through owning partition error = %v, want ErrDoubleRelease", err)
 	}
@@ -179,14 +197,14 @@ func TestPoolGroupReleaseWrongExistingPartitionRejected(t *testing.T) {
 func TestPoolGroupAcquireReleaseUpdatesMetrics(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
 
-	alphaLease, err := group.Acquire("alpha", "alpha-pool", 300)
+	alphaLease, err := group.Acquire("alpha-pool", 300)
 	requireGroupNoError(t, err)
-	betaLease, err := group.Acquire("beta", "beta-pool", 600)
+	betaLease, err := group.Acquire("beta-pool", 600)
 	requireGroupNoError(t, err)
 	betaReleased := false
 	defer func() {
 		if !betaReleased {
-			requireGroupNoError(t, group.Release("beta", betaLease, betaLease.Buffer()))
+			requireGroupNoError(t, group.Release(betaLease, betaLease.Buffer()))
 		}
 	}()
 
@@ -198,7 +216,7 @@ func TestPoolGroupAcquireReleaseUpdatesMetrics(t *testing.T) {
 		t.Fatalf("active bytes = retained %d active %d owned %d", active.CurrentRetainedBytes, active.CurrentActiveBytes, active.CurrentOwnedBytes)
 	}
 
-	requireGroupNoError(t, group.Release("alpha", alphaLease, alphaLease.Buffer()))
+	requireGroupNoError(t, group.Release(alphaLease, alphaLease.Buffer()))
 	sample := group.Sample()
 	if sample.Aggregate.LeaseCounters.Releases != 1 {
 		t.Fatalf("Lease releases = %d, want 1", sample.Aggregate.LeaseCounters.Releases)
@@ -213,7 +231,7 @@ func TestPoolGroupAcquireReleaseUpdatesMetrics(t *testing.T) {
 		t.Fatalf("CurrentOwnedBytes = %d, want retained+active", sample.CurrentOwnedBytes)
 	}
 
-	requireGroupNoError(t, group.Release("beta", betaLease, betaLease.Buffer()))
+	requireGroupNoError(t, group.Release(betaLease, betaLease.Buffer()))
 	betaReleased = true
 	metrics := group.Metrics()
 	if metrics.LeaseAcquisitions != 2 || metrics.LeaseReleases != 2 {
@@ -240,7 +258,7 @@ func TestPoolGroupAcquireConcurrentWithClose(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for iteration := 0; iteration < iterations; iteration++ {
-				lease, err := group.Acquire("alpha", "alpha-pool", 128)
+				lease, err := group.Acquire("alpha-pool", 128)
 				if err != nil {
 					if errors.Is(err, ErrClosed) {
 						return
@@ -248,7 +266,7 @@ func TestPoolGroupAcquireConcurrentWithClose(t *testing.T) {
 					errs <- err
 					return
 				}
-				if err := group.Release("alpha", lease, lease.Buffer()); err != nil {
+				if err := group.Release(lease, lease.Buffer()); err != nil {
 					errs <- err
 					return
 				}
@@ -273,7 +291,7 @@ func TestPoolGroupReleaseConcurrentWithClose(t *testing.T) {
 	const leases = 16
 	acquired := make([]Lease, leases)
 	for index := range acquired {
-		lease, err := group.Acquire("alpha", "alpha-pool", 128)
+		lease, err := group.Acquire("alpha-pool", 128)
 		requireGroupNoError(t, err)
 		acquired[index] = lease
 	}
@@ -287,7 +305,7 @@ func TestPoolGroupReleaseConcurrentWithClose(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if err := group.Release("alpha", lease, lease.Buffer()); err != nil {
+			if err := group.Release(lease, lease.Buffer()); err != nil {
 				errs <- err
 			}
 		}()
@@ -352,12 +370,12 @@ func runPoolGroupConcurrentObservation(t *testing.T, observe func(*PoolGroup)) {
 			defer wg.Done()
 			<-start
 			for iteration := 0; iteration < iterations; iteration++ {
-				lease, err := group.Acquire("alpha", "alpha-pool", 64+worker+iteration)
+				lease, err := group.Acquire("alpha-pool", 64+worker+iteration)
 				if err != nil {
 					errs <- err
 					return
 				}
-				if err := group.Release("alpha", lease, lease.Buffer()); err != nil {
+				if err := group.Release(lease, lease.Buffer()); err != nil {
 					errs <- err
 					return
 				}

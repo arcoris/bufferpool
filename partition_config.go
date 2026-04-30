@@ -33,9 +33,6 @@ const (
 	// errPartitionConfigInvalidLease identifies invalid LeaseRegistry config input.
 	errPartitionConfigInvalidLease = "bufferpool.PoolPartitionConfig: invalid lease registry config"
 
-	// errPartitionConfigNoPools rejects partitions with no owned Pool set.
-	errPartitionConfigNoPools = "bufferpool.PoolPartitionConfig: at least one pool must be configured"
-
 	// errPartitionConfigEmptyPoolName rejects unnamed partition-local Pools.
 	errPartitionConfigEmptyPoolName = "bufferpool.PoolPartitionConfig: pool name must not be empty"
 
@@ -49,8 +46,10 @@ const (
 // PoolPartitionConfig configures one PoolPartition.
 //
 // PoolPartitionConfig is the construction boundary for the first owner above
-// Pool. It composes partition policy, a LeaseRegistry config, and one or more
-// named Pool configs. It contains no runtime state.
+// Pool. It composes partition policy, a LeaseRegistry config, and a
+// deterministic set of named Pool configs. Empty partition-local Pool sets are
+// valid so PoolGroup can build control-plane partitions before or beside pool
+// placement.
 type PoolPartitionConfig struct {
 	// Name is diagnostic metadata for this partition.
 	Name string
@@ -77,8 +76,9 @@ type PartitionPoolConfig struct {
 
 // DefaultPoolPartitionConfig returns the package default partition config.
 //
-// The default has no pools because a partition without an explicit pool set is
-// ambiguous. Callers should add at least one named pool before construction.
+// The default has no pools. Empty partitions are valid control-plane ownership
+// units; acquisition from them rejects missing pool names in the normal runtime
+// path.
 func DefaultPoolPartitionConfig() PoolPartitionConfig {
 	return PoolPartitionConfig{Name: DefaultPartitionName, Policy: DefaultPartitionPolicy(), Lease: DefaultLeaseConfig()}
 }
@@ -108,9 +108,6 @@ func (c PoolPartitionConfig) Validate() error {
 	}
 	if leaseErr := normalized.Lease.Validate(); leaseErr != nil {
 		multierr.AppendInto(&err, wrapError(ErrInvalidOptions, leaseErr, errPartitionConfigInvalidLease))
-	}
-	if len(normalized.Pools) == 0 {
-		multierr.AppendInto(&err, newError(ErrInvalidOptions, errPartitionConfigNoPools))
 	}
 	seen := make(map[string]struct{}, len(normalized.Pools))
 	for _, poolConfig := range normalized.Pools {

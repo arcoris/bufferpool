@@ -54,8 +54,26 @@ func TestPoolGroupPartitionConfigNormalizeReplacesDefaultPartitionName(t *testin
 	}
 }
 
-func TestPoolGroupConfigValidateRejectsNoPartitions(t *testing.T) {
+func TestPoolGroupConfigValidateRejectsEmptyTopology(t *testing.T) {
 	err := DefaultPoolGroupConfig().Validate()
+	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+func TestPoolGroupConfigValidateAcceptsGroupLevelPools(t *testing.T) {
+	config := testManagedGroupConfig("api", "worker")
+	requireGroupNoError(t, config.Validate())
+}
+
+func TestPoolGroupConfigValidateRejectsDuplicatePools(t *testing.T) {
+	config := testManagedGroupConfig("api", "api")
+	err := config.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidOptions)
+}
+
+func TestPoolGroupConfigValidateRejectsEmptyPoolName(t *testing.T) {
+	config := testManagedGroupConfig("api")
+	config.Pools[0].Name = "   "
+	err := config.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
 }
 
@@ -67,7 +85,13 @@ func TestPoolGroupConfigValidateRejectsDuplicatePartitions(t *testing.T) {
 
 func TestPoolGroupConfigValidateRejectsInvalidPartition(t *testing.T) {
 	config := DefaultPoolGroupConfig()
-	config.Partitions = []GroupPartitionConfig{{Name: "broken", Config: PoolPartitionConfig{Name: "broken"}}}
+	config.Partitions = []GroupPartitionConfig{{
+		Name: "broken",
+		Config: PoolPartitionConfig{
+			Name:  "broken",
+			Pools: []PartitionPoolConfig{{Name: "   ", Config: PoolConfig{Name: "unused"}}},
+		},
+	}}
 	err := config.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidOptions)
 }
@@ -91,10 +115,15 @@ func TestPoolGroupConfigValidateAcceptsMatchingPartitionName(t *testing.T) {
 
 func TestCloneGroupConfigDefensiveCopy(t *testing.T) {
 	config := testGroupConfig("alpha", "beta").Normalize()
+	config.Pools = []GroupPoolConfig{testManagedGroupPoolConfig("managed")}
 	cloned := cloneGroupConfig(config)
+	cloned.Pools[0].Name = "changed-managed"
 	cloned.Partitions[0].Name = "changed"
 	cloned.Partitions[0].Config.Pools[0].Name = "changed-pool"
 
+	if config.Pools[0].Name != "managed" {
+		t.Fatalf("clone mutated source managed pool name")
+	}
 	if config.Partitions[0].Name != "alpha" {
 		t.Fatalf("clone mutated source partition name")
 	}

@@ -108,18 +108,18 @@ func TestAddPartitionSampleToGroupAggregate(t *testing.T) {
 // TestPoolGroupSampleAggregatesRealPartitionActivity verifies real lease folding.
 func TestPoolGroupSampleAggregatesRealPartitionActivity(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha", "beta")
-	alphaLease, err := group.Acquire("alpha", "alpha-pool", 128)
+	alphaLease, err := group.Acquire("alpha-pool", 128)
 	requireGroupNoError(t, err)
-	betaLease, err := group.Acquire("beta", "beta-pool", 256)
+	betaLease, err := group.Acquire("beta-pool", 256)
 	requireGroupNoError(t, err)
 	betaReleased := false
 	defer func() {
 		if !betaReleased {
-			requireGroupNoError(t, group.Release("beta", betaLease, betaLease.Buffer()))
+			requireGroupNoError(t, group.Release(betaLease, betaLease.Buffer()))
 		}
 	}()
 
-	requireGroupNoError(t, group.Release("alpha", alphaLease, alphaLease.Buffer()))
+	requireGroupNoError(t, group.Release(alphaLease, alphaLease.Buffer()))
 	sample := group.Sample()
 	if sample.Aggregate.LeaseCounters.Acquisitions != 2 {
 		t.Fatalf("Acquisitions = %d, want 2", sample.Aggregate.LeaseCounters.Acquisitions)
@@ -137,7 +137,7 @@ func TestPoolGroupSampleAggregatesRealPartitionActivity(t *testing.T) {
 		t.Fatalf("CurrentOwnedBytes = %d, want retained+active", sample.CurrentOwnedBytes)
 	}
 
-	requireGroupNoError(t, group.Release("beta", betaLease, betaLease.Buffer()))
+	requireGroupNoError(t, group.Release(betaLease, betaLease.Buffer()))
 	betaReleased = true
 }
 
