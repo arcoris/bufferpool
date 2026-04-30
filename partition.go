@@ -19,6 +19,8 @@ package bufferpool
 import (
 	"sync"
 	"sync/atomic"
+
+	"arcoris.dev/bufferpool/internal/clock"
 )
 
 const (
@@ -33,8 +35,12 @@ const (
 //
 // PoolPartition is the first owner above Pool. It coordinates named Pools,
 // checked-out lease accounting, aggregate samples, metrics, snapshots, and
-// explicit controller ticks. It deliberately does not implement PoolGroup,
-// global coordination, background goroutines, EWMA scoring, or adaptive loops.
+// explicit partition-local controller ticks. TickInto may update partition
+// controller state and publish class budgets into owned Pools, but the data
+// plane remains local: Pool.Get, Pool.Put, shard, and bucket paths do not call
+// the controller. PoolPartition deliberately does not implement PoolGroup,
+// global coordination, background goroutines, physical trim, or pressure
+// propagation.
 type PoolPartition struct {
 	// lifecycle gates partition-level work and hard close.
 	lifecycle AtomicLifecycle
@@ -60,8 +66,11 @@ type PoolPartition struct {
 	registry partitionRegistry
 
 	// activeRegistry tracks partition-local active/dirty Pool indexes for
-	// future controller sampling boundaries without adding Pool hot-path hooks.
+	// controller sampling boundaries without adding Pool hot-path hooks.
 	activeRegistry *partitionActiveRegistry
+
+	// controller owns adaptive partition-local state mutated only by TickInto.
+	controller partitionController
 
 	// leases owns checked-out ownership records for partition acquisitions.
 	leases *LeaseRegistry
@@ -87,6 +96,7 @@ func NewPoolPartition(config PoolPartitionConfig) (*PoolPartition, error) {
 		config:         clonePartitionConfig(normalized),
 		registry:       registry,
 		activeRegistry: newPartitionActiveRegistry(registry.names),
+		controller:     newPartitionController(clock.Default(), normalized.Policy),
 		leases:         leases,
 	}
 	partition.generation.Store(InitialGeneration)

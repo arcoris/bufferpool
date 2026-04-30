@@ -54,7 +54,7 @@ func NewPoolPartitionControllerEvaluation(
 ) PoolPartitionControllerEvaluation {
 	window := NewPoolPartitionWindow(previous, current)
 	rates := NewPoolPartitionTimedWindowRates(window, elapsed)
-	updatedEWMA := ewma.WithUpdate(ewmaConfig, rates)
+	updatedEWMA := ewma.WithUpdate(ewmaConfig, elapsed, rates)
 	scores := NewPoolPartitionScores(rates, updatedEWMA, budget, pressure)
 	return PoolPartitionControllerEvaluation{
 		Window:         window,

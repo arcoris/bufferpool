@@ -122,6 +122,34 @@ type PoolPartitionPoolSample struct {
 
 	// Counters is the Pool's aggregate counter sample.
 	Counters PoolCountersSnapshot
+
+	// Classes contains class-level counter and budget samples for this Pool.
+	//
+	// The slice omits shard detail so partition controller ticks can reason about
+	// class budgets without collecting full Pool snapshots on every foreground
+	// cycle.
+	Classes []PoolPartitionClassSample
+}
+
+// PoolPartitionClassSample is one Pool class's sample inside a partition tick.
+type PoolPartitionClassSample struct {
+	// Class is the immutable class descriptor assigned by the Pool class table.
+	Class SizeClass
+
+	// ClassID is the ordinal class identifier inside the Pool.
+	ClassID ClassID
+
+	// Counters contains class lifetime counters.
+	Counters ClassCountersSnapshot
+
+	// Budget is the observed class budget publication.
+	Budget PoolClassBudgetSnapshot
+
+	// CurrentRetainedBuffers is derived from shard current retained gauges.
+	CurrentRetainedBuffers uint64
+
+	// CurrentRetainedBytes is derived from shard current retained gauges.
+	CurrentRetainedBytes uint64
 }
 
 // Sample returns an observational partition sample.
@@ -166,7 +194,8 @@ func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample,
 	if dst == nil {
 		return
 	}
-	pools := dst.Pools[:0]
+	previousPools := dst.Pools
+	pools := previousPools[:0]
 	if includePools && cap(pools) < p.registry.len() {
 		pools = make([]PoolPartitionPoolSample, 0, p.registry.len())
 	}
@@ -185,16 +214,12 @@ func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample,
 	}
 	for _, entry := range p.registry.entries {
 		var poolSample poolCounterSample
-		entry.pool.sampleCounters(&poolSample)
 		if includePools {
-			dst.Pools = append(dst.Pools, PoolPartitionPoolSample{
-				Name:       entry.name,
-				Generation: poolSample.Generation,
-				Lifecycle:  poolSample.Lifecycle,
-				ClassCount: poolSample.ClassCount,
-				ShardCount: poolSample.ShardCount,
-				Counters:   poolSample.Counters,
-			})
+			pool := samplePoolPartitionPoolSampleInto(reusablePartitionPoolSample(previousPools, len(dst.Pools)), entry.name, entry.pool)
+			poolSample.Counters = pool.Counters
+			dst.Pools = append(dst.Pools, pool)
+		} else {
+			entry.pool.sampleCounters(&poolSample)
 		}
 		poolCountersAdd(&dst.PoolCounters, poolSample.Counters)
 	}
@@ -203,11 +228,11 @@ func (p *PoolPartition) sampleWithRuntimeAndGeneration(dst *PoolPartitionSample,
 
 // sampleIndexesWithRuntimeAndGeneration samples selected Pool indexes.
 //
-// This is the controller boundary for future active-only sampling. The current
-// active registry still marks all Pools active, so ordinary TickInto remains an
-// all-Pool detailed scan. Tests and future controller code can use this helper
-// to verify that aggregation no longer assumes "every registry entry" as the
-// only possible sampling shape.
+// This is the controller boundary for active/dirty sampling. The caller chooses
+// immutable registry indexes; the sampler aggregates only those Pool counters
+// while keeping LeaseRegistry counters partition-wide. Periodic full scans and
+// active-only cycles both use this path, so aggregation must not assume "every
+// registry entry" as the only possible sampling shape.
 //
 // indexes must come from partition registry order, usually activeRegistry. An
 // invalid index is an internal caller bug. LeaseRegistry counters in the result
@@ -216,7 +241,8 @@ func (p *PoolPartition) sampleIndexesWithRuntimeAndGeneration(dst *PoolPartition
 	if dst == nil {
 		return
 	}
-	pools := dst.Pools[:0]
+	previousPools := dst.Pools
+	pools := previousPools[:0]
 	if includePools && cap(pools) < len(indexes) {
 		pools = make([]PoolPartitionPoolSample, 0, len(indexes))
 	}
@@ -236,20 +262,81 @@ func (p *PoolPartition) sampleIndexesWithRuntimeAndGeneration(dst *PoolPartition
 	for _, index := range indexes {
 		entry := p.registry.entries[index]
 		var poolSample poolCounterSample
-		entry.pool.sampleCounters(&poolSample)
 		if includePools {
-			dst.Pools = append(dst.Pools, PoolPartitionPoolSample{
-				Name:       entry.name,
-				Generation: poolSample.Generation,
-				Lifecycle:  poolSample.Lifecycle,
-				ClassCount: poolSample.ClassCount,
-				ShardCount: poolSample.ShardCount,
-				Counters:   poolSample.Counters,
-			})
+			pool := samplePoolPartitionPoolSampleInto(reusablePartitionPoolSample(previousPools, len(dst.Pools)), entry.name, entry.pool)
+			poolSample.Counters = pool.Counters
+			dst.Pools = append(dst.Pools, pool)
+		} else {
+			entry.pool.sampleCounters(&poolSample)
 		}
 		poolCountersAdd(&dst.PoolCounters, poolSample.Counters)
 	}
 	p.finishSampleWithLeaseCounters(dst)
+}
+
+// reusablePartitionPoolSample returns reusable Pool sample storage for an output
+// Pool position.
+//
+// Pool sample reuse is positional because partition registry order is
+// deterministic. Selected-index samples also use output position so callers that
+// reuse one report buffer avoid steady per-class allocation after the first tick.
+func reusablePartitionPoolSample(previousPools []PoolPartitionPoolSample, outputIndex int) PoolPartitionPoolSample {
+	if outputIndex < 0 || outputIndex >= len(previousPools) {
+		return PoolPartitionPoolSample{}
+	}
+	return previousPools[outputIndex]
+}
+
+// samplePoolPartitionPoolSampleInto samples one Pool into a partition-level Pool
+// sample while reusing previous.Classes capacity.
+func samplePoolPartitionPoolSampleInto(previous PoolPartitionPoolSample, name string, pool *Pool) PoolPartitionPoolSample {
+	var aggregate poolCounterSample
+	pool.sampleCounters(&aggregate)
+
+	classes := previous.Classes[:0]
+	if cap(classes) < len(pool.classes) {
+		classes = make([]PoolPartitionClassSample, 0, len(pool.classes))
+	}
+
+	for classIndex := range pool.classes {
+		class := &pool.classes[classIndex]
+		classes = append(classes, newPoolPartitionClassSampleFromState(class))
+	}
+
+	return PoolPartitionPoolSample{
+		Name:       name,
+		Generation: aggregate.Generation,
+		Lifecycle:  aggregate.Lifecycle,
+		ClassCount: aggregate.ClassCount,
+		ShardCount: aggregate.ShardCount,
+		Counters:   aggregate.Counters,
+		Classes:    classes,
+	}
+}
+
+// newPoolPartitionClassSampleFromState samples one Pool class without collecting
+// shard or bucket DTOs.
+func newPoolPartitionClassSampleFromState(class *classState) PoolPartitionClassSample {
+	sample := PoolPartitionClassSample{
+		Class:    class.descriptor(),
+		ClassID:  class.classID(),
+		Counters: class.countersSnapshot(),
+	}
+	budget := class.budgetSnapshot()
+	sample.Budget = PoolClassBudgetSnapshot{
+		Generation:     budget.Generation,
+		ClassSize:      budget.ClassSize,
+		AssignedBytes:  budget.AssignedBytes,
+		TargetBuffers:  budget.TargetBuffers,
+		TargetBytes:    budget.TargetBytes,
+		RemainderBytes: budget.RemainderBytes,
+	}
+	for shardIndex := range class.shards {
+		counters := class.shards[shardIndex].countersSnapshot()
+		sample.CurrentRetainedBuffers += counters.CurrentRetainedBuffers
+		sample.CurrentRetainedBytes += counters.CurrentRetainedBytes
+	}
+	return sample
 }
 
 // finishSampleWithLeaseCounters adds LeaseRegistry counters and owned-byte gauges.

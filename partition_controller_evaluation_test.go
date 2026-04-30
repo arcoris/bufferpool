@@ -49,7 +49,7 @@ func TestPoolPartitionControllerEvaluation(t *testing.T) {
 		current,
 		time.Second,
 		PoolPartitionEWMAState{},
-		PoolPartitionEWMAConfig{Alpha: 0.5},
+		PoolPartitionEWMAConfig{HalfLife: time.Second},
 		PartitionBudgetSnapshot{},
 		PartitionPressureSnapshot{},
 	)

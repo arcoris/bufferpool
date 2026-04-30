@@ -57,6 +57,19 @@ func TestPoolPartitionSampleIncludesPoolAndLeaseState(t *testing.T) {
 	if sample.PoolCounters.Gets != 1 {
 		t.Fatalf("Pool Gets = %d, want 1", sample.PoolCounters.Gets)
 	}
+	for _, pool := range sample.Pools {
+		if pool.ClassCount == 0 || len(pool.Classes) != pool.ClassCount {
+			t.Fatalf("pool %s class samples = len %d count %d", pool.Name, len(pool.Classes), pool.ClassCount)
+		}
+		for _, class := range pool.Classes {
+			if !class.Class.IsValid() {
+				t.Fatalf("pool %s class sample has invalid class: %+v", pool.Name, class)
+			}
+			if class.Budget.ClassSize != class.Class.Size() {
+				t.Fatalf("pool %s class budget size = %s, want %s", pool.Name, class.Budget.ClassSize, class.Class.Size())
+			}
+		}
+	}
 
 	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
 }
@@ -133,6 +146,7 @@ func TestPoolPartitionSampleIntoAvoidsLeaseSnapshotAllocation(t *testing.T) {
 	}()
 
 	dst := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, len(partition.PoolNames()))}
+	partition.SampleInto(&dst)
 	allocs := testing.AllocsPerRun(100, func() {
 		partition.SampleInto(&dst)
 	})

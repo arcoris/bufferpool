@@ -395,6 +395,14 @@ type classCountersSnapshot struct {
 	ClearedBytes uint64
 }
 
+// ClassCountersSnapshot is an immutable point-in-time view of one Pool size
+// class's counters.
+//
+// The alias exposes class-level controller samples without forcing callers to
+// allocate full Pool snapshots with shard details. All fields are lifetime
+// counters; current retained usage is reported separately by the sample owner.
+type ClassCountersSnapshot = classCountersSnapshot
+
 // IsZero reports whether the snapshot contains no observed activity.
 func (s classCountersSnapshot) IsZero() bool {
 	return s.Gets == 0 &&

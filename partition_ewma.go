@@ -16,35 +16,74 @@
 
 package bufferpool
 
-import controlsmooth "arcoris.dev/bufferpool/internal/control/smooth"
+import (
+	"math"
+	"time"
+
+	controlnumeric "arcoris.dev/bufferpool/internal/control/numeric"
+	controlsmooth "arcoris.dev/bufferpool/internal/control/smooth"
+)
+
+const (
+	// defaultPartitionEWMAHalfLife is the default real-time half-life for
+	// partition controller smoothing.
+	//
+	// One default manual tick interval halves the previous signal weight. This
+	// keeps smoothing responsive without replaying fake ticks when a foreground
+	// controller call is delayed.
+	defaultPartitionEWMAHalfLife = defaultPartitionControllerTickInterval
+)
 
 // PoolPartitionEWMAConfig configures partition-local controller smoothing.
 //
 // EWMA is updated from window rates in the control plane. It is not updated in
 // Pool.Get, Pool.Put, LeaseRegistry release paths, or any data-plane hot path.
 type PoolPartitionEWMAConfig struct {
-	// Alpha is the update weight for new observations and must be in (0, 1].
-	Alpha float64
+	// HalfLife is the elapsed time after which the previous smoothed value carries
+	// half its former weight.
+	HalfLife time.Duration
+
+	// MinAlpha clamps the previous-value weight after half-life decay. Zero leaves
+	// the lower bound open.
+	MinAlpha float64
+
+	// MaxAlpha clamps the previous-value weight after half-life decay. Zero means
+	// the default upper bound of one.
+	MaxAlpha float64
 }
 
-// Normalize fills the default EWMA alpha when Alpha is zero.
+// Normalize fills default half-life and alpha bounds.
 //
 // The method intentionally does not validate the resulting value. Construction
 // and controller code can normalize first and then call Validate so diagnostics
-// still report invalid explicitly configured alpha values.
+// still report invalid explicitly configured values.
 func (c PoolPartitionEWMAConfig) Normalize() PoolPartitionEWMAConfig {
-	alpha := controlsmooth.AlphaConfig{Alpha: c.Alpha}.Normalize()
-	c.Alpha = alpha.Alpha
+	if c.HalfLife == 0 {
+		c.HalfLife = defaultPartitionEWMAHalfLife
+	}
+	if c.MaxAlpha == 0 {
+		c.MaxAlpha = 1
+	}
 	return c
 }
 
-// Validate checks that Alpha is finite and in the accepted range.
+// Validate checks half-life and alpha clamp values.
 //
 // The returned error is classified as ErrInvalidOptions because smoothing
 // configuration is caller input, not a runtime policy publication failure.
 func (c PoolPartitionEWMAConfig) Validate() error {
-	if err := (controlsmooth.AlphaConfig{Alpha: c.Alpha}).Validate(); err != nil {
-		return wrapError(ErrInvalidOptions, err, "bufferpool.PoolPartitionEWMAConfig: invalid alpha")
+	c = c.Normalize()
+	if c.HalfLife <= 0 {
+		return newError(ErrInvalidOptions, "bufferpool.PoolPartitionEWMAConfig: half-life must be positive")
+	}
+	if !partitionEWMAFinite(c.MinAlpha) || !partitionEWMAFinite(c.MaxAlpha) {
+		return newError(ErrInvalidOptions, "bufferpool.PoolPartitionEWMAConfig: alpha bounds must be finite")
+	}
+	if c.MinAlpha < 0 || c.MinAlpha > 1 || c.MaxAlpha < 0 || c.MaxAlpha > 1 {
+		return newError(ErrInvalidOptions, "bufferpool.PoolPartitionEWMAConfig: alpha bounds must be in [0, 1]")
+	}
+	if c.MinAlpha > c.MaxAlpha {
+		return newError(ErrInvalidOptions, "bufferpool.PoolPartitionEWMAConfig: minimum alpha must not exceed maximum alpha")
 	}
 	return nil
 }
@@ -98,15 +137,39 @@ type PoolPartitionEWMAState struct {
 	LeaseOpsPerSecond float64
 }
 
-// WithUpdate returns state updated with rates and config.
+// PoolClassEWMAState stores smoothed controller signals for one Pool class.
+//
+// Partition TickInto owns this state under partitionController.mu. Pool.Get,
+// Pool.Put, classState, shard, and bucket code never read or mutate it.
+type PoolClassEWMAState struct {
+	// Initialized reports whether the state contains at least one class window.
+	Initialized bool
+
+	// Activity is the smoothed class activity score before demand and size shaping.
+	Activity float64
+
+	// GetsPerSecond is the smoothed class get throughput.
+	GetsPerSecond float64
+
+	// PutsPerSecond is the smoothed class put throughput.
+	PutsPerSecond float64
+
+	// AllocationsPerSecond is the smoothed class allocation throughput.
+	AllocationsPerSecond float64
+
+	// DropRatio is the smoothed class drop ratio.
+	DropRatio float64
+}
+
+// WithUpdate returns state updated with rates, elapsed time, and config.
 //
 // A zero-value state accepts the first rates sample as its baseline. A later
-// update smooths each field independently with the same alpha so ratios and
-// throughput remain comparable. The method normalizes config but leaves
-// validation to callers that need an error instead of defensive behavior.
-func (s PoolPartitionEWMAState) WithUpdate(config PoolPartitionEWMAConfig, rates PoolPartitionWindowRates) PoolPartitionEWMAState {
+// update smooths each field independently with the same elapsed-time decay so
+// ratios and throughput remain comparable. The method normalizes config but
+// leaves validation to callers that need an error instead of defensive behavior.
+func (s PoolPartitionEWMAState) WithUpdate(config PoolPartitionEWMAConfig, elapsed time.Duration, rates PoolPartitionWindowRates) PoolPartitionEWMAState {
 	config = config.Normalize()
-	alpha := config.Alpha
+	alpha := config.DecayAlpha(elapsed)
 	return PoolPartitionEWMAState{
 		Initialized:                  true,
 		HitRatio:                     partitionEWMAValue(s.Initialized, s.HitRatio, alpha, rates.HitRatio),
@@ -125,10 +188,53 @@ func (s PoolPartitionEWMAState) WithUpdate(config PoolPartitionEWMAConfig, rates
 	}
 }
 
+// WithUpdate returns class EWMA state updated from one class activity window.
+func (s PoolClassEWMAState) WithUpdate(config PoolPartitionEWMAConfig, elapsed time.Duration, activity poolPartitionClassActivity) PoolClassEWMAState {
+	config = config.Normalize()
+	alpha := config.DecayAlpha(elapsed)
+	return PoolClassEWMAState{
+		Initialized:          true,
+		Activity:             partitionEWMAValue(s.Initialized, s.Activity, alpha, activity.Activity),
+		GetsPerSecond:        partitionEWMAValue(s.Initialized, s.GetsPerSecond, alpha, activity.GetsPerSecond),
+		PutsPerSecond:        partitionEWMAValue(s.Initialized, s.PutsPerSecond, alpha, activity.PutsPerSecond),
+		AllocationsPerSecond: partitionEWMAValue(s.Initialized, s.AllocationsPerSecond, alpha, activity.AllocationsPerSecond),
+		DropRatio:            partitionEWMAValue(s.Initialized, s.DropRatio, alpha, activity.DropRatio),
+	}
+}
+
+// DecayAlpha returns the previous-value weight for elapsed.
+//
+// The half-life formula is:
+//
+//	alpha = 2 ^ (-elapsed / halfLife)
+//
+// The returned alpha is then clamped to [MinAlpha, MaxAlpha]. elapsed <= 0 keeps
+// the previous value at full weight for already-initialized state. First updates
+// still initialize directly from the observed value.
+func (c PoolPartitionEWMAConfig) DecayAlpha(elapsed time.Duration) float64 {
+	c = c.Normalize()
+	alpha := 1.0
+	if elapsed > 0 && c.HalfLife > 0 {
+		alpha = math.Pow(2, -float64(elapsed)/float64(c.HalfLife))
+	}
+	alpha = controlnumeric.Clamp(alpha, c.MinAlpha, c.MaxAlpha)
+	return controlnumeric.FiniteOrZero(alpha)
+}
+
 // partitionEWMAValue adapts one partition signal to the shared EWMA primitive.
 //
 // Keeping this adapter local preserves the root package field names while the
 // generic smoothing package remains unaware of PoolPartition-specific signals.
-func partitionEWMAValue(initialized bool, previous, alpha, value float64) float64 {
-	return (controlsmooth.EWMA{Initialized: initialized, Value: previous}).Update(alpha, value).Value
+func partitionEWMAValue(initialized bool, previous, decayAlpha, value float64) float64 {
+	observationWeight := 1 - decayAlpha
+	if !initialized {
+		observationWeight = 1
+	}
+	return (controlsmooth.EWMA{Initialized: initialized, Value: previous}).Update(observationWeight, value).Value
+}
+
+// partitionEWMAFinite reports whether value can safely participate in smoothing
+// configuration.
+func partitionEWMAFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }

@@ -20,25 +20,38 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 )
 
-// TestPoolPartitionEWMAConfig verifies alpha normalization and validation.
+// TestPoolPartitionEWMAConfig verifies half-life normalization and validation.
 func TestPoolPartitionEWMAConfig(t *testing.T) {
-	if got := (PoolPartitionEWMAConfig{}).Normalize().Alpha; got != 0.2 {
-		t.Fatalf("Normalize().Alpha = %v, want 0.2", got)
+	normalized := (PoolPartitionEWMAConfig{}).Normalize()
+	if normalized.HalfLife != defaultPartitionEWMAHalfLife {
+		t.Fatalf("Normalize().HalfLife = %s, want %s", normalized.HalfLife, defaultPartitionEWMAHalfLife)
 	}
-	if err := (PoolPartitionEWMAConfig{Alpha: 1}).Validate(); err != nil {
+	if normalized.MinAlpha != 0 || normalized.MaxAlpha != 1 {
+		t.Fatalf("Normalize() alpha bounds = %v/%v, want 0/1", normalized.MinAlpha, normalized.MaxAlpha)
+	}
+	if err := (PoolPartitionEWMAConfig{HalfLife: time.Second, MinAlpha: 0.1, MaxAlpha: 0.9}).Validate(); err != nil {
 		t.Fatalf("Validate() returned error: %v", err)
 	}
-	for _, alpha := range []float64{-1, 0, 2, math.NaN(), math.Inf(1)} {
-		err := (PoolPartitionEWMAConfig{Alpha: alpha}).Validate()
+	for _, config := range []PoolPartitionEWMAConfig{
+		{HalfLife: -time.Second},
+		{HalfLife: time.Second, MinAlpha: -0.1},
+		{HalfLife: time.Second, MinAlpha: 1.1},
+		{HalfLife: time.Second, MaxAlpha: 1.1},
+		{HalfLife: time.Second, MinAlpha: 0.9, MaxAlpha: 0.1},
+		{HalfLife: time.Second, MinAlpha: math.NaN()},
+		{HalfLife: time.Second, MaxAlpha: math.Inf(1)},
+	} {
+		err := config.Validate()
 		if !errors.Is(err, ErrInvalidOptions) {
-			t.Fatalf("Validate(%v) error = %v, want ErrInvalidOptions", alpha, err)
+			t.Fatalf("Validate(%+v) error = %v, want ErrInvalidOptions", config, err)
 		}
 	}
 }
 
-// TestPoolPartitionEWMAStateWithUpdate verifies first and subsequent updates.
+// TestPoolPartitionEWMAStateWithUpdate verifies half-life weighted updates.
 func TestPoolPartitionEWMAStateWithUpdate(t *testing.T) {
 	rates := PoolPartitionWindowRates{
 		HitRatio:                     1,
@@ -56,23 +69,42 @@ func TestPoolPartitionEWMAStateWithUpdate(t *testing.T) {
 		LeaseOpsPerSecond:            6,
 	}
 
-	state := (PoolPartitionEWMAState{}).WithUpdate(PoolPartitionEWMAConfig{Alpha: 0.5}, rates)
+	config := PoolPartitionEWMAConfig{HalfLife: time.Second}
+	state := (PoolPartitionEWMAState{}).WithUpdate(config, time.Second, rates)
 	if !state.Initialized || state.HitRatio != 1 || state.GetsPerSecond != 10 || state.LeaseOpsPerSecond != 6 {
 		t.Fatalf("first update = %+v", state)
 	}
 
-	next := state.WithUpdate(PoolPartitionEWMAConfig{Alpha: 0.5}, PoolPartitionWindowRates{HitRatio: 0, GetsPerSecond: 20, LeaseOpsPerSecond: 10})
+	next := state.WithUpdate(config, time.Second, PoolPartitionWindowRates{HitRatio: 0, GetsPerSecond: 20, LeaseOpsPerSecond: 10})
 	if next.HitRatio != 0.5 || next.GetsPerSecond != 15 || next.LeaseOpsPerSecond != 8 {
 		t.Fatalf("second update = %+v", next)
 	}
 
-	alphaOne := state.WithUpdate(PoolPartitionEWMAConfig{Alpha: 1}, PoolPartitionWindowRates{HitRatio: 0.25})
-	if alphaOne.HitRatio != 0.25 {
-		t.Fatalf("alpha one update = %+v", alphaOne)
+	zeroElapsed := state.WithUpdate(config, 0, PoolPartitionWindowRates{HitRatio: 0.25})
+	if zeroElapsed.HitRatio != state.HitRatio {
+		t.Fatalf("zero elapsed update = %+v, want previous %+v", zeroElapsed, state)
 	}
 
-	nonFinite := (PoolPartitionEWMAState{}).WithUpdate(PoolPartitionEWMAConfig{Alpha: 0.5}, PoolPartitionWindowRates{HitRatio: math.NaN()})
+	nonFinite := (PoolPartitionEWMAState{}).WithUpdate(config, time.Second, PoolPartitionWindowRates{HitRatio: math.NaN()})
 	if nonFinite.HitRatio != 0 {
 		t.Fatalf("non-finite update = %+v", nonFinite)
+	}
+}
+
+func TestPoolPartitionEWMAHalfLifeAlpha(t *testing.T) {
+	config := PoolPartitionEWMAConfig{HalfLife: time.Second}
+
+	if got := config.DecayAlpha(0); got != 1 {
+		t.Fatalf("DecayAlpha(0) = %v, want 1", got)
+	}
+	if got := config.DecayAlpha(time.Second); got != 0.5 {
+		t.Fatalf("DecayAlpha(half-life) = %v, want 0.5", got)
+	}
+	if got := config.DecayAlpha(2 * time.Second); got != 0.25 {
+		t.Fatalf("DecayAlpha(2 half-lives) = %v, want 0.25", got)
+	}
+	clamped := (PoolPartitionEWMAConfig{HalfLife: time.Second, MinAlpha: 0.4, MaxAlpha: 0.8}).DecayAlpha(10 * time.Second)
+	if clamped != 0.4 {
+		t.Fatalf("clamped DecayAlpha = %v, want 0.4", clamped)
 	}
 }

@@ -150,6 +150,52 @@ func TestPoolPartitionWindowComputesCounterDeltas(t *testing.T) {
 	}
 }
 
+func TestPoolPartitionWindowComputesClassDeltas(t *testing.T) {
+	t.Parallel()
+
+	class := NewSizeClass(ClassID(0), ClassSizeFromSize(KiB))
+	previous := PoolPartitionSample{
+		Pools: []PoolPartitionPoolSample{
+			{
+				Name: "primary",
+				Classes: []PoolPartitionClassSample{
+					{
+						Class:   class,
+						ClassID: class.ID(),
+						Counters: ClassCountersSnapshot{
+							Gets:        10,
+							Hits:        7,
+							Misses:      3,
+							Allocations: 3,
+							Puts:        8,
+							Retains:     6,
+							Drops:       2,
+						},
+					},
+				},
+			},
+		},
+	}
+	current := clonePoolPartitionSample(previous)
+	current.Pools[0].Counters.Gets = 5
+	current.Pools[0].Classes[0].Counters.Gets += 5
+	current.Pools[0].Classes[0].Counters.Hits += 4
+	current.Pools[0].Classes[0].Counters.Misses += 1
+	current.Pools[0].Classes[0].Counters.Allocations += 1
+	current.Pools[0].Classes[0].Counters.Puts += 4
+	current.Pools[0].Classes[0].Counters.Retains += 3
+	current.Pools[0].Classes[0].Counters.Drops += 1
+
+	window := NewPoolPartitionWindow(previous, current)
+	if len(window.Pools) != 1 || len(window.Pools[0].Classes) != 1 {
+		t.Fatalf("window class shape = %+v", window.Pools)
+	}
+	delta := window.Pools[0].Classes[0].Delta
+	if delta.Gets != 5 || delta.Hits != 4 || delta.Misses != 1 || delta.Allocations != 1 || delta.Puts != 4 || delta.Retains != 3 || delta.Drops != 1 {
+		t.Fatalf("class delta = %+v", delta)
+	}
+}
+
 // TestPoolPartitionWindowTreatsBackwardCountersAsCurrent verifies reset handling.
 func TestPoolPartitionWindowTreatsBackwardCountersAsCurrent(t *testing.T) {
 	previous := PoolPartitionSample{

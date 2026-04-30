@@ -28,13 +28,20 @@ const (
 	errPartitionActiveRegistryIndexInvalid = "bufferpool.PoolPartition: active registry pool index out of range"
 )
 
+const (
+	// partitionActiveRegistryIdleWindowLimit is the number of clean sampled
+	// controller windows after which an active Pool may be removed from the active
+	// set.
+	partitionActiveRegistryIdleWindowLimit uint8 = 2
+)
+
 // partitionActiveRegistry is the partition-local active/dirty Pool set.
 //
-// This is control-plane scaffolding, not adaptive scoring. Active means
-// "eligible for controller attention", not "recently used". The initial
-// implementation keeps all Pools active, so it does not reduce full-scan cost by
-// itself. Future idle expiry and window-delta logic can reduce the active set
-// without changing Pool or LeaseRegistry ownership boundaries.
+// This is control-plane state, not adaptive scoring. Active means "eligible for
+// controller attention", not "recently used". The partition controller may mark
+// clean sampled Pools inactive after repeated no-delta windows, while partition
+// Acquire/Release paths mark their Pool active again without adding hooks to
+// Pool.Get or Pool.Put.
 //
 // Dirty is a state marker, not an activity event log. Marking dirty does not by
 // itself imply active; partition operations that observe real activity mark both
@@ -57,6 +64,10 @@ type partitionActiveRegistry struct {
 	// dirty marks Pools changed by partition-owned cold/control paths.
 	dirty []bool
 
+	// idleWindows counts consecutive sampled windows without activity while a Pool
+	// is active and clean.
+	idleWindows []uint8
+
 	// generation advances when active or dirty marker state changes.
 	generation Generation
 }
@@ -64,11 +75,12 @@ type partitionActiveRegistry struct {
 // newPartitionActiveRegistry creates an active registry for immutable Pool names.
 func newPartitionActiveRegistry(names []string) *partitionActiveRegistry {
 	registry := &partitionActiveRegistry{
-		names:      append([]string(nil), names...),
-		byName:     make(map[string]int, len(names)),
-		active:     make([]bool, len(names)),
-		dirty:      make([]bool, len(names)),
-		generation: InitialGeneration,
+		names:       append([]string(nil), names...),
+		byName:      make(map[string]int, len(names)),
+		active:      make([]bool, len(names)),
+		dirty:       make([]bool, len(names)),
+		idleWindows: make([]uint8, len(names)),
+		generation:  InitialGeneration,
 	}
 	for index, name := range registry.names {
 		registry.byName[name] = index
@@ -108,9 +120,10 @@ func (r *partitionActiveRegistry) markActiveIndex(index int) error {
 
 // markInactiveIndex marks a Pool inactive by immutable registry index.
 //
-// The current partition does not expire idle Pools yet. This helper is the
-// future idle-expiry boundary and lets tests pin generation semantics before a
-// production idle policy exists.
+// The partition controller normally expires idle Pools through
+// observeControllerActivity. This helper is retained for direct tests and rare
+// internal callers that need to move one valid index out of the active set
+// without simulating a controller window.
 func (r *partitionActiveRegistry) markInactiveIndex(index int) error {
 	if r == nil {
 		return nil
@@ -122,6 +135,7 @@ func (r *partitionActiveRegistry) markInactiveIndex(index int) error {
 	}
 	if r.active[index] {
 		r.active[index] = false
+		r.idleWindows[index] = 0
 		r.advanceLocked()
 	}
 	return nil
@@ -129,10 +143,10 @@ func (r *partitionActiveRegistry) markInactiveIndex(index int) error {
 
 // deactivateCleanIndexes marks clean candidate Pools inactive.
 //
-// This is idle-expiry scaffolding only. There is no wall-clock timer, EWMA, or
-// adaptive scoring here. A future controller can pass indexes selected from
-// window-delta analysis; dirty candidates are skipped so pending state changes
-// are not hidden from controller attention.
+// This is a direct active-set primitive. There is no wall-clock timer or EWMA
+// work here; the partition controller decides which clean indexes are safe to
+// deactivate after inspecting bounded windows. Dirty candidates are skipped so
+// pending state changes are not hidden from controller attention.
 func (r *partitionActiveRegistry) deactivateCleanIndexes(indexes []int) error {
 	if r == nil {
 		return nil
@@ -146,6 +160,7 @@ func (r *partitionActiveRegistry) deactivateCleanIndexes(indexes []int) error {
 		}
 		if r.active[index] && !r.dirty[index] {
 			r.active[index] = false
+			r.idleWindows[index] = 0
 			changed = true
 		}
 	}
@@ -222,6 +237,54 @@ func (r *partitionActiveRegistry) resetDirty() {
 	}
 }
 
+// observeControllerActivity updates active markers from sampled controller
+// window activity.
+//
+// indexes and activeDeltas are parallel slices produced by one TickInto cycle.
+// A true activity bit keeps the Pool active and resets its idle count. A false
+// bit increments idle count only when the Pool is already active and clean; dirty
+// Pools are kept active until the controller consumes the dirty marker.
+func (r *partitionActiveRegistry) observeControllerActivity(indexes []int, activeDeltas []bool) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := false
+	for offset, index := range indexes {
+		if !r.validIndexLocked(index) {
+			return newError(ErrInvalidOptions, errPartitionActiveRegistryIndexInvalid)
+		}
+		activeDelta := offset < len(activeDeltas) && activeDeltas[offset]
+		if activeDelta {
+			if !r.active[index] {
+				r.active[index] = true
+				changed = true
+			}
+			if r.idleWindows[index] != 0 {
+				r.idleWindows[index] = 0
+				changed = true
+			}
+			continue
+		}
+		if !r.active[index] || r.dirty[index] {
+			continue
+		}
+		if r.idleWindows[index] < partitionActiveRegistryIdleWindowLimit {
+			r.idleWindows[index]++
+			changed = true
+		}
+		if r.idleWindows[index] >= partitionActiveRegistryIdleWindowLimit {
+			r.active[index] = false
+			changed = true
+		}
+	}
+	if changed {
+		r.advanceLocked()
+	}
+	return nil
+}
+
 // activeIndexes appends active Pool indexes to dst in deterministic order.
 func (r *partitionActiveRegistry) activeIndexes(dst []int) []int {
 	if r == nil {
@@ -272,8 +335,10 @@ func (p *PoolPartition) controllerDirtyIndexes(dst []int) []int {
 
 // markDirtyProcessed explicitly consumes dirty markers after controller work.
 //
-// TickInto does not call this helper. Dirty consumption is an explicit
-// controller boundary so observation-only ticks cannot hide pending state.
+// TickInto calls this only after it has sampled the selected Pools, applied
+// budget targets, and recorded controller state. Dirty consumption stays at this
+// boundary so diagnostic Sample, Metrics, and Snapshot calls cannot hide pending
+// state changes from the next controller cycle.
 func (p *PoolPartition) markDirtyProcessed() {
 	p.mustBeInitialized()
 	p.activeRegistry.resetDirty()
@@ -295,6 +360,7 @@ func (r *partitionActiveRegistry) markActiveIndexLocked(index int) {
 		r.active[index] = true
 		r.advanceLocked()
 	}
+	r.idleWindows[index] = 0
 }
 
 // markDirtyIndexLocked marks index dirty under mu.

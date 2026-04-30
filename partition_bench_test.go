@@ -119,8 +119,8 @@ func BenchmarkPoolPartitionSample(b *testing.B) {
 }
 
 // BenchmarkPoolPartitionSampleInto measures reusable partition sampling. The
-// caller preallocates per-Pool storage so lease sampling and Pool scanning do
-// not allocate.
+// warm call grows nested class storage so the timed loop measures steady-state
+// caller reuse rather than first-sample allocation.
 func BenchmarkPoolPartitionSampleInto(b *testing.B) {
 	for _, tc := range []struct {
 		name   string
@@ -136,6 +136,7 @@ func BenchmarkPoolPartitionSampleInto(b *testing.B) {
 			partition := partitionBenchmarkNew(b, tc.pools)
 			leases := partitionBenchmarkAcquireActive(b, partition, tc.active)
 			sample := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, tc.pools)}
+			partition.SampleInto(&sample)
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -151,8 +152,8 @@ func BenchmarkPoolPartitionSampleInto(b *testing.B) {
 }
 
 // BenchmarkPoolPartitionTick measures one explicit non-background controller
-// observation/planning pass. Tick returns a detailed report and may allocate
-// per-Pool sample/report storage.
+// cycle. Tick returns a detailed report and may allocate per-Pool sample/report
+// storage.
 func BenchmarkPoolPartitionTick(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 16)
 
@@ -167,15 +168,18 @@ func BenchmarkPoolPartitionTick(b *testing.B) {
 	}
 }
 
-// BenchmarkPoolPartitionTickInto measures reusable manual controller reports.
-// It still performs the current all-Pool detailed scan, but caller-owned sample
-// storage removes the per-call report allocation.
+// BenchmarkPoolPartitionTickInto measures reusable applied controller reports.
+// The caller-owned report lets samples, windows, and class detail reuse storage
+// across foreground controller cycles.
 func BenchmarkPoolPartitionTickInto(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 16)
 	report := PartitionControllerReport{
 		Sample: PoolPartitionSample{
 			Pools: make([]PoolPartitionPoolSample, 0, 16),
 		},
+	}
+	if err := partition.TickInto(&report); err != nil {
+		b.Fatalf("warm TickInto() returned error: %v", err)
 	}
 
 	b.ReportAllocs()
@@ -186,6 +190,40 @@ func BenchmarkPoolPartitionTickInto(b *testing.B) {
 		}
 		partitionBenchmarkReportSink = report
 	}
+}
+
+// BenchmarkPoolPartitionTickClassSamples measures class-aware partition sampling
+// used by applied controller ticks.
+func BenchmarkPoolPartitionTickClassSamples(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	sample := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 16)}
+
+	partition.SampleInto(&sample)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partition.SampleInto(&sample)
+	}
+	partitionBenchmarkSampleSink = sample
+}
+
+// BenchmarkPoolPartitionTickAppliedController measures the applied foreground
+// controller cycle that publishes Pool/class budgets but does not execute trim.
+func BenchmarkPoolPartitionTickAppliedController(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	report := PartitionControllerReport{Sample: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 16)}}
+	if err := partition.TickInto(&report); err != nil {
+		b.Fatalf("warm TickInto() returned error: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() returned error: %v", err)
+		}
+	}
+	partitionBenchmarkReportSink = report
 }
 
 // BenchmarkPoolPartitionMetrics measures public lifetime-derived metrics.
@@ -200,8 +238,7 @@ func BenchmarkPoolPartitionMetrics(b *testing.B) {
 }
 
 // BenchmarkPoolPartitionActiveRegistryActiveIndexes measures deterministic
-// active-index copy. The primitive is cheap, but current TickInto still treats
-// all Pools as active until future idle expiry narrows the active set.
+// active-index copy after the registry has been initialized in partition order.
 func BenchmarkPoolPartitionActiveRegistryActiveIndexes(b *testing.B) {
 	names := make([]string, 16)
 	for index := range names {
@@ -241,9 +278,33 @@ func BenchmarkPoolPartitionActiveRegistryDirtyIndexes(b *testing.B) {
 	partitionBenchmarkIndexSink = indexes
 }
 
+// BenchmarkPoolPartitionActiveRegistry measures controller activity observation
+// over the active registry.
+func BenchmarkPoolPartitionActiveRegistry(b *testing.B) {
+	names := make([]string, 64)
+	for index := range names {
+		names[index] = "pool_" + strconv.Itoa(index)
+	}
+	registry := newPartitionActiveRegistry(names)
+	indexes := make([]int, len(names))
+	activeDeltas := make([]bool, len(names))
+	for index := range indexes {
+		indexes[index] = index
+		activeDeltas[index] = index%4 == 0
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := registry.observeControllerActivity(indexes, activeDeltas); err != nil {
+			b.Fatalf("observeControllerActivity() returned error: %v", err)
+		}
+	}
+	partitionBenchmarkIndexSink = registry.activeIndexes(partitionBenchmarkIndexSink)
+}
+
 // BenchmarkPoolPartitionSampleSelectedIndexes measures the selected-index
-// sampling boundary used by future active-only controllers. This is scaffolding;
-// the current active registry still initializes every Pool as active.
+// sampling boundary used by active/dirty controller cycles.
 func BenchmarkPoolPartitionSampleSelectedIndexes(b *testing.B) {
 	for _, tc := range []struct {
 		name    string
@@ -259,6 +320,7 @@ func BenchmarkPoolPartitionSampleSelectedIndexes(b *testing.B) {
 			sample := PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, len(tc.indexes))}
 			runtime := partition.currentRuntimeSnapshot()
 			generation := partition.generation.Load()
+			partition.sampleIndexesWithRuntimeAndGeneration(&sample, runtime, generation, tc.indexes, true)
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -333,13 +395,13 @@ func BenchmarkPoolPartitionEWMAUpdate(b *testing.B) {
 	previous, current := partitionBenchmarkWindowSamples(16)
 	window := NewPoolPartitionWindow(previous, current)
 	rates := NewPoolPartitionTimedWindowRates(window, time.Second)
-	config := PoolPartitionEWMAConfig{Alpha: 0.2}
+	config := PoolPartitionEWMAConfig{HalfLife: time.Second}
 	state := PoolPartitionEWMAState{}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		state = state.WithUpdate(config, rates)
+		state = state.WithUpdate(config, time.Second, rates)
 	}
 	partitionBenchmarkEWMASink = state
 }
@@ -349,7 +411,7 @@ func BenchmarkPoolPartitionEWMAUpdate(b *testing.B) {
 // trim; owning window construction may allocate to copy per-Pool sample slices.
 func BenchmarkPoolPartitionControllerEvaluation(b *testing.B) {
 	previous, current := partitionBenchmarkWindowSamples(16)
-	config := PoolPartitionEWMAConfig{Alpha: 0.2}
+	config := PoolPartitionEWMAConfig{HalfLife: time.Second}
 	budget := PartitionBudgetSnapshot{MaxOwnedBytes: 1 << 20, CurrentOwnedBytes: 512 << 10}
 	pressure := PartitionPressureSnapshot{Enabled: true, Level: PressureLevelMedium}
 	state := PoolPartitionEWMAState{}

@@ -21,9 +21,9 @@ import controlseries "arcoris.dev/bufferpool/internal/control/series"
 // PoolPartitionCounterDelta is the raw counter movement between two samples.
 //
 // Delta values are controller inputs. Lifetime metrics remain diagnostic, while
-// future EWMA or adaptive scoring should be built from bounded windows like
-// this one. This type stores raw counter deltas only; it does not compute rates,
-// scores, or policy decisions.
+// EWMA and adaptive scoring are built from bounded windows like this one. This
+// type stores raw counter deltas only; it does not compute rates, scores, or
+// policy decisions.
 type PoolPartitionCounterDelta struct {
 	// Gets is the Pool acquisition-attempt delta.
 	Gets uint64
@@ -102,6 +102,40 @@ type PoolPartitionCounterDelta struct {
 	LeasePoolReturnAdmissionFailures uint64
 }
 
+// PoolPartitionPoolWindow captures one Pool's counter delta inside a partition
+// window.
+type PoolPartitionPoolWindow struct {
+	// Name is the partition-local Pool name.
+	Name string
+
+	// Delta is the Pool counter movement from previous to current.
+	Delta PoolPartitionCounterDelta
+
+	// Classes contains class-level counter movement for this Pool.
+	Classes []PoolPartitionClassWindow
+}
+
+// PoolPartitionClassWindow captures one Pool class's counter delta.
+type PoolPartitionClassWindow struct {
+	// Class is the immutable size-class descriptor.
+	Class SizeClass
+
+	// ClassID is the Pool-local class identifier.
+	ClassID ClassID
+
+	// Previous is the older class sample used for delta computation.
+	Previous PoolPartitionClassSample
+
+	// Current is the newer class sample used for delta computation.
+	Current PoolPartitionClassSample
+
+	// Delta contains class counter movement from Previous to Current.
+	Delta ClassCountersDelta
+}
+
+// ClassCountersDelta describes class activity between two samples.
+type ClassCountersDelta = classCountersDelta
+
 // IsZero reports whether d contains no observed counter movement.
 func (d PoolPartitionCounterDelta) IsZero() bool {
 	return d.Gets == 0 &&
@@ -153,6 +187,9 @@ type PoolPartitionWindow struct {
 
 	// Delta is the raw counter movement from Previous to Current.
 	Delta PoolPartitionCounterDelta
+
+	// Pools contains per-Pool and per-class counter movement.
+	Pools []PoolPartitionPoolWindow
 }
 
 // NewPoolPartitionWindow returns a window from previous to current.
@@ -176,46 +213,115 @@ func (w *PoolPartitionWindow) Reset(previous, current PoolPartitionSample) {
 	w.Previous = copyPoolPartitionSampleInto(w.Previous, previous)
 	w.Current = copyPoolPartitionSampleInto(w.Current, current)
 	w.Delta = newPoolPartitionCounterDelta(previous, current)
+	w.Pools = copyPoolPartitionPoolWindowsInto(w.Pools, previous, current)
 }
 
 // newPoolPartitionCounterDelta computes raw counter movement between samples.
 func newPoolPartitionCounterDelta(previous, current PoolPartitionSample) PoolPartitionCounterDelta {
+	return newPoolPartitionPoolCounterDelta(previous.PoolCounters, current.PoolCounters, previous.LeaseCounters, current.LeaseCounters)
+}
+
+// newPoolPartitionPoolCounterDelta computes raw Pool counter movement.
+func newPoolPartitionPoolCounterDelta(previous, current PoolCountersSnapshot, previousLease, currentLease LeaseCountersSnapshot) PoolPartitionCounterDelta {
 	return PoolPartitionCounterDelta{
-		Gets:            controlseries.DeltaValue(previous.PoolCounters.Gets, current.PoolCounters.Gets),
-		Hits:            controlseries.DeltaValue(previous.PoolCounters.Hits, current.PoolCounters.Hits),
-		Misses:          controlseries.DeltaValue(previous.PoolCounters.Misses, current.PoolCounters.Misses),
-		Allocations:     controlseries.DeltaValue(previous.PoolCounters.Allocations, current.PoolCounters.Allocations),
-		Puts:            controlseries.DeltaValue(previous.PoolCounters.Puts, current.PoolCounters.Puts),
-		ReturnedBytes:   controlseries.DeltaValue(previous.PoolCounters.ReturnedBytes, current.PoolCounters.ReturnedBytes),
-		Retains:         controlseries.DeltaValue(previous.PoolCounters.Retains, current.PoolCounters.Retains),
-		RetainedBytes:   controlseries.DeltaValue(previous.PoolCounters.RetainedBytes, current.PoolCounters.RetainedBytes),
-		Drops:           controlseries.DeltaValue(previous.PoolCounters.Drops, current.PoolCounters.Drops),
-		DroppedBytes:    controlseries.DeltaValue(previous.PoolCounters.DroppedBytes, current.PoolCounters.DroppedBytes),
-		ClosedPoolDrops: controlseries.DeltaValue(previous.PoolCounters.DropReasons.ClosedPool, current.PoolCounters.DropReasons.ClosedPool),
+		Gets:            controlseries.DeltaValue(previous.Gets, current.Gets),
+		Hits:            controlseries.DeltaValue(previous.Hits, current.Hits),
+		Misses:          controlseries.DeltaValue(previous.Misses, current.Misses),
+		Allocations:     controlseries.DeltaValue(previous.Allocations, current.Allocations),
+		Puts:            controlseries.DeltaValue(previous.Puts, current.Puts),
+		ReturnedBytes:   controlseries.DeltaValue(previous.ReturnedBytes, current.ReturnedBytes),
+		Retains:         controlseries.DeltaValue(previous.Retains, current.Retains),
+		RetainedBytes:   controlseries.DeltaValue(previous.RetainedBytes, current.RetainedBytes),
+		Drops:           controlseries.DeltaValue(previous.Drops, current.Drops),
+		DroppedBytes:    controlseries.DeltaValue(previous.DroppedBytes, current.DroppedBytes),
+		ClosedPoolDrops: controlseries.DeltaValue(previous.DropReasons.ClosedPool, current.DropReasons.ClosedPool),
 		ReturnedBuffersDisabledDrops: controlseries.DeltaValue(
-			previous.PoolCounters.DropReasons.ReturnedBuffersDisabled,
-			current.PoolCounters.DropReasons.ReturnedBuffersDisabled,
+			previous.DropReasons.ReturnedBuffersDisabled,
+			current.DropReasons.ReturnedBuffersDisabled,
 		),
-		OversizedDrops:           controlseries.DeltaValue(previous.PoolCounters.DropReasons.Oversized, current.PoolCounters.DropReasons.Oversized),
-		UnsupportedClassDrops:    controlseries.DeltaValue(previous.PoolCounters.DropReasons.UnsupportedClass, current.PoolCounters.DropReasons.UnsupportedClass),
-		InvalidPolicyDrops:       controlseries.DeltaValue(previous.PoolCounters.DropReasons.InvalidPolicy, current.PoolCounters.DropReasons.InvalidPolicy),
-		LeaseAcquisitions:        controlseries.DeltaValue(previous.LeaseCounters.Acquisitions, current.LeaseCounters.Acquisitions),
-		LeaseReleases:            controlseries.DeltaValue(previous.LeaseCounters.Releases, current.LeaseCounters.Releases),
-		LeaseInvalidReleases:     controlseries.DeltaValue(previous.LeaseCounters.InvalidReleases, current.LeaseCounters.InvalidReleases),
-		LeaseDoubleReleases:      controlseries.DeltaValue(previous.LeaseCounters.DoubleReleases, current.LeaseCounters.DoubleReleases),
-		LeaseOwnershipViolations: controlseries.DeltaValue(previous.LeaseCounters.OwnershipViolations, current.LeaseCounters.OwnershipViolations),
-		LeasePoolReturnAttempts:  controlseries.DeltaValue(previous.LeaseCounters.PoolReturnAttempts, current.LeaseCounters.PoolReturnAttempts),
-		LeasePoolReturnSuccesses: controlseries.DeltaValue(previous.LeaseCounters.PoolReturnSuccesses, current.LeaseCounters.PoolReturnSuccesses),
-		LeasePoolReturnFailures:  controlseries.DeltaValue(previous.LeaseCounters.PoolReturnFailures, current.LeaseCounters.PoolReturnFailures),
+		OversizedDrops:           controlseries.DeltaValue(previous.DropReasons.Oversized, current.DropReasons.Oversized),
+		UnsupportedClassDrops:    controlseries.DeltaValue(previous.DropReasons.UnsupportedClass, current.DropReasons.UnsupportedClass),
+		InvalidPolicyDrops:       controlseries.DeltaValue(previous.DropReasons.InvalidPolicy, current.DropReasons.InvalidPolicy),
+		LeaseAcquisitions:        controlseries.DeltaValue(previousLease.Acquisitions, currentLease.Acquisitions),
+		LeaseReleases:            controlseries.DeltaValue(previousLease.Releases, currentLease.Releases),
+		LeaseInvalidReleases:     controlseries.DeltaValue(previousLease.InvalidReleases, currentLease.InvalidReleases),
+		LeaseDoubleReleases:      controlseries.DeltaValue(previousLease.DoubleReleases, currentLease.DoubleReleases),
+		LeaseOwnershipViolations: controlseries.DeltaValue(previousLease.OwnershipViolations, currentLease.OwnershipViolations),
+		LeasePoolReturnAttempts:  controlseries.DeltaValue(previousLease.PoolReturnAttempts, currentLease.PoolReturnAttempts),
+		LeasePoolReturnSuccesses: controlseries.DeltaValue(previousLease.PoolReturnSuccesses, currentLease.PoolReturnSuccesses),
+		LeasePoolReturnFailures:  controlseries.DeltaValue(previousLease.PoolReturnFailures, currentLease.PoolReturnFailures),
 		LeasePoolReturnClosedFailures: controlseries.DeltaValue(
-			previous.LeaseCounters.PoolReturnClosedFailures,
-			current.LeaseCounters.PoolReturnClosedFailures,
+			previousLease.PoolReturnClosedFailures,
+			currentLease.PoolReturnClosedFailures,
 		),
 		LeasePoolReturnAdmissionFailures: controlseries.DeltaValue(
-			previous.LeaseCounters.PoolReturnAdmissionFailures,
-			current.LeaseCounters.PoolReturnAdmissionFailures,
+			previousLease.PoolReturnAdmissionFailures,
+			currentLease.PoolReturnAdmissionFailures,
 		),
 	}
+}
+
+// copyPoolPartitionPoolWindowsInto rebuilds per-Pool windows while reusing dst.
+func copyPoolPartitionPoolWindowsInto(dst []PoolPartitionPoolWindow, previous, current PoolPartitionSample) []PoolPartitionPoolWindow {
+	dst = dst[:0]
+	if cap(dst) < len(current.Pools) {
+		dst = make([]PoolPartitionPoolWindow, 0, len(current.Pools))
+	}
+
+	for _, currentPool := range current.Pools {
+		previousPool, _ := findPoolPartitionPoolSample(previous, currentPool.Name)
+		var poolWindow PoolPartitionPoolWindow
+		if len(dst) < cap(dst) {
+			poolWindow = dst[:cap(dst)][len(dst)]
+		}
+		poolWindow.Name = currentPool.Name
+		poolWindow.Delta = newPoolPartitionPoolCounterDelta(previousPool.Counters, currentPool.Counters, LeaseCountersSnapshot{}, LeaseCountersSnapshot{})
+		poolWindow.Classes = copyPoolPartitionClassWindowsInto(poolWindow.Classes, previousPool, currentPool)
+		dst = append(dst, poolWindow)
+	}
+
+	return dst
+}
+
+// copyPoolPartitionClassWindowsInto rebuilds per-class windows while reusing dst.
+func copyPoolPartitionClassWindowsInto(dst []PoolPartitionClassWindow, previous, current PoolPartitionPoolSample) []PoolPartitionClassWindow {
+	dst = dst[:0]
+	if cap(dst) < len(current.Classes) {
+		dst = make([]PoolPartitionClassWindow, 0, len(current.Classes))
+	}
+
+	for _, currentClass := range current.Classes {
+		previousClass, _ := findPoolPartitionClassSample(previous, currentClass.ClassID)
+		dst = append(dst, PoolPartitionClassWindow{
+			Class:    currentClass.Class,
+			ClassID:  currentClass.ClassID,
+			Previous: previousClass,
+			Current:  currentClass,
+			Delta:    currentClass.Counters.deltaSince(previousClass.Counters),
+		})
+	}
+
+	return dst
+}
+
+// findPoolPartitionPoolSample returns a Pool sample by partition-local name.
+func findPoolPartitionPoolSample(sample PoolPartitionSample, name string) (PoolPartitionPoolSample, bool) {
+	for _, pool := range sample.Pools {
+		if pool.Name == name {
+			return pool, true
+		}
+	}
+	return PoolPartitionPoolSample{}, false
+}
+
+// findPoolPartitionClassSample returns a class sample by ClassID.
+func findPoolPartitionClassSample(sample PoolPartitionPoolSample, classID ClassID) (PoolPartitionClassSample, bool) {
+	for _, class := range sample.Classes {
+		if class.ClassID == classID {
+			return class, true
+		}
+	}
+	return PoolPartitionClassSample{}, false
 }
 
 // clonePoolPartitionSample returns a sample copy with owned per-Pool slice storage.
@@ -223,7 +329,8 @@ func clonePoolPartitionSample(sample PoolPartitionSample) PoolPartitionSample {
 	return copyPoolPartitionSampleInto(PoolPartitionSample{}, sample)
 }
 
-// copyPoolPartitionSampleInto copies src into dst while reusing dst.Pools capacity.
+// copyPoolPartitionSampleInto copies src into dst while reusing nested sample
+// capacity.
 func copyPoolPartitionSampleInto(dst, src PoolPartitionSample) PoolPartitionSample {
 	pools := dst.Pools[:0]
 	if src.Pools != nil {
@@ -232,11 +339,32 @@ func copyPoolPartitionSampleInto(dst, src PoolPartitionSample) PoolPartitionSamp
 		} else {
 			pools = pools[:len(src.Pools)]
 		}
-		copy(pools, src.Pools)
+		for index := range src.Pools {
+			pools[index] = copyPoolPartitionPoolSampleInto(pools[index], src.Pools[index])
+		}
 	} else {
 		pools = nil
 	}
 	dst = src
 	dst.Pools = pools
+	return dst
+}
+
+// copyPoolPartitionPoolSampleInto copies src while reusing nested class storage.
+func copyPoolPartitionPoolSampleInto(dst, src PoolPartitionPoolSample) PoolPartitionPoolSample {
+	classes := dst.Classes[:0]
+	if src.Classes != nil {
+		if cap(classes) < len(src.Classes) {
+			classes = make([]PoolPartitionClassSample, len(src.Classes))
+		} else {
+			classes = classes[:len(src.Classes)]
+		}
+		copy(classes, src.Classes)
+	} else {
+		classes = nil
+	}
+
+	dst = src
+	dst.Classes = classes
 	return dst
 }

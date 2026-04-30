@@ -16,7 +16,12 @@
 
 package bufferpool
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"arcoris.dev/bufferpool/internal/clock"
+)
 
 // TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration verifies tick report coherence.
 func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T) {
@@ -119,8 +124,8 @@ func TestPoolPartitionTickIntoNilDestinationIsNoOp(t *testing.T) {
 	}
 }
 
-// TestPoolPartitionTickIntoDoesNotConsumeDirtyMarkers verifies observation-only semantics.
-func TestPoolPartitionTickIntoDoesNotConsumeDirtyMarkers(t *testing.T) {
+// TestPoolPartitionTickIntoConsumesDirtyMarkers verifies applied controller semantics.
+func TestPoolPartitionTickIntoConsumesDirtyMarkers(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 	partition.activeRegistry.resetDirty()
 	lease, err := partition.Acquire("primary", 300)
@@ -134,8 +139,11 @@ func TestPoolPartitionTickIntoDoesNotConsumeDirtyMarkers(t *testing.T) {
 	var report PartitionControllerReport
 	requirePartitionNoError(t, partition.TickInto(&report))
 
-	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
-		t.Fatalf("dirty after TickInto = %v, want unchanged [0]", dirty)
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 0 {
+		t.Fatalf("dirty after TickInto = %v, want consumed", dirty)
+	}
+	if len(report.PoolBudgetTargets) != 1 || len(report.PoolBudgetTargets[0].ClassTargets) == 0 {
+		t.Fatalf("PoolBudgetTargets = %+v, want applied class targets", report.PoolBudgetTargets)
 	}
 }
 
@@ -167,5 +175,75 @@ func TestPoolPartitionManualTickAllowedWhenControllerDisabled(t *testing.T) {
 	requirePartitionNoError(t, err)
 	if report.Generation.IsZero() || report.Sample.Generation != report.Generation || report.Metrics.Generation != report.Generation {
 		t.Fatalf("manual Tick report has incoherent generation: %+v", report)
+	}
+}
+
+func TestPoolPartitionTickIntoPublishesClassBudgets(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+	if len(report.PoolBudgetTargets) != 1 {
+		t.Fatalf("len(PoolBudgetTargets) = %d, want 1", len(report.PoolBudgetTargets))
+	}
+	if len(report.PoolBudgetTargets[0].ClassTargets) == 0 {
+		t.Fatalf("PoolBudgetTargets[0].ClassTargets is empty")
+	}
+	snapshot, ok := partition.PoolSnapshot("primary")
+	if !ok {
+		t.Fatal("PoolSnapshot(primary) not found")
+	}
+	for _, classTarget := range report.PoolBudgetTargets[0].ClassTargets {
+		class := snapshot.Classes[classTarget.ClassID.Index()]
+		if class.Budget.Generation.Before(report.Generation) {
+			t.Fatalf("class %s budget generation = %s, want >= tick generation %s", class.Class, class.Budget.Generation, report.Generation)
+		}
+		if class.Budget.AssignedBytes != classTarget.TargetBytes.Bytes() {
+			t.Fatalf("class %s assigned bytes = %d, want target %d", class.Class, class.Budget.AssignedBytes, classTarget.TargetBytes.Bytes())
+		}
+	}
+}
+
+func TestPoolPartitionTickIntoUpdatesPreviousSampleAndEWMAWithElapsed(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	manual := clock.NewManual(time.Unix(100, 0))
+	partition.controller.clock = manual
+
+	var first PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&first))
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	manual.Advance(time.Second)
+
+	var second PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&second))
+	if second.Window.Delta.Gets == 0 || second.Rates.GetsPerSecond == 0 {
+		t.Fatalf("second tick window/rates = %+v / %+v", second.Window.Delta, second.Rates)
+	}
+	if !second.EWMA.Initialized || second.EWMA.GetsPerSecond == 0 {
+		t.Fatalf("second tick EWMA = %+v", second.EWMA)
+	}
+	if !partition.controller.hasPreviousSample || !partition.controller.previousSampleTime.Equal(manual.Now()) {
+		t.Fatalf("controller previous state not updated")
+	}
+}
+
+func TestPoolPartitionTickIntoDeactivatesIdlePoolsAndReactivatesDirtyPool(t *testing.T) {
+	partition := testNewPoolPartition(t, "alpha", "beta")
+
+	requirePartitionNoError(t, partition.TickInto(&PartitionControllerReport{}))
+	requirePartitionNoError(t, partition.TickInto(&PartitionControllerReport{}))
+	requirePartitionNoError(t, partition.TickInto(&PartitionControllerReport{}))
+	if active := partition.activeRegistry.activeIndexes(nil); len(active) != 0 {
+		t.Fatalf("active indexes after idle ticks = %v, want none", active)
+	}
+
+	lease, err := partition.Acquire("beta", 300)
+	requirePartitionNoError(t, err)
+	defer func() { requirePartitionNoError(t, partition.Release(lease, lease.Buffer())) }()
+	if active := partition.activeRegistry.activeIndexes(nil); len(active) != 1 || active[0] != 1 {
+		t.Fatalf("active indexes after beta acquire = %v, want [1]", active)
 	}
 }
