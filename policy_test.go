@@ -374,6 +374,13 @@ func TestShardPolicyIsZero(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "bucket segment slots per shard",
+			shards: ShardPolicy{
+				BucketSegmentSlotsPerShard: 8,
+			},
+			want: false,
+		},
+		{
 			name: "acquisition fallback shards",
 			shards: ShardPolicy{
 				AcquisitionFallbackShards: 1,
@@ -490,6 +497,12 @@ func TestDefaultShardPolicyUsesRuntimeDerivedShards(t *testing.T) {
 	}
 	if policy.ShardsPerClass != shards {
 		t.Fatalf("default shards per class = %d, want %d", policy.ShardsPerClass, shards)
+	}
+	if policy.BucketSegmentSlotsPerShard != DefaultPolicyBucketSegmentSlotsPerShard {
+		t.Fatalf("default bucket segment slots = %d, want %d",
+			policy.BucketSegmentSlotsPerShard,
+			DefaultPolicyBucketSegmentSlotsPerShard,
+		)
 	}
 	if policy.AcquisitionFallbackShards != DefaultPolicyAcquisitionFallbackShards {
 		t.Fatalf("default acquisition fallback = %d, want %d",

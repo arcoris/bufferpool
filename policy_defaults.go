@@ -103,6 +103,14 @@ const (
 	// used.
 	DefaultPolicyBucketSlotsPerShard = 32
 
+	// DefaultPolicyBucketSegmentSlotsPerShard defines how many bucket metadata
+	// slots are allocated at once for one shard bucket.
+	//
+	// This is metadata allocation granularity, not physical retention capacity.
+	// The default keeps the 32-slot shard cap but allocates slot storage lazily in
+	// four eight-slot segments at most.
+	DefaultPolicyBucketSegmentSlotsPerShard = 8
+
 	// DefaultPolicyAcquisitionFallbackShards enables one bounded get-side
 	// fallback probe after the primary selected shard misses.
 	DefaultPolicyAcquisitionFallbackShards = 1
@@ -331,11 +339,12 @@ func DefaultClassSizes() []ClassSize {
 // shard; return fallback remains disabled to keep Put predictable.
 func DefaultShardPolicy() ShardPolicy {
 	return ShardPolicy{
-		Selection:                 ShardSelectionModeProcessorInspired,
-		ShardsPerClass:            DefaultPolicyShardsPerClass(),
-		BucketSlotsPerShard:       DefaultPolicyBucketSlotsPerShard,
-		AcquisitionFallbackShards: DefaultPolicyAcquisitionFallbackShards,
-		ReturnFallbackShards:      DefaultPolicyReturnFallbackShards,
+		Selection:                  ShardSelectionModeProcessorInspired,
+		ShardsPerClass:             DefaultPolicyShardsPerClass(),
+		BucketSlotsPerShard:        DefaultPolicyBucketSlotsPerShard,
+		BucketSegmentSlotsPerShard: DefaultPolicyBucketSegmentSlotsPerShard,
+		AcquisitionFallbackShards:  DefaultPolicyAcquisitionFallbackShards,
+		ReturnFallbackShards:       DefaultPolicyReturnFallbackShards,
 	}
 }
 

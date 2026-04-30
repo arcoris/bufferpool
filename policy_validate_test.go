@@ -50,11 +50,12 @@ func TestShardPolicyAcceptsProcessorInspiredAndAcquisitionFallback(t *testing.T)
 	t.Parallel()
 
 	shards := ShardPolicy{
-		Selection:                 ShardSelectionModeProcessorInspired,
-		ShardsPerClass:            1,
-		BucketSlotsPerShard:       1,
-		AcquisitionFallbackShards: 1,
-		ReturnFallbackShards:      0,
+		Selection:                  ShardSelectionModeProcessorInspired,
+		ShardsPerClass:             1,
+		BucketSlotsPerShard:        1,
+		BucketSegmentSlotsPerShard: 1,
+		AcquisitionFallbackShards:  1,
+		ReturnFallbackShards:       0,
 	}
 
 	if err := shards.Validate(); err != nil {
@@ -68,11 +69,12 @@ func TestShardPolicyRejectsPositiveReturnFallback(t *testing.T) {
 	t.Parallel()
 
 	shards := ShardPolicy{
-		Selection:                 ShardSelectionModeProcessorInspired,
-		ShardsPerClass:            2,
-		BucketSlotsPerShard:       1,
-		AcquisitionFallbackShards: 0,
-		ReturnFallbackShards:      1,
+		Selection:                  ShardSelectionModeProcessorInspired,
+		ShardsPerClass:             2,
+		BucketSlotsPerShard:        1,
+		BucketSegmentSlotsPerShard: 1,
+		AcquisitionFallbackShards:  0,
+		ReturnFallbackShards:       1,
 	}
 
 	err := shards.Validate()
@@ -81,6 +83,45 @@ func TestShardPolicyRejectsPositiveReturnFallback(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("ShardPolicy.Validate() error does not match ErrInvalidPolicy: %v", err)
+	}
+}
+
+// TestShardPolicyRejectsInvalidBucketSegmentSlots verifies lazy bucket segment
+// sizing cannot be missing or larger than total bucket capacity.
+func TestShardPolicyRejectsInvalidBucketSegmentSlots(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		segmentSlots int
+	}{
+		{name: "zero", segmentSlots: 0},
+		{name: "negative", segmentSlots: -1},
+		{name: "larger than bucket", segmentSlots: 3},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			shards := ShardPolicy{
+				Selection:                  ShardSelectionModeProcessorInspired,
+				ShardsPerClass:             2,
+				BucketSlotsPerShard:        2,
+				BucketSegmentSlotsPerShard: tt.segmentSlots,
+				ReturnFallbackShards:       0,
+			}
+
+			err := shards.Validate()
+			if err == nil {
+				t.Fatal("ShardPolicy.Validate() returned nil")
+			}
+			if !errors.Is(err, ErrInvalidPolicy) {
+				t.Fatalf("ShardPolicy.Validate() error does not match ErrInvalidPolicy: %v", err)
+			}
+		})
 	}
 }
 
@@ -216,11 +257,12 @@ func newValidTestPolicy() Policy {
 			},
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeRoundRobin,
-			ShardsPerClass:            2,
-			BucketSlotsPerShard:       2,
-			AcquisitionFallbackShards: 0,
-			ReturnFallbackShards:      0,
+			Selection:                  ShardSelectionModeRoundRobin,
+			ShardsPerClass:             2,
+			BucketSlotsPerShard:        2,
+			BucketSegmentSlotsPerShard: 1,
+			AcquisitionFallbackShards:  0,
+			ReturnFallbackShards:       0,
 		},
 		Admission: AdmissionPolicy{
 			ZeroSizeRequests: ZeroSizeRequestEmptyBuffer,

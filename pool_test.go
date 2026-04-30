@@ -251,11 +251,12 @@ func poolTestSmallSingleShardPolicy() Policy {
 			},
 		},
 		Shards: ShardPolicy{
-			Selection:                 ShardSelectionModeSingle,
-			ShardsPerClass:            1,
-			BucketSlotsPerShard:       4,
-			AcquisitionFallbackShards: 0,
-			ReturnFallbackShards:      0,
+			Selection:                  ShardSelectionModeSingle,
+			ShardsPerClass:             1,
+			BucketSlotsPerShard:        4,
+			BucketSegmentSlotsPerShard: 2,
+			AcquisitionFallbackShards:  0,
+			ReturnFallbackShards:       0,
 		},
 		Admission: AdmissionPolicy{
 			ZeroSizeRequests:    ZeroSizeRequestEmptyBuffer,

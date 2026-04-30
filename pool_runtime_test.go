@@ -77,6 +77,13 @@ func TestPoolRuntimePolicyCompatible(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "bucket segment slots changed",
+			mutate: func(policy *Policy) {
+				policy.Shards.BucketSegmentSlotsPerShard++
+			},
+			want: false,
+		},
+		{
 			name: "selection changed",
 			mutate: func(policy *Policy) {
 				policy.Shards.Selection = ShardSelectionModeRandom
@@ -128,6 +135,12 @@ func TestPoolRuntimeSnapshotPublicationRejectsTopologyChanges(t *testing.T) {
 			name: "bucket slots per shard",
 			mutate: func(policy *Policy) {
 				policy.Shards.BucketSlotsPerShard++
+			},
+		},
+		{
+			name: "bucket segment slots per shard",
+			mutate: func(policy *Policy) {
+				policy.Shards.BucketSegmentSlotsPerShard++
 			},
 		},
 		{

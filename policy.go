@@ -187,6 +187,14 @@ type ShardPolicy struct {
 	// slot limit.
 	BucketSlotsPerShard int
 
+	// BucketSegmentSlotsPerShard is the number of bucket slots allocated in one
+	// lazy segment.
+	//
+	// The value controls metadata allocation granularity only. BucketSlotsPerShard
+	// remains the total physical storage cap for the shard. Segment slots must be
+	// positive and no larger than BucketSlotsPerShard.
+	BucketSegmentSlotsPerShard int
+
 	// AcquisitionFallbackShards is the maximum number of additional shards that
 	// an acquisition path may probe after the primary selected shard misses.
 	//
@@ -211,6 +219,7 @@ func (s ShardPolicy) IsZero() bool {
 	return s.Selection == ShardSelectionModeUnset &&
 		s.ShardsPerClass == 0 &&
 		s.BucketSlotsPerShard == 0 &&
+		s.BucketSegmentSlotsPerShard == 0 &&
 		s.AcquisitionFallbackShards == 0 &&
 		s.ReturnFallbackShards == 0
 }

@@ -246,6 +246,7 @@ func poolTestCreditExhaustionPolicy() Policy {
 func poolTestBucketFullPolicy() Policy {
 	policy := poolTestSmallSingleShardPolicy()
 	policy.Shards.BucketSlotsPerShard = 1
+	policy.Shards.BucketSegmentSlotsPerShard = 1
 	policy.Retention.MaxClassRetainedBuffers = 2
 	policy.Retention.MaxShardRetainedBuffers = 2
 

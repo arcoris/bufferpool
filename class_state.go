@@ -117,13 +117,15 @@ type classState struct {
 
 // newClassState returns runtime state for one size class.
 //
-// shardCount MUST be greater than zero. bucketSlotLimit is passed to each shard
-// bucket and is validated by shard/bucket construction.
+// shardCount MUST be greater than zero. bucketSlotLimit is the total physical
+// bucket capacity for each shard. bucketSegmentSlotLimit optionally overrides
+// the lazy segment size used by each shard bucket; tests may omit it and use the
+// package default segment size clamped to the bucket size.
 //
 // The returned class state starts with zero assigned class budget, which means
 // shard credit is disabled until the owner publishes a budget through
 // updateBudget or updateBudgetLimit.
-func newClassState(class SizeClass, shardCount int, bucketSlotLimit int) classState {
+func newClassState(class SizeClass, shardCount int, bucketSlotLimit int, bucketSegmentSlotLimit ...int) classState {
 	if !class.IsValid() {
 		panic(errClassStateInvalidClass)
 	}
@@ -134,7 +136,7 @@ func newClassState(class SizeClass, shardCount int, bucketSlotLimit int) classSt
 
 	shards := make([]shard, shardCount)
 	for index := range shards {
-		shards[index] = newShard(bucketSlotLimit)
+		shards[index] = newShard(bucketSlotLimit, bucketSegmentSlotLimit...)
 	}
 
 	return classState{

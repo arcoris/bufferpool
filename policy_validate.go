@@ -282,6 +282,19 @@ func (s ShardPolicy) Validate() error {
 		errs = appendPolicyValidationError(errs, "bufferpool.ShardPolicy: bucket slots per shard must be greater than zero")
 	}
 
+	if s.BucketSegmentSlotsPerShard <= 0 {
+		errs = appendPolicyValidationError(errs, "bufferpool.ShardPolicy: bucket segment slots per shard must be greater than zero")
+	}
+
+	if s.BucketSlotsPerShard > 0 &&
+		s.BucketSegmentSlotsPerShard > s.BucketSlotsPerShard {
+		errs = appendPolicyValidationError(
+			errs,
+			"bufferpool.ShardPolicy: bucket segment slots per shard "+strconv.Itoa(s.BucketSegmentSlotsPerShard)+
+				" must be less than or equal to bucket slots per shard "+strconv.Itoa(s.BucketSlotsPerShard),
+		)
+	}
+
 	if s.AcquisitionFallbackShards < 0 {
 		errs = appendPolicyValidationError(errs, "bufferpool.ShardPolicy: acquisition fallback shards must not be negative")
 	}

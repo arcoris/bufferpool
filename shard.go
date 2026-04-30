@@ -96,16 +96,20 @@ type shard struct {
 	credit shardCredit
 }
 
-// newShard returns an enabled shard with a bucket containing bucketSlotLimit
+// newShard returns an enabled shard with a bucket capped at bucketSlotLimit
 // retained-buffer slots.
 //
 // The returned shard has disabled credit by default. Retention will be rejected
 // until the owner applies a non-zero shardCreditLimit through updateCredit.
 // This is intentional: physical storage capacity and retention credit are
 // separate concepts.
-func newShard(bucketSlotLimit int) shard {
+//
+// bucketSegmentSlotLimit optionally sets lazy bucket metadata segment size.
+// Existing focused shard tests omit it and use the package default segment size
+// clamped to the bucket limit.
+func newShard(bucketSlotLimit int, bucketSegmentSlotLimit ...int) shard {
 	return shard{
-		bucket: newBucket(bucketSlotLimit),
+		bucket: newBucket(bucketSlotLimit, bucketSegmentSlotLimit...),
 	}
 }
 

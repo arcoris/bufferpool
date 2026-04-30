@@ -123,6 +123,7 @@ func newPoolClassStates(table classTable, policy Policy) []classState {
 			class,
 			policy.Shards.ShardsPerClass,
 			policy.Shards.BucketSlotsPerShard,
+			policy.Shards.BucketSegmentSlotsPerShard,
 		)
 	}
 

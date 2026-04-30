@@ -134,8 +134,8 @@ func (p *Pool) currentRuntimeSnapshot() *poolRuntimeSnapshot {
 //
 // AcquisitionFallbackShards is intentionally not a topology field: it only
 // changes how many already-built shards may be probed after the selected shard
-// misses. Selection mode, shard count, bucket slots, and class sizes are topology
-// fields and must remain fixed.
+// misses. Selection mode, shard count, bucket slots, bucket segment slots, and
+// class sizes are topology fields and must remain fixed.
 func poolRuntimePolicyCompatible(construction Policy, runtime Policy) bool {
 	if construction.Shards.Selection != runtime.Shards.Selection {
 		return false
@@ -146,6 +146,10 @@ func poolRuntimePolicyCompatible(construction Policy, runtime Policy) bool {
 	}
 
 	if construction.Shards.BucketSlotsPerShard != runtime.Shards.BucketSlotsPerShard {
+		return false
+	}
+
+	if construction.Shards.BucketSegmentSlotsPerShard != runtime.Shards.BucketSegmentSlotsPerShard {
 		return false
 	}
 

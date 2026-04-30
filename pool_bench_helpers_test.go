@@ -90,6 +90,7 @@ func poolBenchmarkPolicyForCase(tc poolBenchmarkCase) Policy {
 	if bucketSlots <= 0 {
 		bucketSlots = poolBenchmarkDefaultBucketSlots
 	}
+	bucketSegmentSlots := poolBenchmarkBucketSegmentSlots(bucketSlots)
 
 	selector := tc.selector
 	if selector == ShardSelectionModeUnset {
@@ -120,11 +121,12 @@ func poolBenchmarkPolicyForCase(tc poolBenchmarkCase) Policy {
 			Sizes: append([]ClassSize(nil), classes...),
 		},
 		Shards: ShardPolicy{
-			Selection:                 selector,
-			ShardsPerClass:            shards,
-			BucketSlotsPerShard:       bucketSlots,
-			AcquisitionFallbackShards: 0,
-			ReturnFallbackShards:      0,
+			Selection:                  selector,
+			ShardsPerClass:             shards,
+			BucketSlotsPerShard:        bucketSlots,
+			BucketSegmentSlotsPerShard: bucketSegmentSlots,
+			AcquisitionFallbackShards:  0,
+			ReturnFallbackShards:       0,
 		},
 		Admission: AdmissionPolicy{
 			ZeroSizeRequests:    ZeroSizeRequestEmptyBuffer,
@@ -147,6 +149,17 @@ func poolBenchmarkPolicyForCase(tc poolBenchmarkCase) Policy {
 			MaxReturnedCapacityGrowth: 2 * PolicyRatioOne,
 		},
 	}
+}
+
+// poolBenchmarkBucketSegmentSlots resolves a benchmark segment size that keeps
+// bucket metadata lazy without making benchmark setup invalid for small bucket
+// slot counts.
+func poolBenchmarkBucketSegmentSlots(bucketSlots int) int {
+	if bucketSlots < DefaultPolicyBucketSegmentSlotsPerShard {
+		return bucketSlots
+	}
+
+	return DefaultPolicyBucketSegmentSlotsPerShard
 }
 
 // poolBenchmarkNewPool constructs a Pool and registers cleanup for a benchmark.

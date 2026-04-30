@@ -185,6 +185,7 @@ func TestPoolPutAdmissionErrors(t *testing.T) {
 		policy := poolTestSmallSingleShardPolicy()
 		policy.Admission.BucketFull = AdmissionActionError
 		policy.Shards.BucketSlotsPerShard = 1
+		policy.Shards.BucketSegmentSlotsPerShard = 1
 		policy.Retention.MaxClassRetainedBuffers = 2
 		policy.Retention.MaxShardRetainedBuffers = 2
 

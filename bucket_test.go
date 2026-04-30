@@ -44,15 +44,77 @@ func TestNewBucketRequiresPositiveSlotLimit(t *testing.T) {
 	}
 }
 
+func TestNewBucketRequiresValidSegmentSlotLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name         string
+		slotLimit    int
+		segmentSlots int
+	}{
+		{name: "zero segment slots", slotLimit: 4, segmentSlots: 0},
+		{name: "negative segment slots", slotLimit: 4, segmentSlots: -1},
+		{name: "segment larger than bucket", slotLimit: 4, segmentSlots: 5},
+	} {
+		tt := tt
+
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			testutil.MustPanicWithMessage(t, errBucketInvalidSegmentSlotLimit, func() {
+				_ = newBucket(tt.slotLimit, tt.segmentSlots)
+			})
+		})
+	}
+}
+
 func TestNewBucketInitialState(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(3)
+	b := newBucket(3, 2)
 
 	assertBucketState(t, b.state(), bucketState{
 		SlotLimit:      3,
 		AvailableSlots: 3,
 	})
+
+	if b.head != nil {
+		t.Fatal("newBucket allocated a segment before first push")
+	}
+}
+
+func TestBucketPushAllocatesSegmentsLazily(t *testing.T) {
+	t.Parallel()
+
+	b := newBucket(4, 2)
+	if b.segmentCount() != 0 {
+		t.Fatalf("segment count initially = %d, want 0", b.segmentCount())
+	}
+
+	if !b.push(make([]byte, 0, 4)) {
+		t.Fatal("first push() = false, want true")
+	}
+	if b.segmentCount() != 1 {
+		t.Fatalf("segment count after first push = %d, want 1", b.segmentCount())
+	}
+	firstHead := b.head
+
+	if !b.push(make([]byte, 0, 8)) {
+		t.Fatal("second push() = false, want true")
+	}
+	if b.head != firstHead {
+		t.Fatal("second push allocated a new segment before head was full")
+	}
+
+	if !b.push(make([]byte, 0, 16)) {
+		t.Fatal("third push() = false, want true")
+	}
+	if b.segmentCount() != 2 {
+		t.Fatalf("segment count after third push = %d, want 2", b.segmentCount())
+	}
+	if b.head == firstHead || b.head.previous != firstHead {
+		t.Fatal("third push did not allocate a new head segment linked to the previous segment")
+	}
 }
 
 func TestZeroValueBucketIsDisabled(t *testing.T) {
@@ -77,7 +139,7 @@ func TestZeroValueBucketIsDisabled(t *testing.T) {
 func TestBucketPushStoresZeroLengthBuffer(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(2)
+	b := newBucket(2, 1)
 	buffer := make([]byte, 5, 16)
 
 	if !b.push(buffer) {
@@ -91,7 +153,7 @@ func TestBucketPushStoresZeroLengthBuffer(t *testing.T) {
 		AvailableSlots:  1,
 	})
 
-	stored := b.slots[0]
+	stored := bucketSlotAt(t, &b, 0)
 	if len(stored) != 0 {
 		t.Fatalf("stored len = %d, want 0", len(stored))
 	}
@@ -105,7 +167,7 @@ func TestBucketPushStoresZeroLengthBuffer(t *testing.T) {
 func TestBucketPushRejectsInvalidOrFull(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(1)
+	b := newBucket(1, 1)
 
 	if b.push(nil) {
 		t.Fatal("push(nil) = true, want false")
@@ -134,13 +196,13 @@ func TestBucketPushRejectsInvalidOrFull(t *testing.T) {
 		RetainedBytes:   8,
 		SlotLimit:       1,
 	})
-	assertSameBucketBackingArray(t, b.slots[0], first)
+	assertSameBucketBackingArray(t, bucketSlotAt(t, &b, 0), first)
 }
 
 func TestBucketPopReturnsLIFOAndClearsSlots(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(3)
+	b := newBucket(3, 2)
 	first := make([]byte, 1, 4)
 	second := make([]byte, 2, 8)
 
@@ -160,8 +222,11 @@ func TestBucketPopReturnsLIFOAndClearsSlots(t *testing.T) {
 		AvailableSlots:  2,
 	})
 
+	oldHead := b.head
 	_ = mustPopBucketBuffer(t, &b, first, 4)
-	assertBucketSlotCleared(t, &b, 0)
+	if oldHead.slots[0] != nil {
+		t.Fatal("released segment still holds popped buffer reference")
+	}
 	assertBucketState(t, b.state(), bucketState{
 		SlotLimit:      3,
 		AvailableSlots: 3,
@@ -170,12 +235,45 @@ func TestBucketPopReturnsLIFOAndClearsSlots(t *testing.T) {
 	if buffer, ok := b.pop(); ok || buffer != nil {
 		t.Fatalf("empty pop() = (%v, %t), want (nil, false)", buffer, ok)
 	}
+	if b.head != nil {
+		t.Fatal("bucket retained an empty segment after final pop")
+	}
+}
+
+func TestBucketPopReleasesEmptyHeadSegment(t *testing.T) {
+	t.Parallel()
+
+	b := newBucket(4, 2)
+	buffers := [][]byte{
+		make([]byte, 0, 4),
+		make([]byte, 0, 8),
+		make([]byte, 0, 16),
+	}
+	for _, buffer := range buffers {
+		if !b.push(buffer) {
+			t.Fatalf("push(cap=%d) = false, want true", cap(buffer))
+		}
+	}
+
+	if b.segmentCount() != 2 {
+		t.Fatalf("segment count after setup = %d, want 2", b.segmentCount())
+	}
+	oldHead := b.head
+	oldPrevious := oldHead.previous
+
+	_ = mustPopBucketBuffer(t, &b, buffers[2], 16)
+	if b.head != oldPrevious {
+		t.Fatal("pop did not release the empty head segment")
+	}
+	if oldHead.slots[0] != nil {
+		t.Fatal("released segment still holds popped buffer reference")
+	}
 }
 
 func TestBucketInspectionHelpers(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(2)
+	b := newBucket(2, 1)
 
 	if b.len() != 0 {
 		t.Fatalf("len() initially = %d, want 0", b.len())
@@ -278,12 +376,13 @@ func TestBucketStatePredicates(t *testing.T) {
 func TestBucketTrimRemovesMostRecentBuffers(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(4)
+	b := newBucket(4, 2)
 	for _, capacity := range []int{4, 8, 16} {
 		if !b.push(make([]byte, capacity/2, capacity)) {
 			t.Fatalf("push(cap=%d) = false, want true", capacity)
 		}
 	}
+	oldHead := b.head
 
 	result := b.trim(2)
 	assertBucketTrimResult(t, result, bucketTrimResult{
@@ -297,13 +396,15 @@ func TestBucketTrimRemovesMostRecentBuffers(t *testing.T) {
 
 	assertBucketState(t, b.state(), result.BucketState())
 	assertBucketSlotCleared(t, &b, 1)
-	assertBucketSlotCleared(t, &b, 2)
+	if oldHead.slots[0] != nil {
+		t.Fatal("released trim segment still holds removed buffer reference")
+	}
 }
 
 func TestBucketTrimHandlesZeroAndOversizedLimits(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(2)
+	b := newBucket(2, 1)
 	if !b.push(make([]byte, 0, 8)) {
 		t.Fatal("first push() = false, want true")
 	}
@@ -344,10 +445,35 @@ func TestBucketTrimRejectsNegativeLimit(t *testing.T) {
 	})
 }
 
+func TestBucketTrimBoundedByBytes(t *testing.T) {
+	t.Parallel()
+
+	b := newBucket(4, 2)
+	for _, capacity := range []int{4, 8, 16} {
+		if !b.push(make([]byte, 0, capacity)) {
+			t.Fatalf("push(cap=%d) = false, want true", capacity)
+		}
+	}
+	oldHead := b.head
+
+	result := b.trimBounded(3, 20)
+	assertBucketTrimResult(t, result, bucketTrimResult{
+		RemovedBuffers:  1,
+		RemovedBytes:    16,
+		RetainedBuffers: 2,
+		RetainedBytes:   12,
+		SlotLimit:       4,
+		AvailableSlots:  2,
+	})
+	if oldHead.slots[0] != nil {
+		t.Fatal("released trim segment still holds removed buffer reference")
+	}
+}
+
 func TestBucketClearRemovesEverythingAndIsRepeatable(t *testing.T) {
 	t.Parallel()
 
-	b := newBucket(2)
+	b := newBucket(2, 1)
 	if !b.push(make([]byte, 0, 8)) {
 		t.Fatal("first push() = false, want true")
 	}
@@ -365,13 +491,37 @@ func TestBucketClearRemovesEverythingAndIsRepeatable(t *testing.T) {
 		SlotLimit:      2,
 		AvailableSlots: 2,
 	})
-	assertBucketSlotCleared(t, &b, 0)
-	assertBucketSlotCleared(t, &b, 1)
+	if b.head != nil {
+		t.Fatal("clear retained segment chain")
+	}
 
 	assertBucketTrimResult(t, b.clear(), bucketTrimResult{
 		SlotLimit:      2,
 		AvailableSlots: 2,
 	})
+}
+
+func TestBucketClearClearsSegmentSlotsBeforeDrop(t *testing.T) {
+	t.Parallel()
+
+	b := newBucket(4, 2)
+	for _, capacity := range []int{4, 8, 16} {
+		if !b.push(make([]byte, 0, capacity)) {
+			t.Fatalf("push(cap=%d) = false, want true", capacity)
+		}
+	}
+	head := b.head
+	previous := head.previous
+
+	_ = b.clear()
+
+	for _, segment := range []*bucketSegment{head, previous} {
+		for index, slot := range segment.slots {
+			if slot != nil {
+				t.Fatalf("cleared segment slot %d = %v, want nil", index, slot)
+			}
+		}
+	}
 }
 
 func TestBucketTrimResultHelpers(t *testing.T) {
@@ -421,15 +571,17 @@ func TestBucketInvalidCountPanics(t *testing.T) {
 		{
 			name: "negative count",
 			bucket: bucket{
-				slots: make([][]byte, 1),
-				count: -1,
+				slotLimitValue:        1,
+				segmentSlotLimitValue: 1,
+				retainedBuffers:       -1,
 			},
 		},
 		{
 			name: "count beyond slot limit",
 			bucket: bucket{
-				slots: make([][]byte, 1),
-				count: 2,
+				slotLimitValue:        1,
+				segmentSlotLimitValue: 1,
+				retainedBuffers:       2,
 			},
 		},
 	} {
@@ -450,7 +602,11 @@ func TestBucketPushRejectsNonEmptyFreeSlot(t *testing.T) {
 
 	stale := make([]byte, 0, 8)
 	b := bucket{
-		slots: [][]byte{stale},
+		head: &bucketSegment{
+			slots: [][]byte{stale},
+		},
+		slotLimitValue:        1,
+		segmentSlotLimitValue: 1,
 	}
 
 	testutil.MustPanicWithMessage(t, errBucketNonEmptyFreeSlot, func() {
@@ -461,7 +617,7 @@ func TestBucketPushRejectsNonEmptyFreeSlot(t *testing.T) {
 		SlotLimit:      1,
 		AvailableSlots: 1,
 	})
-	assertSameBucketBackingArray(t, b.slots[0], stale)
+	assertSameBucketBackingArray(t, bucketSlotAt(t, &b, 0), stale)
 }
 
 func TestBucketEmptyOccupiedSlotPanics(t *testing.T) {
@@ -480,17 +636,23 @@ func TestBucketEmptyOccupiedSlotPanics(t *testing.T) {
 			t.Parallel()
 
 			b := bucket{
-				slots:         [][]byte{tt.slot},
-				count:         1,
-				retainedBytes: 1,
+				head: &bucketSegment{
+					slots: [][]byte{tt.slot},
+					count: 1,
+				},
+				retainedBuffers:       1,
+				retainedBytes:         1,
+				slotLimitValue:        1,
+				segmentSlotLimitValue: 1,
 			}
 
 			testutil.MustPanicWithMessage(t, errBucketEmptyOccupiedSlot, func() {
 				_, _ = b.pop()
 			})
 
-			if !sameBucketSliceShape(b.slots[0], tt.slot) {
-				t.Fatalf("slot changed after panic: got len=%d cap=%d, want len=%d cap=%d", len(b.slots[0]), cap(b.slots[0]), len(tt.slot), cap(tt.slot))
+			slot := bucketSlotAt(t, &b, 0)
+			if !sameBucketSliceShape(slot, tt.slot) {
+				t.Fatalf("slot changed after panic: got len=%d cap=%d, want len=%d cap=%d", len(slot), cap(slot), len(tt.slot), cap(tt.slot))
 			}
 		})
 	}
@@ -500,8 +662,12 @@ func TestBucketRetainedBytesOverflowPanics(t *testing.T) {
 	t.Parallel()
 
 	b := bucket{
-		slots:         make([][]byte, 1),
-		retainedBytes: maxBucketRetainedBytes - 1,
+		head: &bucketSegment{
+			slots: make([][]byte, 1),
+		},
+		slotLimitValue:        1,
+		segmentSlotLimitValue: 1,
+		retainedBytes:         maxBucketRetainedBytes - 1,
 	}
 
 	testutil.MustPanicWithMessage(t, errBucketRetainedBytesOverflow, func() {
@@ -511,10 +677,10 @@ func TestBucketRetainedBytesOverflowPanics(t *testing.T) {
 	if got := b.retained(); got != maxBucketRetainedBytes-1 {
 		t.Fatalf("retained() after overflow panic = %d, want %d", got, maxBucketRetainedBytes-1)
 	}
-	if b.count != 0 {
-		t.Fatalf("count after overflow panic = %d, want 0", b.count)
+	if b.retainedBuffers != 0 {
+		t.Fatalf("retainedBuffers after overflow panic = %d, want 0", b.retainedBuffers)
 	}
-	if b.slots[0] != nil {
+	if bucketSlotAt(t, &b, 0) != nil {
 		t.Fatal("slot after overflow panic is non-nil, want nil")
 	}
 }
@@ -524,27 +690,33 @@ func TestBucketRetainedBytesUnderflowPanics(t *testing.T) {
 
 	buffer := make([]byte, 0, 8)
 	b := bucket{
-		slots:         [][]byte{buffer},
-		count:         1,
-		retainedBytes: 4,
+		head: &bucketSegment{
+			slots: [][]byte{buffer},
+			count: 1,
+		},
+		retainedBuffers:       1,
+		retainedBytes:         4,
+		slotLimitValue:        1,
+		segmentSlotLimitValue: 1,
 	}
 
 	testutil.MustPanicWithMessage(t, errBucketRetainedBytesUnderflow, func() {
 		_, _ = b.pop()
 	})
 
-	if got := b.count; got != 1 {
-		t.Fatalf("count after underflow panic = %d, want 1", got)
+	if got := b.retainedBuffers; got != 1 {
+		t.Fatalf("retainedBuffers after underflow panic = %d, want 1", got)
 	}
-	assertSameBucketBackingArray(t, b.slots[0], buffer)
+	assertSameBucketBackingArray(t, bucketSlotAt(t, &b, 0), buffer)
 }
 
 func TestBucketRetainedPanicsForInvalidCount(t *testing.T) {
 	t.Parallel()
 
 	b := bucket{
-		slots: make([][]byte, 1),
-		count: 2,
+		slotLimitValue:        1,
+		segmentSlotLimitValue: 1,
+		retainedBuffers:       2,
 	}
 
 	testutil.MustPanicWithMessage(t, errBucketInvalidCount, func() {
@@ -652,9 +824,41 @@ func mustPopBucketBuffer(t *testing.T, b *bucket, wantBacking []byte, wantCapaci
 func assertBucketSlotCleared(t *testing.T, b *bucket, index int) {
 	t.Helper()
 
-	if b.slots[index] != nil {
-		t.Fatalf("slot %d = %v, want nil", index, b.slots[index])
+	if slot := bucketSlotAt(t, b, index); slot != nil {
+		t.Fatalf("slot %d = %v, want nil", index, slot)
 	}
+}
+
+func bucketSlotAt(t *testing.T, b *bucket, index int) []byte {
+	t.Helper()
+
+	if index < 0 {
+		t.Fatalf("slot index = %d, want non-negative", index)
+	}
+
+	base := 0
+	for _, segment := range bucketSegmentsOldestFirst(b) {
+		if index < base+len(segment.slots) {
+			return segment.slots[index-base]
+		}
+		base += len(segment.slots)
+	}
+
+	t.Fatalf("slot %d outside allocated bucket segments", index)
+	return nil
+}
+
+func bucketSegmentsOldestFirst(b *bucket) []*bucketSegment {
+	var segments []*bucketSegment
+	for segment := b.head; segment != nil; segment = segment.previous {
+		segments = append(segments, segment)
+	}
+
+	for left, right := 0, len(segments)-1; left < right; left, right = left+1, right-1 {
+		segments[left], segments[right] = segments[right], segments[left]
+	}
+
+	return segments
 }
 
 func assertSameBucketBackingArray(t *testing.T, left, right []byte) {
