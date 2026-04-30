@@ -36,7 +36,7 @@ import "time"
 //   - Shards define lock striping, bucket depth, and optional fallback probing.
 //   - Admission defines how unsuitable returned buffers should be handled by the
 //     future public Pool return path.
-//   - Pressure defines static contraction rules for future pressure publishers;
+//   - Pressure defines static contraction rules for owner-published pressure;
 //     it does not observe memory pressure by itself.
 //   - Trim defines bounded cold-path cleanup work for future trim controllers.
 //   - Ownership defines whether future ownership/lease layers should track and

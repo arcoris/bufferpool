@@ -94,7 +94,7 @@ func (p *Pool) applyClassBudgets(targets []ClassBudgetTarget) Generation {
 
 	runtime := p.currentRuntimeSnapshot()
 	poolGeneration := budgetPublicationGeneration(runtime.Generation, generation)
-	p.publishRuntimeSnapshot(newPoolRuntimeSnapshot(poolGeneration, runtime.Policy))
+	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(poolGeneration, runtime.Policy, runtime.Pressure))
 	return poolGeneration
 }
 

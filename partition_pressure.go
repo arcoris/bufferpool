@@ -85,12 +85,56 @@ func (p PartitionPressurePolicy) Validate() error {
 }
 
 // Pressure returns the current partition pressure interpretation.
+//
+// The returned snapshot combines threshold-derived pressure from the current
+// sample with the foreground pressure signal most recently published into the
+// partition runtime snapshot.
 func (p *PoolPartition) Pressure() PartitionPressureSnapshot {
 	p.mustBeInitialized()
 	runtime := p.currentRuntimeSnapshot()
 	var sample PoolPartitionSample
 	p.sampleWithRuntimeAndGeneration(&sample, runtime, p.generation.Load(), false)
-	return newPartitionPressureSnapshot(runtime.Policy.Pressure, sample)
+	return newEffectivePartitionPressureSnapshot(runtime.Policy.Pressure, runtime.Pressure, sample)
+}
+
+// SetPressure publishes a manual pressure signal to this partition and its
+// owned Pools.
+func (p *PoolPartition) SetPressure(level PressureLevel) error {
+	p.mustBeInitialized()
+	if err := (PressureSignal{Level: level}).validate(); err != nil {
+		return err
+	}
+
+	generation := p.generation.Advance()
+	return p.applyPressure(PressureSignal{Level: level, Source: PressureSourceManual, Generation: generation})
+}
+
+// applyPressure publishes pressure to partition runtime state and owned Pools.
+//
+// The partition does not scan shards here. Pool return admission reads the
+// propagated immutable pressure signal, while physical correction remains a
+// bounded ExecuteTrim call.
+func (p *PoolPartition) applyPressure(signal PressureSignal) error {
+	p.mustBeInitialized()
+	if err := signal.validate(); err != nil {
+		return err
+	}
+	if !p.lifecycle.AllowsWork() {
+		return newError(ErrClosed, errPartitionClosed)
+	}
+
+	runtime := p.currentRuntimeSnapshot()
+	generation := budgetPublicationGeneration(runtime.Generation, signal.Generation)
+	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))
+
+	for _, entry := range p.registry.entries {
+		partitionSignal := signal
+		partitionSignal.Source = PressureSourcePartition
+		if err := entry.pool.applyPressure(partitionSignal); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // newPartitionPressureSnapshot maps sampled owned bytes to a pressure level.
@@ -118,4 +162,21 @@ func newPartitionPressureSnapshot(policy PartitionPressurePolicy, sample PoolPar
 		s.Level = PressureLevelMedium
 	}
 	return s
+}
+
+// newEffectivePartitionPressureSnapshot combines sampled pressure thresholds
+// with an explicitly published runtime pressure signal.
+//
+// Threshold policy remains useful for autonomous partition-local detection.
+// Runtime signals are owner-published state from SetPressure or PoolGroup and
+// may request stronger contraction before sampled owned bytes cross a static
+// threshold. Normal or unknown signals do not raise the sampled level.
+func newEffectivePartitionPressureSnapshot(policy PartitionPressurePolicy, signal PressureSignal, sample PoolPartitionSample) PartitionPressureSnapshot {
+	snapshot := newPartitionPressureSnapshot(policy, sample)
+	if !isKnownPressureLevel(signal.Level) || signal.Level <= snapshot.Level {
+		return snapshot
+	}
+	snapshot.Enabled = true
+	snapshot.Level = signal.Level
+	return snapshot
 }

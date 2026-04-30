@@ -41,7 +41,7 @@ type PartitionPolicy struct {
 	// Pressure maps aggregate owned bytes into pressure levels.
 	Pressure PartitionPressurePolicy
 
-	// Trim configures planning-only partition trim work.
+	// Trim configures bounded partition-local retained-storage trim work.
 	Trim PartitionTrimPolicy
 }
 

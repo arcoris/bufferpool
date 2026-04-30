@@ -266,10 +266,19 @@ type shardRetainOptions struct {
 // counters after the bucket operation completes. Callers decide when trimming is
 // needed; shard only performs the selected local storage reduction.
 func (s *shard) trim(maxBuffers int) bucketTrimResult {
+	return s.trimBounded(maxBuffers, maxBucketRetainedBytes)
+}
+
+// trimBounded removes retained buffers while respecting buffer and byte limits.
+//
+// The physical removal is delegated to bucket.trimBounded. The shard records
+// trim counters after the bucket operation completes. This is a cold corrective
+// path and never touches checked-out buffers.
+func (s *shard) trimBounded(maxBuffers int, maxBytes uint64) bucketTrimResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result := s.bucket.trim(maxBuffers)
+	result := s.bucket.trimBounded(maxBuffers, maxBytes)
 	s.counters.recordTrim(result)
 
 	return result

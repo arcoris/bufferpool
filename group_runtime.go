@@ -28,24 +28,36 @@ type groupRuntimeSnapshot struct {
 
 	// Policy is the immutable group policy used by manual coordinator cycles.
 	Policy PoolGroupPolicy
+
+	// Pressure is the current immutable pressure signal propagated by the group.
+	Pressure PressureSignal
 }
 
 // newGroupRuntimeSnapshot returns a normalized immutable group runtime view.
 func newGroupRuntimeSnapshot(generation Generation, policy PoolGroupPolicy) *groupRuntimeSnapshot {
-	return &groupRuntimeSnapshot{Generation: generation, Policy: policy.Normalize()}
+	return newGroupRuntimeSnapshotWithPressure(generation, policy, normalPressureSignal(generation))
+}
+
+// newGroupRuntimeSnapshotWithPressure returns a normalized immutable group
+// runtime view with explicit pressure publication state.
+func newGroupRuntimeSnapshotWithPressure(generation Generation, policy PoolGroupPolicy, pressure PressureSignal) *groupRuntimeSnapshot {
+	if pressure.Generation.IsZero() {
+		pressure.Generation = generation
+	}
+	return &groupRuntimeSnapshot{Generation: generation, Policy: policy.Normalize(), Pressure: pressure}
 }
 
 // publishRuntimeSnapshot atomically publishes a group policy view.
 //
-// Group policy publication itself does not publish partition policies, execute
-// trim, or advance the group state generation. Manual TickInto reads this
-// snapshot and performs budget publication as an explicit foreground
-// coordinator cycle.
+// Group policy publication itself does not execute trim or advance the group
+// state generation. Manual TickInto reads this snapshot and performs budget
+// publication as an explicit foreground coordinator cycle; SetPressure reads it
+// to propagate pressure to partitions.
 func (g *PoolGroup) publishRuntimeSnapshot(snapshot *groupRuntimeSnapshot) {
 	if snapshot == nil {
 		panic(errGroupRuntimeSnapshotNil)
 	}
-	g.runtimeSnapshot.Store(newGroupRuntimeSnapshot(snapshot.Generation, snapshot.Policy))
+	g.runtimeSnapshot.Store(newGroupRuntimeSnapshotWithPressure(snapshot.Generation, snapshot.Policy, snapshot.Pressure))
 }
 
 // currentRuntimeSnapshot returns the currently published group policy view.

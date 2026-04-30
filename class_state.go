@@ -425,7 +425,17 @@ type classRetainOptions struct {
 // The shard records shard-scope trim counters. classState records class-scope
 // trim counters from the observed physical removal result.
 func (s *classState) trimShard(shardIndex int, maxBuffers int) bucketTrimResult {
-	result := s.mustShardAt(shardIndex).trim(maxBuffers)
+	return s.trimShardBounded(shardIndex, maxBuffers, maxBucketRetainedBytes)
+}
+
+// trimShardBounded removes retained buffers from one shard with buffer and byte
+// limits.
+//
+// This is the class-level physical trim primitive used by Pool and
+// PoolPartition. It removes only retained bucket storage; checked-out buffers
+// live in LeaseRegistry and are not reachable from this path.
+func (s *classState) trimShardBounded(shardIndex int, maxBuffers int, maxBytes uint64) bucketTrimResult {
+	result := s.mustShardAt(shardIndex).trimBounded(maxBuffers, maxBytes)
 	s.counters.recordTrim(result)
 
 	return result

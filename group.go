@@ -42,9 +42,9 @@ const (
 // acquisition and release by Pool name through the owning partition while
 // aggregating partition samples, bounded windows, rates, metrics, snapshots,
 // and foreground coordinator reports. TickInto may publish partition retained
-// budgets into owned PoolPartitions. It deliberately does not execute physical
-// trim, scan shards directly, compute class EWMA, propagate pressure, or start
-// background coordinator goroutines.
+// budgets into owned PoolPartitions and SetPressure propagates pressure signals
+// to partitions. It deliberately does not execute physical trim, scan shards
+// directly, compute class EWMA, or start background coordinator goroutines.
 //
 // Responsibility boundary:
 //

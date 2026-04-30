@@ -28,7 +28,7 @@ const (
 	// the default policy.
 	//
 	// The soft target is intentionally lower than the hard target. It gives
-	// future controllers, pressure handling, and trim logic room to absorb short
+	// controllers, pressure handling, and trim logic room to absorb short
 	// bursts without immediately treating the runtime as over its safety limit.
 	DefaultPolicySoftRetainedBytes Size = 32 * MiB
 
@@ -371,7 +371,7 @@ func DefaultAdmissionPolicy() AdmissionPolicy {
 // DefaultPressurePolicy returns the default pressure-contraction policy.
 //
 // Pressure handling is enabled in the default policy, but the current pressure
-// level remains runtime state owned by future Pool/Partition/Group components.
+// level remains runtime state published by PoolPartition or PoolGroup owners.
 // The normal level is intentionally not represented here because no contraction
 // is needed under normal pressure.
 func DefaultPressurePolicy() PressurePolicy {

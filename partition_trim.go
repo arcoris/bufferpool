@@ -21,15 +21,15 @@ const (
 	defaultPartitionTrimMaxPoolsPerCycle = 1
 )
 
-// PartitionTrimPolicy defines bounded trim planning defaults.
+// PartitionTrimPolicy defines bounded partition trim defaults.
 type PartitionTrimPolicy struct {
-	// Enabled controls whether partition trim planning can produce work.
+	// Enabled controls whether partition trim can produce physical work.
 	Enabled bool
 
 	// MaxPoolsPerCycle bounds the number of candidate Pools in one plan.
 	MaxPoolsPerCycle int
 
-	// MaxBytesPerCycle bounds retained bytes that future physical trim may remove.
+	// MaxBytesPerCycle bounds retained bytes that one physical trim may remove.
 	MaxBytesPerCycle Size
 
 	// TrimOnPressure means trim planning is enabled only while pressure is above
@@ -58,11 +58,7 @@ type PartitionTrimPlan struct {
 	MaxBytesPerCycle uint64
 }
 
-// PartitionTrimResult reports a trim attempt.
-//
-// Current PoolPartition does not execute physical trim. Result fields are kept
-// explicit so future Pool trim execution can add physical effects without
-// changing the diagnostic shape.
+// PartitionTrimResult reports a bounded physical trim attempt.
 type PartitionTrimResult struct {
 	// Attempted reports whether execution was requested while trim was enabled.
 	Attempted bool
@@ -75,6 +71,12 @@ type PartitionTrimResult struct {
 
 	// VisitedPools is the number of Pools visited by physical execution.
 	VisitedPools uint64
+
+	// VisitedClasses is the number of Pool classes visited by physical execution.
+	VisitedClasses uint64
+
+	// VisitedShards is the number of Pool shards visited by physical execution.
+	VisitedShards uint64
 
 	// TrimmedBuffers is the number of retained buffers physically removed.
 	TrimmedBuffers uint64
@@ -96,7 +98,7 @@ func (p PartitionTrimPolicy) IsZero() bool {
 	return !p.Enabled && p.MaxPoolsPerCycle == 0 && p.MaxBytesPerCycle.IsZero() && !p.TrimOnPressure
 }
 
-// Validate validates trim planning settings.
+// Validate validates partition trim settings.
 func (p PartitionTrimPolicy) Validate() error {
 	p = p.Normalize()
 	if !p.Enabled {
@@ -117,26 +119,23 @@ func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 	runtime := p.currentRuntimeSnapshot()
 	var sample PoolPartitionSample
 	p.sampleWithRuntimeAndGeneration(&sample, runtime, p.generation.Load(), false)
-	pressure := newPartitionPressureSnapshot(runtime.Policy.Pressure, sample)
+	pressure := newEffectivePartitionPressureSnapshot(runtime.Policy.Pressure, runtime.Pressure, sample)
 	return newPartitionTrimPlan(runtime.Policy.Trim, pressure, sample)
 }
 
-// ExecuteTrim currently returns a planning-only result.
+// ExecuteTrim performs one bounded physical retained-storage trim cycle.
 //
-// PoolPartition does not yet have a stable physical Pool trim API to invoke.
-// The method is retained for controller wiring tests, but it does not visit
-// Pools or remove retained buffers. ExecuteTrim is not a physical trim
-// operation in the current implementation.
+// ExecuteTrim removes retained buffers only. It does not force active leases,
+// does not call Pool.Get or Pool.Put, and does not scan outside partition-owned
+// Pools. The cycle follows PlanTrim limits and visits Pools in deterministic
+// partition registry order.
 func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 	p.mustBeInitialized()
-	if !p.Policy().Trim.Enabled {
-		return PartitionTrimResult{Reason: "trim_disabled"}
-	}
-
-	return PartitionTrimResult{Attempted: true, Reason: "planning_only"}
+	plan := p.PlanTrim()
+	return p.executeTrimPlan(plan)
 }
 
-// newPartitionTrimPlan derives a planning-only trim decision.
+// newPartitionTrimPlan derives a non-mutating trim execution plan.
 func newPartitionTrimPlan(policy PartitionTrimPolicy, pressure PartitionPressureSnapshot, sample PoolPartitionSample) PartitionTrimPlan {
 	policy = policy.Normalize()
 	plan := PartitionTrimPlan{Enabled: policy.Enabled, PressureLevel: pressure.Level, CandidatePools: sample.PoolCount, MaxPoolsPerCycle: policy.MaxPoolsPerCycle, MaxBytesPerCycle: policy.MaxBytesPerCycle.Bytes()}
@@ -155,4 +154,54 @@ func newPartitionTrimPlan(policy PartitionTrimPolicy, pressure PartitionPressure
 	}
 	plan.Reason = "policy"
 	return plan
+}
+
+func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimResult {
+	if !plan.Enabled {
+		return PartitionTrimResult{Reason: plan.Reason}
+	}
+
+	result := PartitionTrimResult{Attempted: true, Reason: plan.Reason}
+	remainingBytes := plan.MaxBytesPerCycle
+	maxBuffers := partitionTrimMaxBuffersFromBytes(remainingBytes)
+	for _, entry := range p.registry.entries {
+		if plan.MaxPoolsPerCycle > 0 && int(result.VisitedPools) >= plan.MaxPoolsPerCycle {
+			break
+		}
+		if remainingBytes == 0 {
+			break
+		}
+
+		result.VisitedPools++
+		poolResult := entry.pool.Trim(PoolTrimPlan{MaxBuffers: maxBuffers, MaxBytes: SizeFromBytes(remainingBytes)})
+		result.VisitedClasses += poolResult.VisitedClasses
+		result.VisitedShards += poolResult.VisitedShards
+		result.TrimmedBuffers += poolResult.TrimmedBuffers
+		result.TrimmedBytes += poolResult.TrimmedBytes
+		if poolResult.Executed {
+			result.Executed = true
+		}
+		if poolResult.TrimmedBytes >= remainingBytes {
+			remainingBytes = 0
+			break
+		}
+		remainingBytes -= poolResult.TrimmedBytes
+		maxBuffers = partitionTrimMaxBuffersFromBytes(remainingBytes)
+	}
+
+	if result.Executed {
+		p.activeRegistry.markAllDirty()
+	}
+	return result
+}
+
+func partitionTrimMaxBuffersFromBytes(maxBytes uint64) int {
+	if maxBytes == 0 {
+		return 0
+	}
+	maxInt := uint64(^uint(0) >> 1)
+	if maxBytes > maxInt {
+		return int(maxInt)
+	}
+	return int(maxBytes)
 }

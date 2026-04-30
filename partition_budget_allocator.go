@@ -64,7 +64,7 @@ func (p *PoolPartition) applyPartitionBudget(target PartitionBudgetTarget) error
 	}
 
 	generation := budgetPublicationGeneration(runtime.Generation, target.Generation)
-	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(generation, policy))
+	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, policy, runtime.Pressure))
 	return nil
 }
 

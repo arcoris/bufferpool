@@ -233,6 +233,10 @@ func (p *Pool) returnBuffer(input poolReturnInput, runtime *poolRuntimeSnapshot)
 		)
 	}
 
+	if outcome, ok := poolPressureReturnOutcome(input, policy, runtime.Pressure); ok {
+		return outcome
+	}
+
 	capacity := SizeFromBytes(input.Capacity)
 	if capacity > policy.Retention.MaxRetainedBufferCapacity {
 		return poolReturnOutcomeDrop(
@@ -294,6 +298,10 @@ func (p *Pool) returnOwnedBuffer(input ownedReturnInput, runtime *poolRuntimeSna
 			PoolDropReasonInvalidPolicy,
 			returnInput.Capacity,
 		)
+	}
+
+	if outcome, ok := poolPressureReturnOutcome(returnInput, policy, runtime.Pressure); ok {
+		return outcome
 	}
 
 	capacity := SizeFromBytes(returnInput.Capacity)

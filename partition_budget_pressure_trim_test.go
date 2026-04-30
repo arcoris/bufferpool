@@ -190,7 +190,7 @@ func TestPartitionTrimPolicyValidateNormalizeAndPlan(t *testing.T) {
 	}
 }
 
-// TestPoolPartitionPlanAndExecuteTrim verifies planning-only trim execution.
+// TestPoolPartitionPlanAndExecuteTrim verifies bounded physical trim execution.
 func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	config := testPartitionConfig("primary")
 	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}
@@ -216,20 +216,75 @@ func TestPoolPartitionPlanAndExecuteTrim(t *testing.T) {
 	if !result.Attempted {
 		t.Fatalf("ExecuteTrim().Attempted = false, want true")
 	}
-	if result.Executed || result.Reason != "planning_only" || result.VisitedPools != 0 || result.TrimmedBuffers != 0 || result.TrimmedBytes != 0 {
-		t.Fatalf("ExecuteTrim() = %+v, want current no-op result", result)
+	if !result.Executed || result.Reason != "policy" || result.VisitedPools != 1 || result.TrimmedBuffers == 0 || result.TrimmedBytes == 0 {
+		t.Fatalf("ExecuteTrim() = %+v, want bounded physical trim", result)
 	}
 	retainedAfter := partition.Metrics().CurrentRetainedBytes
-	if retainedAfter != retainedBefore {
-		t.Fatalf("ExecuteTrim changed retained bytes from %d to %d", retainedBefore, retainedAfter)
+	if retainedAfter >= retainedBefore {
+		t.Fatalf("retained bytes after ExecuteTrim = %d, want below %d", retainedAfter, retainedBefore)
 	}
-	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 0 {
-		t.Fatalf("ExecuteTrim dirtied active registry without physical trim: %v", dirty)
+	if dirty := partition.activeRegistry.dirtyIndexes(nil); len(dirty) != 1 || dirty[0] != 0 {
+		t.Fatalf("ExecuteTrim dirty indexes = %v, want trimmed pool marked dirty", dirty)
 	}
 
 	disabled := testNewPoolPartition(t, "secondary")
 	disabledResult := disabled.ExecuteTrim()
 	if disabledResult.Attempted || disabledResult.Executed || disabledResult.Reason != "trim_disabled" {
 		t.Fatalf("disabled ExecuteTrim() = %+v, want trim_disabled without execution", disabledResult)
+	}
+}
+
+func TestPoolPartitionExecuteTrimNeverTouchesActiveLeases(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	active, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	retained, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(retained, retained.Buffer()))
+
+	before := partition.Metrics()
+	if before.ActiveLeases != 1 || before.CurrentRetainedBytes == 0 {
+		t.Fatalf("setup metrics = %+v, want one active lease and retained bytes", before)
+	}
+
+	result := partition.ExecuteTrim()
+	if !result.Executed || result.TrimmedBytes == 0 {
+		t.Fatalf("ExecuteTrim() = %+v, want retained trim", result)
+	}
+	after := partition.Metrics()
+	if after.ActiveLeases != 1 || after.CurrentActiveBytes != before.CurrentActiveBytes {
+		t.Fatalf("active metrics after trim = %+v, before %+v", after, before)
+	}
+
+	requirePartitionNoError(t, partition.Release(active, active.Buffer()))
+	if final := partition.Metrics(); final.ActiveLeases != 0 {
+		t.Fatalf("final ActiveLeases = %d, want 0", final.ActiveLeases)
+	}
+}
+
+func TestPoolPartitionPressureSignalSchedulesTrim(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB, TrimOnPressure: true}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	lease, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(lease, lease.Buffer()))
+	requirePartitionNoError(t, partition.SetPressure(PressureLevelHigh))
+
+	plan := partition.PlanTrim()
+	if !plan.Enabled || plan.Reason != "pressure" || plan.PressureLevel != PressureLevelHigh {
+		t.Fatalf("PlanTrim() = %+v, want pressure trim from runtime signal", plan)
+	}
+	result := partition.ExecuteTrim()
+	if !result.Executed || result.TrimmedBytes == 0 {
+		t.Fatalf("ExecuteTrim() = %+v, want pressure-triggered physical trim", result)
 	}
 }

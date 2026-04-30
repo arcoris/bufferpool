@@ -33,7 +33,7 @@ const (
 // into Pool from the hot path. Get and Put load the pointer once near operation
 // start and use that stable view for admission decisions.
 //
-// A snapshot is not a bucket rebuild. Shrinking policy limits through a future
+// A snapshot is not a bucket rebuild. Shrinking policy limits through runtime
 // publication restricts new retention immediately, while physical correction of
 // already retained buffers still belongs to bounded trim or close cleanup.
 type poolRuntimeSnapshot struct {
@@ -50,6 +50,9 @@ type poolRuntimeSnapshot struct {
 	// mutate a Policy after publication; publishRuntimeSnapshot defensively
 	// clones to enforce that boundary inside Pool.
 	Policy Policy
+
+	// Pressure is the current immutable pressure signal for return admission.
+	Pressure PressureSignal
 }
 
 // newPoolRuntimeSnapshot returns an immutable runtime snapshot value.
@@ -57,9 +60,19 @@ type poolRuntimeSnapshot struct {
 // The constructor clones Policy slice storage so callers can continue using or
 // modifying their local Policy value without racing with Pool hot paths.
 func newPoolRuntimeSnapshot(generation Generation, policy Policy) *poolRuntimeSnapshot {
+	return newPoolRuntimeSnapshotWithPressure(generation, policy, normalPressureSignal(generation))
+}
+
+// newPoolRuntimeSnapshotWithPressure returns an immutable runtime snapshot value
+// with an explicit pressure signal.
+func newPoolRuntimeSnapshotWithPressure(generation Generation, policy Policy, pressure PressureSignal) *poolRuntimeSnapshot {
+	if pressure.Generation.IsZero() {
+		pressure.Generation = generation
+	}
 	return &poolRuntimeSnapshot{
 		Generation: generation,
 		Policy:     clonePoolPolicy(policy),
+		Pressure:   pressure,
 	}
 }
 
@@ -90,7 +103,7 @@ func (p *Pool) publishRuntimeSnapshot(snapshot *poolRuntimeSnapshot) {
 		panic(errPoolRuntimeSnapshotIncompatible)
 	}
 
-	p.runtimeSnapshot.Store(newPoolRuntimeSnapshot(snapshot.Generation, snapshot.Policy))
+	p.runtimeSnapshot.Store(newPoolRuntimeSnapshotWithPressure(snapshot.Generation, snapshot.Policy, snapshot.Pressure))
 }
 
 // validateRuntimePolicyCompatible validates that policy can be published into

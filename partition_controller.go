@@ -55,10 +55,10 @@ type PartitionControllerReport struct {
 	// Pressure is the pressure interpretation from Sample.
 	Pressure PartitionPressureSnapshot
 
-	// TrimPlan is the planning-only trim decision for this tick.
+	// TrimPlan is the non-mutating trim decision for this tick.
 	TrimPlan PartitionTrimPlan
 
-	// TrimResult remains zero until physical trim execution is implemented.
+	// TrimResult reports bounded physical trim executed during this applied tick.
 	TrimResult PartitionTrimResult
 
 	// PoolBudgetTargets are the Pool/class budget targets applied by this tick.
@@ -69,8 +69,8 @@ type PartitionControllerReport struct {
 //
 // The current implementation samples active Pools, computes window deltas,
 // updates partition-owned EWMA state, scores active Pool classes, publishes class
-// budgets into owned Pools, and computes a non-mutating trim plan. It does not
-// execute physical trim or start background scheduling. Controller.Enabled
+// budgets into owned Pools, and executes bounded physical trim when the trim
+// plan is enabled. It does not start background scheduling. Controller.Enabled
 // controls future automatic scheduling; manual Tick remains available when the
 // partition is active.
 //
@@ -90,8 +90,7 @@ func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 // TickInto has the same control semantics as Tick but reuses dst.Sample.Pools
 // capacity. A nil dst is a no-op after receiver and lifecycle validation. Like
 // Tick, this is a manual foreground call: it does not start background
-// goroutines, execute physical trim, coordinate with PoolGroup, or redistribute
-// group-level budgets.
+// goroutines, coordinate with PoolGroup, or redistribute group-level budgets.
 func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	p.mustBeInitialized()
 	if !p.lifecycle.AllowsWork() {
@@ -123,7 +122,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 
 	metrics := newPoolPartitionMetrics(p.name, sample)
 	budget := newPartitionBudgetSnapshot(runtime.Policy.Budget, sample)
-	pressure := newPartitionPressureSnapshot(runtime.Policy.Pressure, sample)
+	pressure := newEffectivePartitionPressureSnapshot(runtime.Policy.Pressure, runtime.Pressure, sample)
 	scores := NewPoolPartitionScores(rates, ewma, budget, pressure)
 	trimPlan := newPartitionTrimPlan(runtime.Policy.Trim, pressure, sample)
 	dirtyIndexes := p.activeRegistry.dirtyIndexes(nil)
@@ -135,6 +134,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	if err := p.applyPoolBudgetTargets(poolBudgetTargets); err != nil {
 		return err
 	}
+	trimResult := p.executeTrimPlan(trimPlan)
 	p.markDirtyProcessed()
 	p.controller.previousSample = copyPoolPartitionSampleInto(p.controller.previousSample, sample)
 	p.controller.previousSampleTime = now
@@ -156,6 +156,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		Budget:            budget,
 		Pressure:          pressure,
 		TrimPlan:          trimPlan,
+		TrimResult:        trimResult,
 		PoolBudgetTargets: poolBudgetTargets,
 	}
 	return nil

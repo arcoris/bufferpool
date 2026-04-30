@@ -28,11 +28,23 @@ type partitionRuntimeSnapshot struct {
 
 	// Policy is the immutable partition policy used by controller planning.
 	Policy PartitionPolicy
+
+	// Pressure is the current immutable pressure signal for owned Pools.
+	Pressure PressureSignal
 }
 
 // newPartitionRuntimeSnapshot returns a normalized immutable partition runtime view.
 func newPartitionRuntimeSnapshot(generation Generation, policy PartitionPolicy) *partitionRuntimeSnapshot {
-	return &partitionRuntimeSnapshot{Generation: generation, Policy: policy.Normalize()}
+	return newPartitionRuntimeSnapshotWithPressure(generation, policy, normalPressureSignal(generation))
+}
+
+// newPartitionRuntimeSnapshotWithPressure returns a normalized immutable
+// partition runtime view with explicit pressure publication state.
+func newPartitionRuntimeSnapshotWithPressure(generation Generation, policy PartitionPolicy, pressure PressureSignal) *partitionRuntimeSnapshot {
+	if pressure.Generation.IsZero() {
+		pressure.Generation = generation
+	}
+	return &partitionRuntimeSnapshot{Generation: generation, Policy: policy.Normalize(), Pressure: pressure}
 }
 
 // publishRuntimeSnapshot atomically publishes a partition policy view.
@@ -45,7 +57,7 @@ func (p *PoolPartition) publishRuntimeSnapshot(snapshot *partitionRuntimeSnapsho
 	if snapshot == nil {
 		panic(errPartitionRuntimeSnapshotNil)
 	}
-	p.runtimeSnapshot.Store(newPartitionRuntimeSnapshot(snapshot.Generation, snapshot.Policy))
+	p.runtimeSnapshot.Store(newPartitionRuntimeSnapshotWithPressure(snapshot.Generation, snapshot.Policy, snapshot.Pressure))
 	if p.activeRegistry != nil {
 		p.activeRegistry.markAllDirty()
 	}
@@ -87,7 +99,7 @@ func (p *PoolPartition) publishPoolRuntimeSnapshot(poolName string, generation G
 		return err
 	}
 
-	pool.publishRuntimeSnapshot(newPoolRuntimeSnapshot(generation, normalized))
+	pool.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(generation, normalized, pool.currentRuntimeSnapshot().Pressure))
 	if index, ok := p.registry.poolIndex(poolName); ok {
 		_ = p.activeRegistry.markDirtyIndex(index)
 	}

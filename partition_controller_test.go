@@ -63,8 +63,8 @@ func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T)
 	if !report.TrimPlan.Enabled {
 		t.Fatalf("Tick trim plan should be enabled")
 	}
-	if report.TrimResult.Attempted || report.TrimResult.Executed {
-		t.Fatalf("Tick should not execute physical trim in current implementation: %+v", report.TrimResult)
+	if !report.TrimResult.Attempted || report.TrimResult.Executed {
+		t.Fatalf("Tick trim result = %+v, want attempted bounded trim without retained removals", report.TrimResult)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestPoolPartitionTickIntoReusesReportStorage(t *testing.T) {
 	if cap(report.Sample.Pools) != 8 {
 		t.Fatalf("cap(report.Sample.Pools) = %d, want reused capacity 8", cap(report.Sample.Pools))
 	}
-	if report.TrimResult.Attempted || report.TrimResult.Executed {
-		t.Fatalf("TickInto should not execute physical trim: %+v", report.TrimResult)
+	if !report.TrimResult.Attempted || report.TrimResult.Executed {
+		t.Fatalf("TickInto trim result = %+v, want attempted bounded trim without retained removals", report.TrimResult)
 	}
 
 	report.Sample.Pools = append(report.Sample.Pools, PoolPartitionPoolSample{Name: "stale"})
