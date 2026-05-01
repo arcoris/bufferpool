@@ -150,8 +150,14 @@ type PolicyUpdateDiffDiagnostics struct {
 	// RetentionChanged reports byte or buffer retention-limit changes.
 	RetentionChanged bool
 
-	// RetentionContracted reports that at least one retention limit became more
-	// restrictive.
+	// RetentionContracted reports that at least one retention or closely related
+	// request/capacity admission limit became more restrictive.
+	//
+	// The current policy structure keeps retained-memory limits,
+	// MaxRequestSize, and MaxRetainedBufferCapacity in RetentionPolicy because
+	// all three restrict future retained-buffer acceptance. Reports keep one
+	// compatibility flag for that section instead of splitting the public result
+	// vocabulary into request, capacity, and retained-memory subflags.
 	RetentionContracted bool
 
 	// RetentionExpanded reports that at least one retention limit became less

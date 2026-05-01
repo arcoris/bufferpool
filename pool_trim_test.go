@@ -155,7 +155,7 @@ func TestPoolTrimRejectsClosedPool(t *testing.T) {
 	}
 
 	result := pool.Trim(PoolTrimPlan{MaxBuffers: 1, MaxBytes: KiB})
-	if result.Attempted || result.Executed || result.Reason != errPoolClosed {
+	if result.Attempted || result.Executed || result.Reason != errPoolTrimClosed {
 		t.Fatalf("Trim(closed) = %+v, want rejected closed pool", result)
 	}
 }

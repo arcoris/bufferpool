@@ -16,6 +16,8 @@
 
 package bufferpool
 
+import "errors"
+
 const (
 	// groupPolicyPublicationNoBudgetTarget reports a group policy publication
 	// that changed group policy state but carried no retained parent target to
@@ -86,11 +88,21 @@ type PoolGroupPolicyPublicationResult struct {
 
 // PublishPolicy publishes a live PoolGroup runtime policy update.
 //
-// The operation validates the candidate policy, plans group-to-partition budget
-// targets when a retained parent target exists, prevalidates and admits child
-// partitions before storing group runtime state, publishes the group runtime
-// snapshot with the previous pressure signal, and then applies the prevalidated
-// partition targets. UpdatePolicy is the error-only compatibility wrapper.
+// The operation validates the candidate policy, computes group-to-partition
+// retained targets when a retained parent target exists, admits every target
+// partition, and asks each partition to build a complete no-mutation
+// application plan before the group runtime snapshot is stored. Only after those
+// child plans and their Pool control gates are admitted does the group publish
+// its own immutable runtime snapshot. Applying the prevalidated partition plans
+// is expected to be no-fail for normal policy, feasibility, and lifecycle
+// reasons.
+//
+// This ordering is owner-level and report-driven, not a distributed
+// transaction: no rollback is attempted, and internal corruption still remains
+// an internal invariant failure. The guarantee is narrower and intentional:
+// ordinary validation, infeasible budget, closed-child, and Pool-control
+// admission failures are detected before group runtime publication.
+// UpdatePolicy is the error-only compatibility wrapper.
 func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublicationResult, error) {
 	g.mustBeInitialized()
 
@@ -152,6 +164,53 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 			return result, err
 		}
 		defer budgetBatch.endPartitionForegroundOperations()
+
+		budgetBatch.lockPartitionControllers()
+		defer budgetBatch.unlockPartitionControllers()
+
+		if err := budgetBatch.planPartitionBudgetApplications(); err != nil {
+			result.SkippedPartitions = append(result.SkippedPartitions[:0], budgetBatch.report.SkippedPartitions...)
+			result.BudgetPublication = budgetBatch.report
+			result.FailureReason = budgetBatch.report.FailureReason
+			if result.FailureReason == "" {
+				result.FailureReason = policyUpdateFailureInvalid
+			}
+			return result, err
+		}
+		result.BudgetPublication = budgetBatch.report
+		if !budgetBatch.report.CanPublish() {
+			if !budgetBatch.report.Allocation.Feasible {
+				result.FailureReason = policyUpdateFailureInfeasibleBudget
+				if result.BudgetPublication.FailureReason == "" {
+					result.BudgetPublication.FailureReason = policyUpdateFailureInfeasibleBudget
+				}
+				return result, newError(ErrInvalidPolicy, result.BudgetPublication.FailureReason)
+			}
+			if len(budgetBatch.report.SkippedPartitions) > 0 {
+				result.SkippedPartitions = append(result.SkippedPartitions[:0], budgetBatch.report.SkippedPartitions...)
+				result.FailureReason = budgetBatch.report.FailureReason
+				if result.FailureReason == "" {
+					result.FailureReason = policyUpdateFailureSkippedChild
+				}
+				return result, newError(ErrInvalidPolicy, result.FailureReason)
+			}
+			result.FailureReason = policyUpdateFailureInvalid
+			if result.BudgetPublication.FailureReason == "" {
+				result.BudgetPublication.FailureReason = policyUpdateFailureInvalid
+			}
+			return result, newError(ErrInvalidPolicy, result.BudgetPublication.FailureReason)
+		}
+
+		if err := budgetBatch.beginPoolControlOperations(); err != nil {
+			result.SkippedPartitions = append(result.SkippedPartitions[:0], budgetBatch.report.SkippedPartitions...)
+			result.BudgetPublication = budgetBatch.report
+			result.FailureReason = budgetBatch.report.FailureReason
+			if result.FailureReason == "" {
+				result.FailureReason = policyUpdateFailureSkippedChild
+			}
+			return result, err
+		}
+		defer budgetBatch.endPoolControlOperations()
 	}
 
 	g.generation.Store(generation)
@@ -231,9 +290,12 @@ type groupPolicyPartitionBudgetBatch struct {
 
 // groupPolicyPartitionBudgetPlan is one prevalidated partition target.
 type groupPolicyPartitionBudgetPlan struct {
-	target    PartitionBudgetTarget
-	partition *PoolPartition
-	admitted  bool
+	target           PartitionBudgetTarget
+	partition        *PoolPartition
+	application      partitionBudgetApplicationPlan
+	admitted         bool
+	controllerLocked bool
+	poolsAdmitted    bool
 }
 
 // planGroupPolicyBudgetPublicationBatchLocked computes and prevalidates a
@@ -314,7 +376,7 @@ func (b *groupPolicyPartitionBudgetBatch) beginPartitionForegroundOperations() e
 			}
 			b.report.SkippedPartitions = append(b.report.SkippedPartitions, PoolGroupSkippedPartition{
 				PartitionName: plan.target.PartitionName,
-				Reason:        err.Error(),
+				Reason:        policyUpdateFailureClosed,
 			})
 			b.report.FailureReason = policyUpdateFailureSkippedChild
 			return err
@@ -336,25 +398,135 @@ func (b *groupPolicyPartitionBudgetBatch) endPartitionForegroundOperations() {
 	}
 }
 
+// lockPartitionControllers serializes child planning with direct partition
+// controller and policy-publication work.
+func (b *groupPolicyPartitionBudgetBatch) lockPartitionControllers() {
+	for index := range b.plans {
+		b.plans[index].partition.controller.mu.Lock()
+		b.plans[index].controllerLocked = true
+	}
+}
+
+// unlockPartitionControllers releases child controller locks in reverse order.
+func (b *groupPolicyPartitionBudgetBatch) unlockPartitionControllers() {
+	for index := len(b.plans) - 1; index >= 0; index-- {
+		if !b.plans[index].controllerLocked {
+			continue
+		}
+		b.plans[index].controllerLocked = false
+		b.plans[index].partition.controller.mu.Unlock()
+	}
+}
+
+// planPartitionBudgetApplications asks every admitted partition to build its
+// no-mutation application plan before the group runtime snapshot is published.
+func (b *groupPolicyPartitionBudgetBatch) planPartitionBudgetApplications() error {
+	for index := range b.plans {
+		plan := &b.plans[index]
+		application, err := plan.partition.planPartitionBudgetApplicationLocked(plan.target)
+		plan.application = application
+		if err != nil {
+			reason := groupPolicyPartitionPlanFailureReason(err, application.report)
+			b.report.SkippedPartitions = append(b.report.SkippedPartitions, PoolGroupSkippedPartition{
+				PartitionName: plan.target.PartitionName,
+				Reason:        reason,
+			})
+			b.report.FailureReason = reason
+			b.report.Published = false
+			return err
+		}
+		if !application.report.CanPublish() {
+			reason := groupPolicyPartitionPlanFailureReason(nil, application.report)
+			b.report.SkippedPartitions = append(b.report.SkippedPartitions, PoolGroupSkippedPartition{
+				PartitionName: plan.target.PartitionName,
+				Reason:        reason,
+			})
+			b.report.FailureReason = reason
+			b.report.Published = false
+			return newError(ErrInvalidPolicy, reason)
+		}
+	}
+	return nil
+}
+
+// beginPoolControlOperations admits all child Pool control gates before group
+// runtime publication so the later apply phase cannot be rejected by Pool.Close.
+func (b *groupPolicyPartitionBudgetBatch) beginPoolControlOperations() error {
+	for index := range b.plans {
+		plan := &b.plans[index]
+		if err := plan.partition.beginPlannedPartitionBudgetPoolControlOperations(&plan.application); err != nil {
+			for admitted := 0; admitted < index; admitted++ {
+				if !b.plans[admitted].poolsAdmitted {
+					continue
+				}
+				b.plans[admitted].partition.endPlannedPartitionBudgetPoolControlOperations(&b.plans[admitted].application)
+				b.plans[admitted].poolsAdmitted = false
+			}
+			reason := policyUpdateFailureSkippedChild
+			if errors.Is(err, ErrClosed) {
+				reason = policyUpdateFailureClosed
+			}
+			b.report.SkippedPartitions = append(b.report.SkippedPartitions, PoolGroupSkippedPartition{
+				PartitionName: plan.target.PartitionName,
+				Reason:        reason,
+			})
+			b.report.FailureReason = reason
+			b.report.Published = false
+			return err
+		}
+		plan.poolsAdmitted = true
+	}
+	return nil
+}
+
+// endPoolControlOperations releases child Pool gates admitted for planned
+// partition budget application.
+func (b *groupPolicyPartitionBudgetBatch) endPoolControlOperations() {
+	for index := len(b.plans) - 1; index >= 0; index-- {
+		if !b.plans[index].poolsAdmitted {
+			continue
+		}
+		b.plans[index].partition.endPlannedPartitionBudgetPoolControlOperations(&b.plans[index].application)
+		b.plans[index].poolsAdmitted = false
+	}
+}
+
 // applyPlannedPartitionBudgetBatchLocked applies already prevalidated partition
-// targets. It does not call Pool.Get, Pool.Put, Pool.Trim, or inspect Pool
-// shards.
+// targets.
+//
+// All normal failure points have already run: partition foreground admission,
+// partition controller serialization, partition policy validation, Pool budget
+// planning, Pool class-target validation, and Pool control admission. This
+// apply step mutates only the preplanned partition runtime snapshot and the
+// preplanned Pool/class budget targets. It does not call Pool.Get, Pool.Put,
+// Pool.Trim, or inspect Pool shards.
 func (g *PoolGroup) applyPlannedPartitionBudgetBatchLocked(
 	batch *groupPolicyPartitionBudgetBatch,
 ) PoolGroupBudgetPublicationReport {
 	for _, plan := range batch.plans {
-		if err := plan.partition.applyPartitionBudgetLocked(plan.target); err != nil {
-			batch.report.SkippedPartitions = append(batch.report.SkippedPartitions, PoolGroupSkippedPartition{
-				PartitionName: plan.target.PartitionName,
-				Reason:        err.Error(),
-			})
-			batch.report.FailureReason = policyUpdateFailureSkippedChild
-			batch.report.Published = false
-			return batch.report
+		partitionReport := plan.partition.applyPlannedPartitionBudgetApplicationLocked(&plan.application)
+		if !partitionReport.Published {
+			panic("bufferpool.PoolGroup: prevalidated partition budget application did not publish")
 		}
 	}
 	batch.report.Published = len(batch.plans) > 0
 	return batch.report
+}
+
+func groupPolicyPartitionPlanFailureReason(err error, report PoolPartitionBudgetPublicationReport) string {
+	if !report.Allocation.Feasible {
+		return policyUpdateFailureInfeasibleBudget
+	}
+	if report.FailureReason != "" && report.FailureReason != partitionPolicyPublicationNoBudgetTarget {
+		return report.FailureReason
+	}
+	if errors.Is(err, ErrClosed) {
+		return policyUpdateFailureClosed
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return policyUpdateFailureInvalid
 }
 
 // classifyGroupPolicyUpdate maps group policy differences into shared

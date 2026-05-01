@@ -33,6 +33,10 @@ const (
 
 	// errPoolTrimCompleted reports a valid bounded trim attempt.
 	errPoolTrimCompleted = "completed"
+
+	// errPoolTrimClosed reports lifecycle rejection before retained storage is
+	// inspected or mutated.
+	errPoolTrimClosed = "trim_closed"
 )
 
 // PoolTrimPlan bounds one Pool-wide physical trim operation.
@@ -109,7 +113,7 @@ func (p *Pool) Trim(plan PoolTrimPlan) PoolTrimResult {
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
 	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: err.Error()}
+		return PoolTrimResult{Reason: errPoolTrimClosed}
 	}
 	defer p.endOperation()
 
@@ -156,7 +160,7 @@ func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTri
 		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
 	}
 	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: err.Error()}
+		return PoolTrimResult{Reason: errPoolTrimClosed}
 	}
 	defer p.endOperation()
 	p.controlMu.Lock()
@@ -183,7 +187,7 @@ func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxByt
 		return PoolTrimResult{Reason: errPoolTrimInvalidShard}
 	}
 	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: err.Error()}
+		return PoolTrimResult{Reason: errPoolTrimClosed}
 	}
 	defer p.endOperation()
 	p.controlMu.Lock()

@@ -102,6 +102,22 @@ type plannedPoolBudgetBatch struct {
 	report PoolPartitionBudgetPublicationReport
 }
 
+// partitionBudgetApplicationPlan is a prevalidated partition budget
+// publication prepared for PoolGroup-owned policy contraction.
+//
+// The plan contains the exact partition runtime policy value and the nested
+// Pool/class budget batch that will be applied after the group publishes its
+// runtime snapshot. Planning performs every normal validation step without
+// mutation; applying the plan is expected to be no-fail for policy feasibility
+// and class-target identity.
+type partitionBudgetApplicationPlan struct {
+	target          PartitionBudgetTarget
+	generation      Generation
+	policy          PartitionPolicy
+	poolBudgetBatch plannedPoolBudgetBatch
+	report          PoolPartitionBudgetPublicationReport
+}
+
 // CanPublish reports whether this publication report is both feasible and free
 // of child class failures.
 func (r PoolPartitionBudgetPublicationReport) CanPublish() bool {
@@ -152,6 +168,100 @@ func (p *PoolPartition) applyPartitionBudgetLocked(target PartitionBudgetTarget)
 	generation := budgetPublicationGeneration(runtime.Generation, target.Generation)
 	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, policy, runtime.Pressure))
 	return nil
+}
+
+// planPartitionBudgetApplicationLocked prepares a partition target and its
+// nested Pool/class budget publication without mutating runtime state.
+//
+// Callers must already hold the partition foreground gate. Group publication
+// also holds controller.mu while calling this helper so direct partition
+// TickInto or PublishPolicy cannot change policy/budget planning inputs between
+// planning and planned application.
+func (p *PoolPartition) planPartitionBudgetApplicationLocked(
+	target PartitionBudgetTarget,
+) (partitionBudgetApplicationPlan, error) {
+	runtime := p.currentRuntimeSnapshot()
+	generation := budgetPublicationGeneration(runtime.Generation, target.Generation)
+	policy := runtime.Policy
+	policy.Budget.MaxRetainedBytes = target.RetainedBytes
+	plan := partitionBudgetApplicationPlan{
+		target:     target,
+		generation: generation,
+		policy:     policy.Normalize(),
+		report: PoolPartitionBudgetPublicationReport{
+			Generation: generation,
+			Allocation: BudgetAllocationDiagnostics{
+				Feasible: true,
+				Reason:   budgetAllocationReasonFeasible,
+			},
+		},
+	}
+
+	if !p.lifecycle.AllowsWork() {
+		plan.report.FailureReason = policyUpdateFailureClosed
+		return plan, newError(ErrClosed, errPartitionClosed)
+	}
+	if err := plan.policy.Validate(); err != nil {
+		plan.report.FailureReason = policyUpdateFailureInvalid
+		return plan, err
+	}
+	compatibility := newPoolPartitionPolicyPublicationResult(runtime, plan.policy)
+	if err := p.validateOwnedPoolRuntimePoliciesForPolicyPublication(&compatibility); err != nil {
+		plan.report.FailureReason = compatibility.FailureReason
+		if plan.report.FailureReason == "" {
+			plan.report.FailureReason = policyUpdateFailureInvalid
+		}
+		return plan, err
+	}
+
+	batch, err := p.planPartitionPolicyBudgetBatchLocked(generation, plan.policy)
+	plan.poolBudgetBatch = batch
+	plan.report = batch.report
+	if err != nil {
+		if plan.report.FailureReason == "" {
+			plan.report.FailureReason = err.Error()
+		}
+		return plan, err
+	}
+	return plan, nil
+}
+
+// applyPlannedPartitionBudgetApplicationLocked applies a partition plan created
+// by planPartitionBudgetApplicationLocked.
+//
+// The caller must hold the partition foreground gate, hold controller.mu, and
+// have admitted every Pool control operation in plan.poolBudgetBatch. The method
+// does not allocate new targets, validate policy, or return normal policy
+// errors; those concerns belong to planning before the parent group runtime
+// snapshot is published.
+func (p *PoolPartition) applyPlannedPartitionBudgetApplicationLocked(
+	plan *partitionBudgetApplicationPlan,
+) PoolPartitionBudgetPublicationReport {
+	runtime := p.currentRuntimeSnapshot()
+	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(plan.generation, plan.policy, runtime.Pressure))
+	plan.report = p.applyPlannedPoolBudgetBatchLocked(&plan.poolBudgetBatch)
+	return plan.report
+}
+
+// beginPlannedPartitionBudgetPoolControlOperations admits the owned Pool gates
+// needed by a preplanned partition budget application.
+//
+// PoolGroup calls this partition-owned wrapper before publishing group runtime
+// state. The wrapper keeps Pool control admission behind the PoolPartition
+// boundary while still letting the group prove that successful runtime
+// publication will not later fail because an owned Pool closed.
+func (p *PoolPartition) beginPlannedPartitionBudgetPoolControlOperations(
+	plan *partitionBudgetApplicationPlan,
+) error {
+	return plan.poolBudgetBatch.beginPoolControlOperations()
+}
+
+// endPlannedPartitionBudgetPoolControlOperations releases Pool gates admitted
+// by beginPlannedPartitionBudgetPoolControlOperations.
+func (p *PoolPartition) endPlannedPartitionBudgetPoolControlOperations(
+	plan *partitionBudgetApplicationPlan,
+) {
+	plan.poolBudgetBatch.endPoolControlOperations()
 }
 
 // validatePartitionBudgetTarget checks whether target can become the partition

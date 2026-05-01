@@ -98,8 +98,11 @@ type PoolPartitionPolicyPublicationResult struct {
 // Pool runtime policies have not drifted into unsupported shape or ownership
 // changes, plans Pool/class budgets before mutation, publishes the partition
 // runtime snapshot only after planning succeeds, and then applies the
-// prevalidated Pool budget batch. If retained targets shrink and
-// TrimOnPolicyShrink is enabled, it executes one bounded partition trim cycle.
+// prevalidated Pool budget batch. Pool control gates are admitted before the
+// partition snapshot is stored, so applying the planned Pool/class targets is
+// expected to be no-fail for normal policy and feasibility reasons. If retained
+// targets shrink and TrimOnPolicyShrink is enabled, it executes one bounded
+// partition trim cycle.
 //
 // PublishPolicy is intentionally cold control-plane work. It does not call
 // Pool.Get or Pool.Put, does not rebuild owned Pools or the partition registry,

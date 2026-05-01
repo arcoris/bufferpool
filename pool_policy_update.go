@@ -91,7 +91,10 @@ type PoolPolicyPublicationResult struct {
 // lifecycle operation gate, serializes with other Pool-local control mutations,
 // plans class budgets from the candidate policy, publishes class/shard credits,
 // stores a new immutable runtime snapshot while preserving the current pressure
-// signal, and optionally performs bounded trim after retention contraction.
+// signal, and optionally performs bounded trim after retention contraction. The
+// budget-before-snapshot ordering is deliberate: Pool never exposes a new
+// effective policy without the corresponding local class budgets and shard
+// credits already in force.
 //
 // The method intentionally does not change Pool.Get or Pool.Put semantics. Hot
 // paths continue to load the immutable runtime snapshot they already consume.
