@@ -306,13 +306,82 @@ func TestPartitionTrimCandidateOrderingDeterministic(t *testing.T) {
 		t.Fatalf("beta applyClassBudgets() error = %v", err)
 	}
 
-	first := partitionTrimCandidateReports(partition.partitionTrimCandidates())
-	second := partitionTrimCandidateReports(partition.partitionTrimCandidates())
+	first := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelNormal, partitionTrimScoringContext{}))
+	second := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelNormal, partitionTrimScoringContext{}))
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("candidate order is not deterministic: first=%+v second=%+v", first, second)
 	}
 	if len(first) == 0 || first[0].PoolName != "beta" {
 		t.Fatalf("candidate order = %+v, want over-target beta first", first)
+	}
+}
+
+func TestPartitionTrimCandidateOrderingUsesTrimVictimScore(t *testing.T) {
+	t.Parallel()
+
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, _ := partition.pool("alpha")
+	beta, _ := partition.pool("beta")
+	seedPoolRetainedBuffers(t, alpha, 1, 1024)
+	seedPoolClassRetainedBuffer(t, beta, ClassID(0), 1024)
+
+	candidates := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelNormal, partitionTrimScoringContext{}))
+	if len(candidates) < 2 {
+		t.Fatalf("partition candidates = %+v, want two retained Pools", candidates)
+	}
+	if candidates[0].PoolName != "beta" || candidates[0].CapacityWasteBytes == 0 {
+		t.Fatalf("partition candidates = %+v, want wasteful beta selected first", candidates)
+	}
+	if candidates[0].Score.Value <= candidates[1].Score.Value {
+		t.Fatalf("partition candidate scores = %.6f %.6f, want beta higher", candidates[0].Score.Value, candidates[1].Score.Value)
+	}
+}
+
+func TestPartitionTrimCandidateOrderingUsesRecentActivityColdness(t *testing.T) {
+	t.Parallel()
+
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, _ := partition.pool("alpha")
+	beta, _ := partition.pool("beta")
+	seedPoolRetainedBuffers(t, alpha, 1, 512)
+	seedPoolRetainedBuffers(t, beta, 1, 512)
+
+	scoring := partitionTrimScoringContext{
+		activityByPool: map[string]float64{
+			"alpha": trimVictimHotActivityScale,
+			"beta":  0,
+		},
+	}
+	candidates := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelNormal, scoring))
+	if len(candidates) < 2 || candidates[0].PoolName != "beta" {
+		t.Fatalf("partition candidates = %+v, want colder beta selected before hot alpha", candidates)
+	}
+	if candidates[0].Coldness <= candidates[1].Coldness {
+		t.Fatalf("coldness = beta %.6f alpha %.6f, want beta colder", candidates[0].Coldness, candidates[1].Coldness)
 	}
 }
 
@@ -358,6 +427,36 @@ func TestPoolPartitionExecuteTrimNeverTouchesActiveLeases(t *testing.T) {
 	if final := partition.Metrics(); final.ActiveLeases != 0 {
 		t.Fatalf("final ActiveLeases = %d, want 0", final.ActiveLeases)
 	}
+}
+
+func TestTrimScoringDoesNotTouchActiveLeases(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          4 * KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	active, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	retained, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(retained, retained.Buffer()))
+
+	result := partition.ExecuteTrim()
+	if !result.Executed || result.TrimmedBuffers != 1 {
+		t.Fatalf("ExecuteTrim() = %+v, want one retained buffer trimmed", result)
+	}
+	if metrics := partition.Metrics(); metrics.ActiveLeases != 1 {
+		t.Fatalf("ActiveLeases after scored trim = %d, want active lease untouched", metrics.ActiveLeases)
+	}
+	requirePartitionNoError(t, partition.Release(active, active.Buffer()))
 }
 
 func TestPoolPartitionPressureSignalSchedulesTrim(t *testing.T) {
@@ -479,6 +578,37 @@ func TestPartitionTrimPassesClassAndShardBoundsToPoolTrim(t *testing.T) {
 	}
 	if result.VisitedShards > 1 {
 		t.Fatalf("VisitedShards = %d, want <= 1", result.VisitedShards)
+	}
+}
+
+func TestTrimScoringDoesNotBypassPoolClassShardBounds(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        64,
+		MaxBytesPerCycle:          16 * KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Shards.ShardsPerClass = 2
+	config.Pools[0].Config.Policy = policy
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	pool, ok := partition.pool("primary")
+	if !ok {
+		t.Fatal("primary pool missing")
+	}
+	seedPoolClassShardRetainedBuffer(t, pool, ClassID(0), 0, 512)
+	seedPoolClassShardRetainedBuffer(t, pool, ClassID(0), 1, 512)
+	seedPoolClassShardRetainedBuffer(t, pool, ClassID(1), 0, 1024)
+
+	result := partition.ExecuteTrim()
+	if result.VisitedPools > 1 || result.VisitedClasses > 1 || result.VisitedShards > 1 {
+		t.Fatalf("ExecuteTrim() = %+v, want pool/class/shard bounds preserved by scoring", result)
 	}
 }
 

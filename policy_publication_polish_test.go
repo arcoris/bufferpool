@@ -524,6 +524,15 @@ func TestGroupPolicyUpdateDoesNotCallPoolTrimOrHotPathAST(t *testing.T) {
 	}
 }
 
+func TestGroupPolicyUpdateStillDoesNotExecutePoolTrimDirectly(t *testing.T) {
+	facts := parsePolicyPublicationASTFacts(t, "group_policy_update.go")
+	for _, forbidden := range []string{"Trim", "TrimClass", "TrimShard"} {
+		if facts.hasCall(forbidden) {
+			t.Fatalf("group_policy_update.go calls %q; group policy update must leave physical trim to PoolPartition/Pool", forbidden)
+		}
+	}
+}
+
 func TestGroupPolicyUpdateDoesNotScanPoolShardInternalsAST(t *testing.T) {
 	facts := parsePolicyPublicationASTFacts(t, "group_policy_update.go")
 	for _, forbidden := range []string{"shards", "mustClassStateFor", "PoolShard", "ClassState", "classState", "shard", "bucket", "PoolTrimPlan"} {

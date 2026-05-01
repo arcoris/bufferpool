@@ -177,7 +177,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		}
 		return nil
 	}
-	trimResult := p.executeTrimPlan(trimPlan)
+	trimResult := p.executeTrimPlanWithScoring(trimPlan, newPartitionTrimScoringContext(window))
 	if err := p.activeRegistry.observeControllerActivityWithDirtyIndexes(indexes, activeDeltas, dirtyIndexes); err != nil {
 		return err
 	}

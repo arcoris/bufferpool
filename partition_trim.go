@@ -132,20 +132,28 @@ type PartitionTrimResult struct {
 	CandidatePools []PartitionTrimCandidate
 }
 
-// PartitionTrimCandidate describes one Pool selected for target-aware trim
-// order.
+// PartitionTrimCandidate describes one Pool selected for scored trim order.
 type PartitionTrimCandidate struct {
 	// PoolName is the partition-local Pool name.
 	PoolName string
 
-	// Score is the deterministic ordering score.
-	Score uint64
+	// Score is the normalized candidate-level victim score.
+	Score TrimVictimScore
 
 	// OverTargetBytes is retained bytes above observed class budgets.
 	OverTargetBytes uint64
 
 	// RetainedBytes is the Pool current retained byte gauge.
 	RetainedBytes uint64
+
+	// CapacityWasteBytes is retained capacity above nominal class capacity.
+	CapacityWasteBytes uint64
+
+	// Coldness is the coldness component used for Score.
+	Coldness float64
+
+	// PressureSeverity is the pressure component used for Score.
+	PressureSeverity float64
 }
 
 // Normalize returns p with enabled trim defaults completed.
@@ -215,8 +223,9 @@ func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 // ExecuteTrim removes retained buffers only. It does not force active leases,
 // does not call Pool.Get or Pool.Put, and does not scan outside partition-owned
 // Pools. The cycle follows PlanTrim limits and visits Pools in deterministic
-// target-aware order: over-target Pools first, then retained-heavy Pools, with
-// stable registry indexes as tie-breakers.
+// target-aware order: over-target and retained-heavy Pools first, then
+// activity-adjusted coldness and capacity waste when that context is available,
+// with stable names and registry indexes as tie-breakers.
 func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 	p.mustBeInitialized()
 	if err := p.beginForegroundOperation(); err != nil {
@@ -292,6 +301,10 @@ func newPartitionPolicyShrinkTrimPlan(policy PartitionTrimPolicy, pressureLevel 
 }
 
 func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimResult {
+	return p.executeTrimPlanWithScoring(plan, partitionTrimScoringContext{})
+}
+
+func (p *PoolPartition) executeTrimPlanWithScoring(plan PartitionTrimPlan, scoring partitionTrimScoringContext) PartitionTrimResult {
 	if !plan.Enabled {
 		return PartitionTrimResult{Reason: plan.Reason}
 	}
@@ -299,7 +312,7 @@ func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimRes
 	result := PartitionTrimResult{Attempted: true, Reason: plan.Reason}
 	remainingBytes := plan.MaxBytesPerCycle
 	remainingBuffers := plan.MaxBuffersPerCycle
-	candidates := p.partitionTrimCandidates()
+	candidates := p.partitionTrimCandidates(plan.PressureLevel, scoring)
 	result.CandidatePools = partitionTrimCandidateReports(candidates)
 	for _, candidate := range candidates {
 		if plan.MaxPoolsPerCycle > 0 && int(result.VisitedPools) >= plan.MaxPoolsPerCycle {
@@ -341,42 +354,102 @@ func (p *PoolPartition) executeTrimPlan(plan PartitionTrimPlan) PartitionTrimRes
 	return result
 }
 
+type partitionTrimScoringContext struct {
+	activityByPool map[string]float64
+}
+
+func newPartitionTrimScoringContext(window PoolPartitionWindow) partitionTrimScoringContext {
+	if len(window.Pools) == 0 {
+		return partitionTrimScoringContext{}
+	}
+	activityByPool := make(map[string]float64, len(window.Pools))
+	for _, pool := range window.Pools {
+		activityByPool[pool.Name] = partitionTrimPoolWindowActivity(pool)
+	}
+	return partitionTrimScoringContext{activityByPool: activityByPool}
+}
+
+func (c partitionTrimScoringContext) activity(poolName string) (float64, bool) {
+	if len(c.activityByPool) == 0 {
+		return 0, false
+	}
+	activity, ok := c.activityByPool[poolName]
+	return activity, ok
+}
+
+func partitionTrimPoolWindowActivity(window PoolPartitionPoolWindow) float64 {
+	delta := window.Delta
+	activity := poolSaturatingAdd(delta.Gets, delta.Hits)
+	activity = poolSaturatingAdd(activity, delta.Misses)
+	activity = poolSaturatingAdd(activity, delta.Allocations)
+	activity = poolSaturatingAdd(activity, delta.Puts)
+	activity = poolSaturatingAdd(activity, delta.Retains)
+	activity = poolSaturatingAdd(activity, delta.Drops)
+	activity = poolSaturatingAdd(activity, delta.LeaseAcquisitions)
+	activity = poolSaturatingAdd(activity, delta.LeaseReleases)
+	return float64(activity)
+}
+
 type partitionTrimCandidate struct {
 	index           int
 	name            string
 	pool            *Pool
-	score           uint64
+	score           TrimVictimScore
 	overTargetBytes uint64
 	retainedBytes   uint64
+	retainedBuffers uint64
+	capacityWaste   uint64
+	coldness        float64
+	pressure        float64
 }
 
-func (p *PoolPartition) partitionTrimCandidates() []partitionTrimCandidate {
+func (p *PoolPartition) partitionTrimCandidates(pressureLevel PressureLevel, scoring partitionTrimScoringContext) []partitionTrimCandidate {
 	candidates := make([]partitionTrimCandidate, 0, len(p.registry.entries))
 	for _, entry := range p.registry.entries {
-		retainedBytes, overTargetBytes := partitionTrimPoolUsage(entry.pool)
+		retainedBytes, retainedBuffers, overTargetBytes, capacityWaste := partitionTrimPoolUsage(entry.pool)
 		if retainedBytes == 0 {
 			continue
 		}
+		activity, activityKnown := scoring.activity(entry.name)
+		score := NewTrimVictimScore(TrimVictimScoreInput{
+			OverTargetBytes:    overTargetBytes,
+			RetainedBytes:      retainedBytes,
+			RetainedBuffers:    retainedBuffers,
+			CapacityWasteBytes: capacityWaste,
+			RecentActivity:     activity,
+			ActivityKnown:      activityKnown,
+			PressureLevel:      pressureLevel,
+		})
 		candidates = append(candidates, partitionTrimCandidate{
 			index:           entry.index,
 			name:            entry.name,
 			pool:            entry.pool,
-			score:           poolTrimCandidateScore(overTargetBytes, retainedBytes, 0),
+			score:           score,
 			overTargetBytes: overTargetBytes,
 			retainedBytes:   retainedBytes,
+			retainedBuffers: retainedBuffers,
+			capacityWaste:   capacityWaste,
+			coldness:        trimVictimComponentValue(score, trimVictimScoreComponentColdness),
+			pressure:        trimVictimComponentValue(score, trimVictimScoreComponentPressure),
 		})
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := candidates[i]
 		right := candidates[j]
-		if left.score != right.score {
-			return left.score > right.score
+		if left.score.Value != right.score.Value {
+			return left.score.Value > right.score.Value
 		}
 		if left.overTargetBytes != right.overTargetBytes {
 			return left.overTargetBytes > right.overTargetBytes
 		}
 		if left.retainedBytes != right.retainedBytes {
 			return left.retainedBytes > right.retainedBytes
+		}
+		if left.capacityWaste != right.capacityWaste {
+			return left.capacityWaste > right.capacityWaste
+		}
+		if left.name != right.name {
+			return left.name < right.name
 		}
 		return left.index < right.index
 	})
@@ -390,27 +463,41 @@ func partitionTrimCandidateReports(candidates []partitionTrimCandidate) []Partit
 	reports := make([]PartitionTrimCandidate, len(candidates))
 	for index, candidate := range candidates {
 		reports[index] = PartitionTrimCandidate{
-			PoolName:        candidate.name,
-			Score:           candidate.score,
-			OverTargetBytes: candidate.overTargetBytes,
-			RetainedBytes:   candidate.retainedBytes,
+			PoolName:           candidate.name,
+			Score:              candidate.score,
+			OverTargetBytes:    candidate.overTargetBytes,
+			RetainedBytes:      candidate.retainedBytes,
+			CapacityWasteBytes: candidate.capacityWaste,
+			Coldness:           candidate.coldness,
+			PressureSeverity:   candidate.pressure,
 		}
 	}
 	return reports
 }
 
-func partitionTrimPoolUsage(pool *Pool) (uint64, uint64) {
+func partitionTrimPoolUsage(pool *Pool) (uint64, uint64, uint64, uint64) {
 	var retainedBytes uint64
+	var retainedBuffers uint64
 	var overTarget uint64
+	var capacityWaste uint64
 	for index := range pool.classes {
 		state := pool.classes[index].state()
 		if state.CurrentRetainedBytes == 0 {
 			continue
 		}
 		retainedBytes = poolSaturatingAdd(retainedBytes, state.CurrentRetainedBytes)
+		retainedBuffers = poolSaturatingAdd(retainedBuffers, state.CurrentRetainedBuffers)
 		overTarget = poolSaturatingAdd(overTarget, poolTrimClassOverTargetBytes(state))
+		capacityWaste = poolSaturatingAdd(
+			capacityWaste,
+			trimVictimCapacityWasteBytes(
+				state.CurrentRetainedBytes,
+				state.CurrentRetainedBuffers,
+				state.Class.Size().Bytes(),
+			),
+		)
 	}
-	return retainedBytes, overTarget
+	return retainedBytes, retainedBuffers, overTarget, capacityWaste
 }
 
 func partitionTrimUint64ToInt(value uint64) int {

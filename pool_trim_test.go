@@ -135,13 +135,187 @@ func TestPoolTrimCandidateOrderingDeterministic(t *testing.T) {
 		t.Fatalf("applyClassBudgets() error = %v", err)
 	}
 
-	first := poolTrimCandidateReports(pool.poolTrimCandidates())
-	second := poolTrimCandidateReports(pool.poolTrimCandidates())
+	first := poolTrimCandidateReports(pool.poolTrimCandidates(PressureLevelNormal))
+	second := poolTrimCandidateReports(pool.poolTrimCandidates(PressureLevelNormal))
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("candidate order is not deterministic: first=%+v second=%+v", first, second)
 	}
 	if len(first) == 0 || first[0].ClassID != ClassID(1) {
 		t.Fatalf("candidate order = %+v, want over-target class first", first)
+	}
+}
+
+func TestTrimVictimScorePrefersOverTargetClass(t *testing.T) {
+	t.Parallel()
+
+	overTarget := NewTrimVictimScore(TrimVictimScoreInput{
+		OverTargetBytes: 512,
+		RetainedBytes:   1024,
+		RetainedBuffers: 1,
+		ClassBytes:      512,
+	})
+	underTarget := NewTrimVictimScore(TrimVictimScoreInput{
+		RetainedBytes:   1024,
+		RetainedBuffers: 1,
+		ClassBytes:      512,
+	})
+	if overTarget.Value <= underTarget.Value {
+		t.Fatalf("over-target score = %.6f, under-target score = %.6f, want over-target higher", overTarget.Value, underTarget.Value)
+	}
+}
+
+func TestTrimVictimScorePrefersColdWastefulClass(t *testing.T) {
+	t.Parallel()
+
+	coldWasteful := NewTrimVictimScore(TrimVictimScoreInput{
+		RetainedBytes:      2048,
+		RetainedBuffers:    1,
+		ClassBytes:         512,
+		CapacityWasteBytes: 1536,
+		Coldness:           1,
+		ColdnessKnown:      true,
+		PressureLevel:      PressureLevelNormal,
+	})
+	hotTight := NewTrimVictimScore(TrimVictimScoreInput{
+		RetainedBytes:   2048,
+		RetainedBuffers: 4,
+		ClassBytes:      512,
+		Coldness:        0,
+		ColdnessKnown:   true,
+		PressureLevel:   PressureLevelNormal,
+	})
+	if coldWasteful.Value <= hotTight.Value {
+		t.Fatalf("cold wasteful score = %.6f, hot tight score = %.6f, want cold wasteful higher", coldWasteful.Value, hotTight.Value)
+	}
+}
+
+func TestTrimVictimScorePenalizesRecentActivity(t *testing.T) {
+	t.Parallel()
+
+	cold := NewTrimVictimScore(TrimVictimScoreInput{
+		RetainedBytes:   1024,
+		RetainedBuffers: 1,
+		ClassBytes:      512,
+		RecentActivity:  0,
+		ActivityKnown:   true,
+	})
+	hot := NewTrimVictimScore(TrimVictimScoreInput{
+		RetainedBytes:   1024,
+		RetainedBuffers: 1,
+		ClassBytes:      512,
+		RecentActivity:  trimVictimHotActivityScale,
+		ActivityKnown:   true,
+	})
+	if cold.Value <= hot.Value {
+		t.Fatalf("cold score = %.6f, hot score = %.6f, want recent activity to lower score", cold.Value, hot.Value)
+	}
+}
+
+func TestTrimVictimScoreIncludesCapacityWaste(t *testing.T) {
+	t.Parallel()
+
+	score := NewTrimVictimScore(TrimVictimScoreInput{
+		RetainedBytes:      2048,
+		RetainedBuffers:    1,
+		ClassBytes:         512,
+		CapacityWasteBytes: 1536,
+	})
+	if got := trimVictimComponentValue(score, trimVictimScoreComponentCapacityWaste); got <= 0 {
+		t.Fatalf("capacity waste component = %.6f, want positive", got)
+	}
+	if got := trimVictimCapacityWasteBytes(2048, 1, 512); got != 1536 {
+		t.Fatalf("trimVictimCapacityWasteBytes() = %d, want 1536", got)
+	}
+}
+
+func TestTrimVictimScoreUsesStableTieBreakers(t *testing.T) {
+	t.Parallel()
+
+	config := testPartitionConfig("beta", "alpha")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          2,
+		MaxBuffersPerCycle:        2,
+		MaxBytesPerCycle:          2 * KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, _ := partition.pool("alpha")
+	beta, _ := partition.pool("beta")
+	seedPoolRetainedBuffers(t, alpha, 1, 512)
+	seedPoolRetainedBuffers(t, beta, 1, 512)
+
+	candidates := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelNormal, partitionTrimScoringContext{}))
+	if len(candidates) < 2 || candidates[0].PoolName != "alpha" || candidates[1].PoolName != "beta" {
+		t.Fatalf("partition candidates = %+v, want stable name tie-breaker alpha then beta", candidates)
+	}
+}
+
+func TestPoolTrimCandidateOrderingUsesTrimVictimScore(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+	seedPoolClassRetainedBuffer(t, pool, ClassID(0), 1024)
+	seedPoolRetainedBuffers(t, pool, 1, 1024)
+	if _, err := pool.applyClassBudgets([]ClassBudgetTarget{
+		{Generation: Generation(32), ClassID: ClassID(0), TargetBytes: 4 * KiB},
+		{Generation: Generation(32), ClassID: ClassID(1), TargetBytes: 4 * KiB},
+	}); err != nil {
+		t.Fatalf("applyClassBudgets() error = %v", err)
+	}
+
+	candidates := poolTrimCandidateReports(pool.poolTrimCandidates(PressureLevelNormal))
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v, want two retained classes", candidates)
+	}
+	if candidates[0].ClassID != ClassID(0) || candidates[0].CapacityWasteBytes == 0 {
+		t.Fatalf("candidates = %+v, want wasteful class 0 selected first", candidates)
+	}
+	if candidates[0].Score.Value <= candidates[1].Score.Value {
+		t.Fatalf("candidate scores = %.6f %.6f, want wasteful class higher", candidates[0].Score.Value, candidates[1].Score.Value)
+	}
+}
+
+func TestTrimScoringDoesNotBypassMaxBuffers(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+	seedPoolRetainedBuffers(t, pool, 3, 512)
+
+	result := pool.Trim(PoolTrimPlan{MaxBuffers: 1, MaxBytes: 4 * KiB})
+	if result.TrimmedBuffers > 1 {
+		t.Fatalf("Trim() = %+v, want max one buffer despite scoring", result)
+	}
+}
+
+func TestTrimScoringDoesNotBypassMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+	seedPoolRetainedBuffers(t, pool, 3, 512)
+
+	result := pool.Trim(PoolTrimPlan{MaxBuffers: 3, MaxBytes: SizeFromBytes(512)})
+	if result.TrimmedBytes > 512 {
+		t.Fatalf("Trim() = %+v, want max 512 bytes despite scoring", result)
 	}
 }
 
@@ -246,6 +420,24 @@ func seedPoolRetainedBuffers(t *testing.T, pool *Pool, count int, capacity int) 
 		if err := pool.Put(make([]byte, 0, capacity)); err != nil {
 			t.Fatalf("Put seed %d error = %v", index, err)
 		}
+	}
+}
+
+func seedPoolClassRetainedBuffer(t *testing.T, pool *Pool, classID ClassID, capacity int) {
+	t.Helper()
+	seedPoolClassShardRetainedBuffer(t, pool, classID, 0, capacity)
+}
+
+func seedPoolClassShardRetainedBuffer(t *testing.T, pool *Pool, classID ClassID, shardIndex int, capacity int) {
+	t.Helper()
+	class, ok := pool.table.classByID(classID)
+	if !ok {
+		t.Fatalf("class %s is not configured", classID)
+	}
+	state := pool.mustClassStateFor(class)
+	result := state.tryRetain(shardIndex, make([]byte, 0, capacity))
+	if !result.Retained() {
+		t.Fatalf("tryRetain(class=%s shard=%d capacity=%d) = %#v, want retained", classID, shardIndex, capacity, result)
 	}
 }
 
