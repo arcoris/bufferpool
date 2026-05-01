@@ -152,6 +152,8 @@ func allocateBudgetTargetsReport(parentBytes uint64, inputs []budgetAllocationIn
 		return report
 	}
 
+	// Phase 1: choose the initial assignment for each child from base, min, and
+	// max bounds. This step is deterministic and does not look at scores.
 	for index, input := range inputs {
 		minBytes := input.MinBytes
 		maxBytes := budgetAllocationMaxBytes(input.MaxBytes)
@@ -166,6 +168,8 @@ func allocateBudgetTargetsReport(parentBytes uint64, inputs []budgetAllocationIn
 		}
 	}
 
+	// Phase 2: shrink base assignments toward child minimums if the parent
+	// budget cannot fund the initial assignment set.
 	total := budgetAllocationTotal(results)
 	if total > parentBytes {
 		total = reduceBudgetAssignmentsToLimit(results, parentBytes)
@@ -180,6 +184,8 @@ func allocateBudgetTargetsReport(parentBytes uint64, inputs []budgetAllocationIn
 		return report
 	}
 
+	// Phase 3: distribute any remaining parent budget by positive score weights,
+	// or equally when no child has a positive score.
 	distributeBudgetRemainder(results, inputs, parentBytes-total)
 	report.AssignedBytes = budgetAllocationTotal(results)
 	return report

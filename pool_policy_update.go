@@ -104,6 +104,8 @@ type PoolPolicyPublicationResult struct {
 func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error) {
 	p.mustBeInitialized()
 
+	// Validate the value before entering the Pool control gate; the same checks
+	// are repeated under controlMu against the latest runtime snapshot.
 	normalized := effectivePoolConfigPolicy(policy)
 	initial := p.currentRuntimeSnapshot()
 	result := newPoolPolicyPublicationResult(initial, normalized)
@@ -114,6 +116,8 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 		return result, err
 	}
 
+	// Pool-local publication is serialized with Close and other control-plane
+	// mutations, but it does not add locks to Pool.Get or Pool.Put.
 	if err := p.beginPoolControlOperation(); err != nil {
 		result.FailureReason = policyUpdateFailureClosed
 		return result, err
@@ -132,6 +136,8 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 		return result, err
 	}
 
+	// Plan class budgets from the candidate policy before any runtime snapshot
+	// is published. Infeasible class allocation rejects the whole update.
 	attemptGeneration := runtime.Generation.Next()
 	target := PoolBudgetTarget{
 		Generation:    attemptGeneration,
@@ -151,6 +157,8 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 		return result, newError(ErrInvalidPolicy, policyUpdateFailureInfeasibleBudget)
 	}
 
+	// Apply class/shard budget state first, then publish the candidate runtime
+	// policy with the prior pressure signal preserved.
 	classGeneration := p.applyPlannedClassBudgetTargetsLocked(classAllocation.Targets)
 	generation := budgetPublicationGeneration(runtime.Generation, classGeneration)
 	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(generation, normalized, runtime.Pressure))
@@ -162,6 +170,8 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 	result.ClassBudgetPublication.Generation = generation
 	result.ClassBudgetPublication.Published = true
 
+	// Optional cleanup is bounded by TrimPolicy and removes only retained
+	// buffers already stored in Pool buckets.
 	if result.Contracted && normalized.Trim.Enabled && normalized.Trim.TrimOnPolicyShrink {
 		result.TrimPlan = poolTrimPlanFromPolicy(normalized.Trim)
 		result.TrimAttempted = true

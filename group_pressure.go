@@ -106,6 +106,9 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		return PoolGroupPressurePublication{}, err
 	}
 
+	// Group pressure publication is serialized with group Close and runtime
+	// snapshot mutation. The group does not inspect Pool shards; it only
+	// propagates the signal to child partitions.
 	g.runtimeMu.Lock()
 	defer g.runtimeMu.Unlock()
 
@@ -116,6 +119,9 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 	attemptGeneration := g.generation.Load().Next()
 	signal := PressureSignal{Level: level, Source: PressureSourceGroup, Generation: attemptGeneration}
 	publication := PoolGroupPressurePublication{AttemptGeneration: attemptGeneration, Signal: signal}
+
+	// Closed partitions are reported before any child receives the signal, so a
+	// skipped-before-apply result cannot hide partial runtime state.
 	for _, entry := range g.registry.entries {
 		if entry.partition.IsClosed() {
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
@@ -129,6 +135,9 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		return publication, nil
 	}
 
+	// Child publication is foreground and explicit. If a later partition fails,
+	// the result lists earlier accepted partitions and the group runtime snapshot
+	// remains unpublished.
 	for _, entry := range g.registry.entries {
 		partitionPublication, err := entry.partition.publishPressureSignal(signal)
 		if err != nil {
@@ -153,6 +162,8 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		publication.AppliedPartitions = append(publication.AppliedPartitions, PoolGroupPressurePublicationEntry{PartitionName: entry.name})
 	}
 
+	// The group snapshot is published only after every partition accepted the
+	// attempted generation.
 	g.generation.Store(attemptGeneration)
 	runtime := g.currentRuntimeSnapshot()
 	g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(attemptGeneration, runtime.Policy, signal))

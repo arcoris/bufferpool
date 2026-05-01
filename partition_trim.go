@@ -309,11 +309,16 @@ func (p *PoolPartition) executeTrimPlanWithScoring(plan PartitionTrimPlan, scori
 		return PartitionTrimResult{Reason: plan.Reason}
 	}
 
+	// Candidate scoring only chooses which Pools to visit first. The execution
+	// loop below still enforces every pool, buffer, byte, class, and shard bound
+	// from the plan.
 	result := PartitionTrimResult{Attempted: true, Reason: plan.Reason}
 	remainingBytes := plan.MaxBytesPerCycle
 	remainingBuffers := plan.MaxBuffersPerCycle
+
 	candidates := p.partitionTrimCandidates(plan.PressureLevel, scoring)
 	result.CandidatePools = partitionTrimCandidateReports(candidates)
+
 	for _, candidate := range candidates {
 		if plan.MaxPoolsPerCycle > 0 && int(result.VisitedPools) >= plan.MaxPoolsPerCycle {
 			break
@@ -410,8 +415,9 @@ func (p *PoolPartition) partitionTrimCandidates(pressureLevel PressureLevel, sco
 		if retainedBytes == 0 {
 			continue
 		}
+
 		activity, activityKnown := scoring.activity(entry.name)
-		score := NewTrimVictimScore(TrimVictimScoreInput{
+		scoreInput := TrimVictimScoreInput{
 			OverTargetBytes:    overTargetBytes,
 			RetainedBytes:      retainedBytes,
 			RetainedBuffers:    retainedBuffers,
@@ -419,7 +425,9 @@ func (p *PoolPartition) partitionTrimCandidates(pressureLevel PressureLevel, sco
 			RecentActivity:     activity,
 			ActivityKnown:      activityKnown,
 			PressureLevel:      pressureLevel,
-		})
+		}
+		score := NewTrimVictimScore(scoreInput)
+
 		candidates = append(candidates, partitionTrimCandidate{
 			index:           entry.index,
 			name:            entry.name,
@@ -433,6 +441,9 @@ func (p *PoolPartition) partitionTrimCandidates(pressureLevel PressureLevel, sco
 			pressure:        trimVictimComponentValue(score, trimVictimScoreComponentPressure),
 		})
 	}
+
+	// Ordering is deterministic: strongest victim score first, then concrete
+	// retained/over-target signals, then stable registry identity.
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := candidates[i]
 		right := candidates[j]

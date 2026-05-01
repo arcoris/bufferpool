@@ -106,6 +106,8 @@ type PoolGroupPolicyPublicationResult struct {
 func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublicationResult, error) {
 	g.mustBeInitialized()
 
+	// Validate the candidate before taking the group write gate so malformed
+	// policy values do not block unrelated foreground group work.
 	normalized := policy.Normalize()
 	initial := g.currentRuntimeSnapshot()
 	result := newPoolGroupPolicyPublicationResult(initial, normalized)
@@ -113,6 +115,8 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 		return result, err
 	}
 
+	// Serialize live publication with group Close, group TickInto, and other
+	// group-level runtime snapshot mutations.
 	g.runtimeMu.Lock()
 	defer g.runtimeMu.Unlock()
 
@@ -127,6 +131,8 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 		return result, err
 	}
 
+	// Build group-to-partition targets without mutating the group or children.
+	// Infeasible hard-budget targets are reported here and never published.
 	generation := g.generation.Load().Next()
 	budgetBatch, budgetErr := g.planGroupPolicyBudgetPublicationBatchLocked(generation, normalized)
 	result.BudgetPublication = budgetBatch.report
@@ -157,6 +163,9 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 	}
 
 	if shouldPublishBudget {
+		// Admit and lock children top-down before the group runtime snapshot is
+		// published. That keeps ordinary closed-child and Pool-control failures
+		// on the no-mutation side of the publication boundary.
 		if err := budgetBatch.beginPartitionForegroundOperations(); err != nil {
 			result.SkippedPartitions = append(result.SkippedPartitions[:0], budgetBatch.report.SkippedPartitions...)
 			result.BudgetPublication = budgetBatch.report
@@ -213,6 +222,9 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 		defer budgetBatch.endPoolControlOperations()
 	}
 
+	// Runtime publication is the owner-visible commit point. The later apply
+	// step consumes only prevalidated plans and should not fail for normal
+	// validation, feasibility, lifecycle, or Pool-close reasons.
 	g.generation.Store(generation)
 	g.publishRuntimeSnapshot(newGroupRuntimeSnapshotWithPressure(generation, normalized, runtime.Pressure))
 

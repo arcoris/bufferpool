@@ -19,6 +19,7 @@ package bufferpool
 import (
 	"math"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -577,13 +578,7 @@ func testPartitionControllerScoreWindow(poolDeltas map[string][]classCountersDel
 	for name := range poolDeltas {
 		poolNames = append(poolNames, name)
 	}
-	for i := 0; i < len(poolNames); i++ {
-		for j := i + 1; j < len(poolNames); j++ {
-			if poolNames[j] < poolNames[i] {
-				poolNames[i], poolNames[j] = poolNames[j], poolNames[i]
-			}
-		}
-	}
+	sort.Strings(poolNames)
 
 	window := PoolPartitionWindow{
 		Pools: make([]PoolPartitionPoolWindow, 0, len(poolNames)),
@@ -614,7 +609,7 @@ func testPartitionControllerScoreWindow(poolDeltas map[string][]classCountersDel
 }
 
 func controllerUpdatedEWMAForTest(window PoolPartitionWindow, activity float64) map[poolClassKey]PoolClassEWMAState {
-	ewma := make(map[poolClassKey]PoolClassEWMAState)
+	ewma := make(map[poolClassKey]PoolClassEWMAState, partitionWindowClassCount(window))
 	for _, poolWindow := range window.Pools {
 		for _, classWindow := range poolWindow.Classes {
 			ewma[poolClassKey{PoolName: poolWindow.Name, ClassID: classWindow.ClassID}] = PoolClassEWMAState{

@@ -245,12 +245,17 @@ func (p *Pool) planPoolBudget(target PoolBudgetTarget) (classBudgetAllocationRep
 // policy value without mutating Pool runtime state.
 func (p *Pool) planPoolBudgetForPolicy(target PoolBudgetTarget, policy Policy) (classBudgetAllocationReport, error) {
 	if len(target.ClassTargets) == 0 {
+		// Default planning derives class targets from the candidate Pool policy,
+		// then validates the generated batch before any class state changes.
 		report := p.defaultClassBudgetTargetsReportForPolicy(target.Generation, target.RetainedBytes, policy)
 		if err := p.validateClassBudgetTargets(report.Targets); err != nil {
 			return report, err
 		}
 		return report, nil
 	}
+
+	// Explicit class targets come from an owner controller. They still receive a
+	// full identity and feasibility summary before publication.
 	if err := p.validateClassBudgetTargets(target.ClassTargets); err != nil {
 		return classBudgetAllocationReport{Targets: target.ClassTargets}, err
 	}

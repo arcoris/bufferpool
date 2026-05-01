@@ -110,6 +110,8 @@ type PoolPartitionPolicyPublicationResult struct {
 func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPolicyPublicationResult, error) {
 	p.mustBeInitialized()
 
+	// Normalize and validate before entering the partition foreground gate. The
+	// same checks run again after admission against the latest runtime snapshot.
 	normalized := policy.Normalize()
 	initial := p.currentRuntimeSnapshot()
 	result := newPoolPartitionPolicyPublicationResult(initial, normalized)
@@ -117,6 +119,9 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 		return result, err
 	}
 
+	// The foreground gate serializes publication with hard Close; controller.mu
+	// then serializes publication with TickInto and other applied controller
+	// mutations.
 	if err := p.beginForegroundOperation(); err != nil {
 		result.FailureReason = policyUpdateFailureClosed
 		return result, err
@@ -135,6 +140,8 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 		return result, err
 	}
 
+	// Plan partition-to-Pool and Pool-to-class budget publication without
+	// mutating the partition or owned Pools.
 	generation := runtime.Generation.Next()
 	budgetBatch, budgetErr := p.planPartitionPolicyBudgetBatchLocked(generation, normalized)
 	result.BudgetPublication = budgetBatch.report
@@ -153,6 +160,9 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 	}
 
 	if shouldPublishBudget {
+		// Admit Pool control gates before the partition runtime snapshot is
+		// published. After this point, planned Pool budget apply is expected to
+		// be no-fail for ordinary policy, feasibility, and Pool-close reasons.
 		if err := budgetBatch.beginPoolControlOperations(); err != nil {
 			result.BudgetPublication.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureClosed)
 			result.FailureReason = policyUpdateFailureClosed
@@ -161,6 +171,8 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 		defer budgetBatch.endPoolControlOperations()
 	}
 
+	// Publish the partition runtime policy with the existing pressure signal,
+	// then apply any prevalidated child Pool budget plan.
 	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, normalized, runtime.Pressure))
 
 	result.Generation = generation
@@ -172,6 +184,9 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 		result.BudgetPublication = p.applyPlannedPoolBudgetBatchLocked(&budgetBatch)
 	}
 
+	// Trim-on-shrink is a bounded foreground cleanup after successful policy and
+	// budget publication. It removes retained Pool storage only, not active
+	// leases.
 	if partitionPolicyContractsRetainedTarget(runtime.Policy, normalized) &&
 		normalized.Trim.Enabled &&
 		normalized.Trim.TrimOnPolicyShrink {

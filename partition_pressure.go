@@ -221,6 +221,9 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		AttemptGeneration: generation,
 		Signal:            signal,
 	}
+
+	// Closed Pools are reported before any owned Pool receives the signal. That
+	// keeps skipped-before-apply publication distinct from partial publication.
 	for _, entry := range p.registry.entries {
 		if entry.pool.IsClosed() {
 			publication.SkippedPools = append(publication.SkippedPools, PoolPressurePublicationEntry{
@@ -235,6 +238,9 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		return publication, nil
 	}
 
+	// Propagate the signal to owned Pools through their local control gates. A
+	// later failure is reported as partial and the partition runtime snapshot is
+	// left unpublished.
 	for _, entry := range p.registry.entries {
 		partitionSignal := signal
 		partitionSignal.Source = PressureSourcePartition
@@ -250,6 +256,9 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		}
 		publication.AppliedPools = append(publication.AppliedPools, PoolPressurePublicationEntry{PoolName: entry.name})
 	}
+
+	// Partition pressure becomes visible only after every Pool accepted the same
+	// attempt generation.
 	runtime := p.currentRuntimeSnapshot()
 	p.generation.Store(generation)
 	p.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(generation, runtime.Policy, signal))

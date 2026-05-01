@@ -189,8 +189,10 @@ func (p *PoolPartition) planPartitionBudgetApplicationLocked(
 ) (partitionBudgetApplicationPlan, error) {
 	runtime := p.currentRuntimeSnapshot()
 	generation := budgetPublicationGeneration(runtime.Generation, target.Generation)
+
 	policy := runtime.Policy
 	policy.Budget.MaxRetainedBytes = target.RetainedBytes
+
 	plan := partitionBudgetApplicationPlan{
 		target:     target,
 		generation: generation,
@@ -204,6 +206,9 @@ func (p *PoolPartition) planPartitionBudgetApplicationLocked(
 		},
 	}
 
+	// Validate partition-local lifecycle and policy compatibility before
+	// deriving nested Pool/class plans. A failure here leaves both partition
+	// runtime state and owned Pools untouched.
 	if !p.lifecycle.AllowsWork() {
 		plan.report.FailureReason = policyUpdateFailureClosed
 		return plan, newError(ErrClosed, errPartitionClosed)
@@ -221,6 +226,8 @@ func (p *PoolPartition) planPartitionBudgetApplicationLocked(
 		return plan, err
 	}
 
+	// Build the nested Pool/class publication plan without mutation. The caller
+	// decides whether and when the parent group runtime snapshot is published.
 	batch, err := p.planPartitionPolicyBudgetBatchLocked(generation, plan.policy)
 	plan.poolBudgetBatch = batch
 	plan.report = batch.report
@@ -312,6 +319,7 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 	if err != nil || !batch.report.CanPublish() {
 		return batch.report, err
 	}
+
 	if err := batch.beginPoolControlOperations(); err != nil {
 		batch.report.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureClosed)
 		return batch.report, err
@@ -354,6 +362,9 @@ func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) 
 		return plannedPoolBudgetBatch{}, newError(ErrClosed, errPartitionClosed)
 	}
 
+	// Planning resolves every Pool name and class target before any Pool is
+	// mutated. The report is populated as the exact batch that apply will later
+	// consume.
 	report := PoolPartitionBudgetPublicationReport{
 		Allocation: BudgetAllocationDiagnostics{
 			Feasible:    true,
@@ -368,11 +379,13 @@ func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) 
 		plans:  make([]plannedPoolBudget, 0, len(targets)),
 		report: report,
 	}
+
 	for _, target := range targets {
 		pool, ok := p.registry.pool(target.PoolName)
 		if !ok {
 			return batch, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+target.PoolName)
 		}
+
 		classAllocation, err := pool.planPoolBudget(target)
 		classReport := PoolClassBudgetPublicationReport{
 			PoolName:   target.PoolName,
@@ -381,17 +394,20 @@ func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) 
 			Targets:    classAllocation.Targets,
 			Published:  false,
 		}
+
 		if err != nil {
 			classReport.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 			batch.report.ClassReports = append(batch.report.ClassReports, classReport)
 			return batch, err
 		}
+
 		if !classAllocation.Allocation.Feasible {
 			classReport.FailureReason = classAllocation.Allocation.Reason
 			batch.report.ClassReports = append(batch.report.ClassReports, classReport)
 			batch.report.FailureReason = classAllocation.Allocation.Reason
 			return batch, nil
 		}
+
 		batch.report.ClassReports = append(batch.report.ClassReports, classReport)
 		index, _ := p.registry.poolIndex(target.PoolName)
 		target.ClassTargets = classAllocation.Targets
