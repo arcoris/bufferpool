@@ -35,9 +35,9 @@ type PoolPartitionScoreComponent struct {
 
 // PoolPartitionScores groups pure control-plane score projections.
 //
-// Scores are initial stable heuristics over window rates, EWMA state, budget,
-// pressure, activity, and ownership risk. They do not mutate policies, publish
-// runtime snapshots, execute trim, or imply final production tuning.
+// Scores are stable control-plane heuristics over window rates, EWMA state,
+// budget, pressure, activity, and ownership risk. They do not mutate policies,
+// publish runtime snapshots, execute trim, or enter Pool.Get/Pool.Put.
 type PoolPartitionScores struct {
 	// Usefulness estimates whether retained storage is helping this partition.
 	Usefulness PoolPartitionUsefulnessScore

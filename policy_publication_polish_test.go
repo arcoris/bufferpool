@@ -563,6 +563,108 @@ func TestPoolPolicyUpdateDoesNotReferencePartitionOrGroupAST(t *testing.T) {
 	}
 }
 
+// TestScoringDoesNotEnterPoolHotPathAST protects the raw data-plane files from
+// adaptive scoring, publication, controller, and trim-planning references. The
+// AST check ignores comments and strings so the boundary is about executable Go
+// structure, not wording.
+func TestScoringDoesNotEnterPoolHotPathAST(t *testing.T) {
+	for _, file := range []string{"pool_get.go", "pool_put.go"} {
+		facts := parsePolicyPublicationASTFacts(t, file)
+		for _, forbidden := range []string{
+			"Score",
+			"Scorer",
+			"PublishPolicy",
+			"UpdatePolicy",
+			"PartitionController",
+			"GroupCoordinator",
+			"partitionController",
+			"groupCoordinator",
+			"ExecuteTrim",
+			"PlanTrim",
+			"EWMA",
+			"activeRegistry",
+		} {
+			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
+				t.Fatalf("%s AST references %q; Pool.Get/Put must stay data-plane-local", file, forbidden)
+			}
+		}
+	}
+}
+
+// TestPoolScoreCodeDoesNotReferencePartitionOrGroupAST verifies Pool-local
+// trim scoring remains owned by Pool and does not reach upward into managed
+// partition or group control boundaries.
+func TestPoolScoreCodeDoesNotReferencePartitionOrGroupAST(t *testing.T) {
+	for _, file := range []string{"trim_score.go", "pool_trim.go"} {
+		facts := parsePolicyPublicationASTFacts(t, file)
+		for _, forbidden := range []string{"PoolPartition", "PoolGroup", "partitionController", "groupCoordinator"} {
+			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
+				t.Fatalf("%s AST references %q; Pool-local scoring must not depend on managed owners", file, forbidden)
+			}
+		}
+	}
+}
+
+// TestGroupDoesNotComputeClassOrShardScoresAST keeps group code at the
+// partition-scoring layer. Class, Pool, and trim-victim scores are owned by
+// partition or Pool control paths and must not be recomputed from PoolGroup.
+func TestGroupDoesNotComputeClassOrShardScoresAST(t *testing.T) {
+	for _, file := range []string{"group_coordinator.go", "group_coordinator_apply.go", "group_policy_update.go"} {
+		facts := parsePolicyPublicationASTFacts(t, file)
+		for _, forbidden := range []string{
+			"NewPoolClassScore",
+			"NewPoolBudgetScore",
+			"NewTrimVictimScore",
+			"controllerClassScoreMap",
+			"poolWindowScore",
+			"classTrimShardCandidates",
+			"poolTrimCandidates",
+			"TrimVictimScoreInput",
+			"PoolClassScoreInput",
+			"PoolBudgetScoreInput",
+		} {
+			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
+				t.Fatalf("%s AST references %q; group code must not compute class, shard, or trim scores", file, forbidden)
+			}
+		}
+	}
+}
+
+// TestPartitionOwnsClassAndPoolScoringAST pins the intended owner of typed
+// class and Pool budget scoring: partition controller planning computes the
+// scores, while allocators only consume Score.Value.
+func TestPartitionOwnsClassAndPoolScoringAST(t *testing.T) {
+	facts := parsePolicyPublicationASTFacts(t, "partition_controller_apply.go")
+	for _, required := range []string{"controllerClassScoreMap", "poolWindowScore", "NewPoolClassScore", "NewPoolBudgetScore"} {
+		if !facts.hasIdentifier(required) && !facts.hasSelector(required) && !facts.hasCall(required) {
+			t.Fatalf("partition_controller_apply.go AST missing %q; partition controller must own class/Pool scoring", required)
+		}
+	}
+}
+
+// TestAdaptiveTrimScoringDoesNotScanFromGroup duplicates the trim-specific
+// boundary with final-stage naming: group policy/coordinator code may publish
+// partition targets, but it cannot inspect Pool shard/class internals or invoke
+// trim-victim scoring directly.
+func TestAdaptiveTrimScoringDoesNotScanFromGroup(t *testing.T) {
+	for _, file := range []string{"group_coordinator.go", "group_coordinator_apply.go", "group_policy_update.go"} {
+		facts := parsePolicyPublicationASTFacts(t, file)
+		for _, forbidden := range []string{
+			"NewTrimVictimScore",
+			"TrimVictimScoreInput",
+			"poolTrimCandidates",
+			"classTrimShardCandidates",
+			"mustClassStateFor",
+			"shards",
+			"bucket",
+		} {
+			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
+				t.Fatalf("%s AST references %q; group code must not scan scored trim internals", file, forbidden)
+			}
+		}
+	}
+}
+
 func TestPoolPublishPolicyFinalInterleavings(t *testing.T) {
 	runPoolPublishPolicyInterleavings(t)
 }

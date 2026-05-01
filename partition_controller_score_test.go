@@ -73,6 +73,36 @@ func TestPartitionControllerBudgetUsesTypedPoolScores(t *testing.T) {
 	}
 }
 
+// TestAdaptiveScoringBudgetTargetsFollowScoreOrdering verifies the final
+// integration point between typed scores and budget allocation. The allocator
+// receives only Score.Value, and the higher-scored Pool must receive the larger
+// adaptive target.
+func TestAdaptiveScoringBudgetTargetsFollowScoreOrdering(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary", "secondary")
+	window := testPartitionControllerScoreWindow(map[string][]classCountersDelta{
+		"primary": {
+			{Gets: 96, Hits: 96, Puts: 96, Retains: 96},
+			{Gets: 64, Hits: 64, Puts: 64, Retains: 64},
+		},
+		"secondary": {
+			{Gets: 1, Misses: 1, Allocations: 1, Puts: 1, Drops: 1},
+			{Gets: 1, Misses: 1, Allocations: 1, Puts: 1, Drops: 1},
+		},
+	})
+
+	report := partition.controllerPoolBudgetReport(Generation(401), partition.currentRuntimeSnapshot(), window, time.Second, controllerUpdatedEWMAForTest(window, 128))
+	primaryTarget := testPoolBudgetTargetByName(t, report.Targets, "primary")
+	secondaryTarget := testPoolBudgetTargetByName(t, report.Targets, "secondary")
+	primaryScore := testPoolBudgetScoreReportByName(t, report.PoolScores, "primary")
+	secondaryScore := testPoolBudgetScoreReportByName(t, report.PoolScores, "secondary")
+	if primaryScore.Score <= secondaryScore.Score || primaryTarget.RetainedBytes <= secondaryTarget.RetainedBytes {
+		t.Fatalf("scores/targets = primary %.6f/%s secondary %.6f/%s, want higher score to receive larger budget",
+			primaryScore.Score, primaryTarget.RetainedBytes, secondaryScore.Score, secondaryTarget.RetainedBytes)
+	}
+}
+
 func TestPartitionControllerScoresUseSameUpdatedEWMA(t *testing.T) {
 	t.Parallel()
 
@@ -101,6 +131,29 @@ func TestPartitionControllerScoresUseSameUpdatedEWMA(t *testing.T) {
 	}
 	if updatedPoolScore.ClassScores[0].Score.Value != updatedClassScores[poolClassKey{PoolName: "primary", ClassID: ClassID(0)}].Value {
 		t.Fatalf("pool score class entry = %+v, want updated class score %+v", updatedPoolScore.ClassScores[0], updatedClassScores)
+	}
+}
+
+// TestAdaptiveScoringUsesOneUpdatedEWMASnapshot verifies the final phase-order
+// invariant: class scores and Pool aggregation are both derived from one
+// tick-local updated EWMA snapshot, not from mixed old/new state.
+func TestAdaptiveScoringUsesOneUpdatedEWMASnapshot(t *testing.T) {
+	t.Parallel()
+
+	window := testPartitionControllerScoreWindow(map[string][]classCountersDelta{
+		"primary": {
+			{Gets: 2, Hits: 2},
+		},
+	})
+	updatedEWMA := map[poolClassKey]PoolClassEWMAState{
+		{PoolName: "primary", ClassID: ClassID(0)}: {Initialized: true, Activity: 512},
+	}
+	classScores := controllerClassScoreMap(window, time.Second, updatedEWMA)
+	poolScore := poolWindowScore(window.Pools[0], classScores)
+	key := poolClassKey{PoolName: "primary", ClassID: ClassID(0)}
+
+	if poolScore.ClassScores[0].Score.Value != classScores[key].Value {
+		t.Fatalf("pool score class entry = %+v, class score = %+v, want same updated EWMA score", poolScore.ClassScores[0], classScores[key])
 	}
 }
 
@@ -395,6 +448,68 @@ func TestPartitionControllerBudgetFeasibilityStillPropagates(t *testing.T) {
 		if !classReport.Allocation.Feasible || !classReport.Published {
 			t.Fatalf("class budget report = %+v, want feasible and published", classReport)
 		}
+	}
+}
+
+// TestAdaptiveScoringDoesNotBreakBudgetFeasibilityReports keeps allocation
+// diagnostics visible after typed score integration. Scores may explain
+// priorities, but the feasibility report must still describe the hard budget
+// relationship independently from score components.
+func TestAdaptiveScoringDoesNotBreakBudgetFeasibilityReports(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary", "secondary")
+	runtime := partition.currentRuntimeSnapshot()
+	policy := runtime.Policy
+	policy.Budget.MaxRetainedBytes = SizeFromBytes(1)
+	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshotWithPressure(Generation(400), policy, runtime.Pressure))
+	window := testPartitionControllerScoreWindow(map[string][]classCountersDelta{
+		"primary":   {{Gets: 64, Hits: 64}},
+		"secondary": {{Gets: 64, Hits: 64}},
+	})
+
+	report := partition.controllerPoolBudgetReport(Generation(402), partition.currentRuntimeSnapshot(), window, time.Second, controllerUpdatedEWMAForTest(window, 64))
+	if !report.Allocation.Feasible ||
+		report.Allocation.Reason != budgetAllocationReasonFeasible ||
+		report.Allocation.TargetCount != 2 ||
+		report.Allocation.AssignedBytes > report.Allocation.RequestedBytes ||
+		report.FailureReason != "" {
+		t.Fatalf("BudgetPublication = %+v, want feasible diagnostic preserved independently from scores", report)
+	}
+	if len(report.PoolScores) == 0 {
+		t.Fatalf("BudgetPublication = %+v, want score diagnostics alongside feasibility diagnostics", report)
+	}
+}
+
+// TestAdaptiveScoringUnpublishedTickDoesNotCommitControllerState mirrors the
+// controller non-commit contract with score diagnostics present. An unpublished
+// scored tick remains diagnostic-only and cannot age dirty markers or commit
+// EWMA/sample state.
+func TestAdaptiveScoringUnpublishedTickDoesNotCommitControllerState(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary")
+	pool, ok := partition.registry.pool("primary")
+	if !ok {
+		t.Fatal("primary pool not found")
+	}
+	requirePartitionNoError(t, pool.Close())
+
+	beforeGeneration := partition.controller.generation.Load()
+	beforeEWMA := partition.controller.ewma
+	beforeClassEWMA := copyPoolClassEWMAStateMap(partition.controller.ewmaByPoolClass)
+	beforeDirty := partition.controllerDirtyIndexes(nil)
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	if report.BudgetPublication.Published || len(report.PoolScores) == 0 {
+		t.Fatalf("TickInto() = %+v, want unpublished diagnostic tick with score reports", report)
+	}
+	if partition.controller.generation.Load() != beforeGeneration ||
+		partition.controller.ewma != beforeEWMA ||
+		!reflect.DeepEqual(partition.controller.ewmaByPoolClass, beforeClassEWMA) ||
+		!reflect.DeepEqual(partition.controllerDirtyIndexes(nil), beforeDirty) {
+		t.Fatalf("controller state committed after unpublished scored tick")
 	}
 }
 

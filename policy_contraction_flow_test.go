@@ -165,6 +165,28 @@ func TestPoolPolicyContractionTrimOnShrinkEndToEnd(t *testing.T) {
 	}
 }
 
+// TestPolicyContractionWithAdaptiveTrimStillBounded verifies live contraction
+// uses the same scored Pool trim path as ordinary corrective trim while still
+// respecting per-cycle limits and exposing candidate diagnostics.
+func TestPolicyContractionWithAdaptiveTrimStillBounded(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+	seedPoolRetainedBuffers(t, pool, 4, 512)
+
+	result, err := pool.PublishPolicy(poolPolicyUpdateContractedPolicy(true))
+	requirePoolPolicyNoError(t, err)
+	if !result.TrimAttempted || !result.TrimResult.Executed {
+		t.Fatalf("PublishPolicy(trim) = %+v, want adaptive trim-on-shrink execution", result)
+	}
+	if result.TrimResult.TrimmedBuffers > 1 || result.TrimResult.TrimmedBytes > 512 {
+		t.Fatalf("TrimResult = %+v, want contraction trim bounded by policy limits", result.TrimResult)
+	}
+	if len(result.TrimResult.CandidateClasses) == 0 {
+		t.Fatalf("TrimResult = %+v, want candidate score diagnostics", result.TrimResult)
+	}
+	assertScoreValueFiniteAndClamped(t, result.TrimResult.CandidateClasses[0].Score.Value)
+}
+
 func TestPartitionPolicyContractionTrimOnShrinkEndToEnd(t *testing.T) {
 	partition := newPartitionPolicyUpdatePartition(t, "alpha")
 	pool, ok := partition.pool("alpha")

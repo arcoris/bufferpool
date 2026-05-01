@@ -459,6 +459,116 @@ func TestTrimScoringDoesNotTouchActiveLeases(t *testing.T) {
 	requirePartitionNoError(t, partition.Release(active, active.Buffer()))
 }
 
+// TestAdaptiveTrimScoringStillRespectsBounds pins the final adaptive-trim
+// integration contract: scoring may change candidate order, but it cannot widen
+// pool, buffer, byte, class, or shard limits for a physical trim cycle.
+func TestAdaptiveTrimScoringStillRespectsBounds(t *testing.T) {
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          SizeFromBytes(512),
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	policy := poolTestSmallSingleShardPolicy()
+	policy.Shards.ShardsPerClass = 2
+	config.Pools[0].Config.Policy = policy
+	config.Pools[1].Config.Policy = policy
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, ok := partition.pool("alpha")
+	if !ok {
+		t.Fatal("alpha pool missing")
+	}
+	beta, ok := partition.pool("beta")
+	if !ok {
+		t.Fatal("beta pool missing")
+	}
+	seedPoolClassShardRetainedBuffer(t, alpha, ClassID(0), 0, 512)
+	seedPoolClassShardRetainedBuffer(t, alpha, ClassID(0), 1, 512)
+	seedPoolClassShardRetainedBuffer(t, beta, ClassID(0), 0, 512)
+	seedPoolClassShardRetainedBuffer(t, beta, ClassID(1), 0, 1024)
+
+	result := partition.ExecuteTrim()
+	if result.VisitedPools > 1 ||
+		result.TrimmedBuffers > 1 ||
+		result.TrimmedBytes > 512 ||
+		result.VisitedClasses > 1 ||
+		result.VisitedShards > 1 {
+		t.Fatalf("ExecuteTrim() = %+v, want adaptive scoring constrained by all trim bounds", result)
+	}
+}
+
+// TestAdaptiveTrimScoringDoesNotTouchActiveLease verifies scored victim
+// ordering remains a retained-storage operation. Checked-out leases stay owned
+// by callers and are only completed by Release.
+func TestAdaptiveTrimScoringDoesNotTouchActiveLease(t *testing.T) {
+	config := testPartitionConfig("primary")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          1,
+		MaxBuffersPerCycle:        1,
+		MaxBytesPerCycle:          4 * KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	active, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	retained, err := partition.Acquire("primary", 300)
+	requirePartitionNoError(t, err)
+	requirePartitionNoError(t, partition.Release(retained, retained.Buffer()))
+	beforeActiveBytes := partition.Metrics().CurrentActiveBytes
+
+	result := partition.ExecuteTrim()
+	if !result.Executed || result.TrimmedBuffers != 1 {
+		t.Fatalf("ExecuteTrim() = %+v, want one retained victim removed", result)
+	}
+	metrics := partition.Metrics()
+	if metrics.ActiveLeases != 1 || metrics.CurrentActiveBytes != beforeActiveBytes {
+		t.Fatalf("active metrics after scored trim = %+v, want active lease untouched", metrics)
+	}
+	requirePartitionNoError(t, partition.Release(active, active.Buffer()))
+}
+
+// TestAdaptiveTrimScoringDeterministicAcrossRuns verifies candidate scoring
+// uses stable tie-breakers instead of map iteration or random order.
+func TestAdaptiveTrimScoringDeterministicAcrossRuns(t *testing.T) {
+	config := testPartitionConfig("alpha", "beta")
+	config.Policy.Trim = PartitionTrimPolicy{
+		Enabled:                   true,
+		MaxPoolsPerCycle:          2,
+		MaxBuffersPerCycle:        2,
+		MaxBytesPerCycle:          2 * KiB,
+		MaxClassesPerPoolPerCycle: 1,
+		MaxShardsPerClassPerCycle: 1,
+	}
+	partition, err := NewPoolPartition(config)
+	requirePartitionNoError(t, err)
+	t.Cleanup(func() { requirePartitionNoError(t, partition.Close()) })
+
+	alpha, _ := partition.pool("alpha")
+	beta, _ := partition.pool("beta")
+	seedPoolRetainedBuffers(t, alpha, 1, 512)
+	seedPoolRetainedBuffers(t, beta, 1, 512)
+
+	first := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelHigh, partitionTrimScoringContext{}))
+	second := partitionTrimCandidateReports(partition.partitionTrimCandidates(PressureLevelHigh, partitionTrimScoringContext{}))
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("adaptive trim candidate order changed across runs: first=%+v second=%+v", first, second)
+	}
+	if len(first) < 2 || first[0].PoolName != "alpha" || first[1].PoolName != "beta" {
+		t.Fatalf("candidate order = %+v, want stable pool-name tie-breaker", first)
+	}
+}
+
 func TestPoolPartitionPressureSignalSchedulesTrim(t *testing.T) {
 	config := testPartitionConfig("primary")
 	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB, TrimOnPressure: true}

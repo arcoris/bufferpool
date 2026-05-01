@@ -53,6 +53,9 @@ var (
 	// partitionBenchmarkClassScoreMapSink prevents class score maps being optimized away.
 	partitionBenchmarkClassScoreMapSink map[poolClassKey]PoolClassScore
 
+	// partitionBenchmarkPoolClassScoreSink prevents class score results being optimized away.
+	partitionBenchmarkPoolClassScoreSink PoolClassScore
+
 	// partitionBenchmarkPoolBudgetScoreSink prevents Pool score aggregation results being optimized away.
 	partitionBenchmarkPoolBudgetScoreSink PoolBudgetScore
 
@@ -434,6 +437,50 @@ func BenchmarkPoolPartitionEWMAUpdate(b *testing.B) {
 	partitionBenchmarkEWMASink = state
 }
 
+// BenchmarkPoolClassScore measures one typed class score projection. Inputs are
+// prepared outside the timed loop so the measurement stays focused on the pure
+// score formula and component construction.
+func BenchmarkPoolClassScore(b *testing.B) {
+	window := partitionBenchmarkScoreWindow(1)
+	classWindow := window.Pools[0].Classes[0]
+	activity := newPoolPartitionClassActivity(classWindow, time.Second)
+	ewma := PoolClassEWMAState{
+		Initialized:   true,
+		Activity:      activity.Activity,
+		GetsPerSecond: activity.GetsPerSecond,
+		PutsPerSecond: activity.PutsPerSecond,
+		DropRatio:     activity.DropRatio,
+	}
+	input := PoolClassScoreInput{
+		Current:  classWindow.Current,
+		Window:   classWindow,
+		Activity: activity,
+		EWMA:     ewma,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkPoolClassScoreSink = NewPoolClassScore(input)
+	}
+}
+
+// BenchmarkPoolScoreAggregation measures typed Pool score aggregation from
+// prepared class scores. It verifies the non-raw-sum aggregation cost separately
+// from class score construction.
+func BenchmarkPoolScoreAggregation(b *testing.B) {
+	window := partitionBenchmarkScoreWindow(16)
+	ewma := partitionBenchmarkClassEWMA(window)
+	classScores := controllerClassScoreMap(window, time.Second, ewma)
+	poolWindow := window.Pools[0]
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkPoolBudgetScoreSink = poolWindowScore(poolWindow, classScores)
+	}
+}
+
 // BenchmarkPartitionControllerClassScoreMap measures the typed class score map
 // projection used by applied partition controller budget allocation.
 func BenchmarkPartitionControllerClassScoreMap(b *testing.B) {
@@ -459,6 +506,24 @@ func BenchmarkPartitionControllerPoolScoreAggregation(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		partitionBenchmarkPoolBudgetScoreSink = poolWindowScore(poolWindow, classScores)
+	}
+}
+
+// BenchmarkPartitionControllerScoreCycle measures the controller score slice
+// that builds typed class scores and aggregates every Pool score from the same
+// updated EWMA snapshot.
+func BenchmarkPartitionControllerScoreCycle(b *testing.B) {
+	window := partitionBenchmarkScoreWindow(16)
+	ewma := partitionBenchmarkClassEWMA(window)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		classScores := controllerClassScoreMap(window, time.Second, ewma)
+		for _, poolWindow := range window.Pools {
+			partitionBenchmarkPoolBudgetScoreSink = poolWindowScore(poolWindow, classScores)
+		}
+		partitionBenchmarkClassScoreMapSink = classScores
 	}
 }
 
@@ -505,6 +570,29 @@ func BenchmarkBudgetPublicationWithScoreDiagnostics(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		partitionBenchmarkBudgetPublicationSink = partition.controllerPoolBudgetReport(Generation(i+1), runtime, window, time.Second, ewma)
+	}
+}
+
+// BenchmarkPartitionTickWithScoreDiagnostics measures a full reusable
+// foreground partition tick with score diagnostics present in the report.
+func BenchmarkPartitionTickWithScoreDiagnostics(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	report := PartitionControllerReport{
+		Sample: PoolPartitionSample{
+			Pools: make([]PoolPartitionPoolSample, 0, 16),
+		},
+	}
+	if err := partition.TickInto(&report); err != nil {
+		b.Fatalf("warm TickInto() error = %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() error = %v", err)
+		}
+		partitionBenchmarkReportSink = report
 	}
 }
 
