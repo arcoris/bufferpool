@@ -225,13 +225,13 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		if entry.pool.IsClosed() {
 			publication.SkippedPools = append(publication.SkippedPools, PoolPressurePublicationEntry{
 				PoolName: entry.name,
-				Reason:   errPoolClosed,
+				Reason:   policyUpdateFailureClosed,
 			})
 			continue
 		}
 	}
 	if len(publication.SkippedPools) > 0 {
-		publication.FailureReason = errPoolClosed
+		publication.FailureReason = policyUpdateFailureClosed
 		return publication, nil
 	}
 
@@ -239,11 +239,12 @@ func (p *PoolPartition) applyPressureLocked(signal PressureSignal) (PoolPartitio
 		partitionSignal := signal
 		partitionSignal.Source = PressureSourcePartition
 		if err := entry.pool.applyPressure(partitionSignal); err != nil {
+			reason := policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 			publication.Partial = len(publication.AppliedPools) > 0
-			publication.FailureReason = err.Error()
+			publication.FailureReason = reason
 			publication.SkippedPools = append(publication.SkippedPools, PoolPressurePublicationEntry{
 				PoolName: entry.name,
-				Reason:   err.Error(),
+				Reason:   reason,
 			})
 			return publication, err
 		}

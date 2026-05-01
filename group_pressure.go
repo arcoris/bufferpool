@@ -120,32 +120,33 @@ func (g *PoolGroup) PublishPressure(level PressureLevel) (PoolGroupPressurePubli
 		if entry.partition.IsClosed() {
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
 				PartitionName: entry.name,
-				Reason:        errPartitionClosed,
+				Reason:        policyUpdateFailureClosed,
 			})
 		}
 	}
 	if len(publication.SkippedPartitions) > 0 {
-		publication.FailureReason = errPartitionClosed
+		publication.FailureReason = policyUpdateFailureClosed
 		return publication, nil
 	}
 
 	for _, entry := range g.registry.entries {
 		partitionPublication, err := entry.partition.publishPressureSignal(signal)
 		if err != nil {
+			reason := policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 			publication.Partial = len(publication.AppliedPartitions) > 0
-			publication.FailureReason = err.Error()
+			publication.FailureReason = reason
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
 				PartitionName: entry.name,
-				Reason:        err.Error(),
+				Reason:        reason,
 			})
 			return publication, err
 		}
 		if !partitionPublication.FullyApplied() {
 			publication.Partial = len(publication.AppliedPartitions) > 0
-			publication.FailureReason = errPartitionClosed
+			publication.FailureReason = policyUpdateFailureClosed
 			publication.SkippedPartitions = append(publication.SkippedPartitions, PoolGroupPressurePublicationEntry{
 				PartitionName: entry.name,
-				Reason:        errPartitionClosed,
+				Reason:        policyUpdateFailureClosed,
 			})
 			return publication, nil
 		}

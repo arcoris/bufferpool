@@ -141,7 +141,7 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 	classAllocation, err := p.planPoolBudgetForPolicy(target, normalized)
 	result.ClassBudgetPublication = poolClassBudgetPublicationReportFromAllocation(p.name, attemptGeneration, classAllocation)
 	if err != nil {
-		result.ClassBudgetPublication.FailureReason = err.Error()
+		result.ClassBudgetPublication.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 		result.FailureReason = policyUpdateFailureInvalid
 		return result, err
 	}

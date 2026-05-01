@@ -110,6 +110,10 @@ type plannedPoolBudgetBatch struct {
 // runtime snapshot. Planning performs every normal validation step without
 // mutation; applying the plan is expected to be no-fail for policy feasibility
 // and class-target identity.
+//
+// PoolGroup may ask PoolPartition to build and apply this plan, but ownership
+// still flows downward only. PoolPartition may admit Pool control operations;
+// Pool control paths never call back into PoolPartition or PoolGroup.
 type partitionBudgetApplicationPlan struct {
 	target          PartitionBudgetTarget
 	generation      Generation
@@ -219,7 +223,7 @@ func (p *PoolPartition) planPartitionBudgetApplicationLocked(
 	plan.report = batch.report
 	if err != nil {
 		if plan.report.FailureReason == "" {
-			plan.report.FailureReason = err.Error()
+			plan.report.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 		}
 		return plan, err
 	}
@@ -306,7 +310,7 @@ func (p *PoolPartition) applyPoolBudgetTargetsLocked(targets []PoolBudgetTarget)
 		return batch.report, err
 	}
 	if err := batch.beginPoolControlOperations(); err != nil {
-		batch.report.FailureReason = err.Error()
+		batch.report.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureClosed)
 		return batch.report, err
 	}
 	defer batch.endPoolControlOperations()
@@ -375,7 +379,7 @@ func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) 
 			Published:  false,
 		}
 		if err != nil {
-			classReport.FailureReason = err.Error()
+			classReport.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 			batch.report.ClassReports = append(batch.report.ClassReports, classReport)
 			return batch, err
 		}

@@ -283,6 +283,15 @@ func validateGroupPolicyPublicationCandidate(
 // before the group runtime snapshot is published. Admission then holds each
 // partition foreground gate until targets are applied, so direct partition Close
 // cannot slip between group runtime publication and child target mutation.
+//
+// The lock hierarchy for live publication is strictly top-down:
+// PoolGroup.runtimeMu, then PoolPartition foreground gates, then
+// PoolPartition.controller.mu, then Pool control operation gates, then
+// Pool.controlMu and any Pool-local class, shard, or bucket locks. Reverse
+// calls are forbidden: Pool, shard, and bucket code must never call back into a
+// PoolPartition or PoolGroup, and Pool.Get/Pool.Put never participate in policy
+// publication. Publication is foreground/manual work; it does not start
+// background convergence.
 type groupPolicyPartitionBudgetBatch struct {
 	plans  []groupPolicyPartitionBudgetPlan
 	report PoolGroupBudgetPublicationReport
@@ -346,7 +355,7 @@ func (g *PoolGroup) planGroupPolicyBudgetPublicationBatchLocked(
 			return batch, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+target.PartitionName)
 		}
 		if !partition.lifecycle.AllowsWork() {
-			skipped := PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: errPartitionClosed}
+			skipped := PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: policyUpdateFailureClosed}
 			batch.report.SkippedPartitions = append(batch.report.SkippedPartitions, skipped)
 			batch.report.FailureReason = policyUpdateFailureSkippedChild
 			continue
@@ -524,7 +533,7 @@ func groupPolicyPartitionPlanFailureReason(err error, report PoolPartitionBudget
 		return policyUpdateFailureClosed
 	}
 	if err != nil {
-		return err.Error()
+		return policyUpdateFailureReasonForError(err, policyUpdateFailureInvalid)
 	}
 	return policyUpdateFailureInvalid
 }

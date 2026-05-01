@@ -156,13 +156,13 @@ func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTri
 	if maxBuffers == 0 || maxBytes.IsZero() {
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
-	if _, ok := p.table.classByID(classID); !ok {
-		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
-	}
 	if err := p.beginPoolControlOperation(); err != nil {
 		return PoolTrimResult{Reason: errPoolTrimClosed}
 	}
 	defer p.endOperation()
+	if _, ok := p.table.classByID(classID); !ok {
+		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
+	}
 	p.controlMu.Lock()
 	defer p.controlMu.Unlock()
 	result := PoolTrimResult{Attempted: true, VisitedClasses: 1, Reason: errPoolTrimCompleted}
@@ -179,6 +179,10 @@ func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxByt
 	if maxBuffers == 0 || maxBytes.IsZero() {
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
+	if err := p.beginPoolControlOperation(); err != nil {
+		return PoolTrimResult{Reason: errPoolTrimClosed}
+	}
+	defer p.endOperation()
 	if _, ok := p.table.classByID(classID); !ok {
 		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
 	}
@@ -186,10 +190,6 @@ func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxByt
 	if shardIndex < 0 || shardIndex >= state.shardCount() {
 		return PoolTrimResult{Reason: errPoolTrimInvalidShard}
 	}
-	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: errPoolTrimClosed}
-	}
-	defer p.endOperation()
 	p.controlMu.Lock()
 	defer p.controlMu.Unlock()
 	bucketResult := state.trimShardBounded(shardIndex, maxBuffers, maxBytes.Bytes())

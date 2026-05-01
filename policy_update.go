@@ -16,6 +16,8 @@
 
 package bufferpool
 
+import "errors"
+
 const (
 	// policyUpdateFailureInvalid reports that the candidate policy is not valid
 	// for the owner that would publish it.
@@ -46,6 +48,37 @@ const (
 	// successfully publish policy state but fail during bounded cleanup.
 	policyUpdateFailureTrimFailed = "policy_update_trim_failed"
 )
+
+// policyUpdateFailureReasonForError maps an error class to stable publication
+// report vocabulary.
+//
+// Publication reports are meant for machines as much as humans, so they must
+// not expose formatted validation text as FailureReason. Callers still return
+// the original error value, preserving errors.Is behavior and detailed error
+// messages for callers that need them.
+func policyUpdateFailureReasonForError(err error, fallback string) string {
+	if fallback == "" {
+		fallback = policyUpdateFailureInvalid
+	}
+	if err == nil {
+		return fallback
+	}
+	if errors.Is(err, ErrClosed) {
+		return policyUpdateFailureClosed
+	}
+	if errors.Is(err, ErrInvalidPolicy) || errors.Is(err, ErrInvalidOptions) {
+		switch fallback {
+		case policyUpdateFailureShapeChange,
+			policyUpdateFailureOwnershipChange,
+			policyUpdateFailureInfeasibleBudget,
+			policyUpdateFailureSkippedChild:
+			return fallback
+		default:
+			return policyUpdateFailureInvalid
+		}
+	}
+	return fallback
+}
 
 // PolicyUpdateKind identifies one policy section affected by a live-update diff.
 //

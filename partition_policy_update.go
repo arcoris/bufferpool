@@ -154,7 +154,7 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 
 	if shouldPublishBudget {
 		if err := budgetBatch.beginPoolControlOperations(); err != nil {
-			result.BudgetPublication.FailureReason = err.Error()
+			result.BudgetPublication.FailureReason = policyUpdateFailureReasonForError(err, policyUpdateFailureClosed)
 			result.FailureReason = policyUpdateFailureClosed
 			return result, err
 		}

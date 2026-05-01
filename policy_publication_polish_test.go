@@ -87,6 +87,51 @@ func TestPoolGroupPublishPolicyApplyAfterPlanningIsNoFail(t *testing.T) {
 	}
 }
 
+func TestGroupPolicyPreplannedApplyCannotFailForNormalPolicyReasons(t *testing.T) {
+	group := newGroupPolicyUpdateGroup(t, "alpha", "beta")
+
+	result, err := group.PublishPolicy(groupPolicyUpdatePolicy(2 * KiB))
+	requireGroupNoError(t, err)
+	if result.RuntimePublished && !result.Published {
+		t.Fatalf("PublishPolicy() = %+v, runtime publication must imply successful planned child apply", result)
+	}
+	if !result.BudgetPublication.Published || result.BudgetPublication.FailureReason != "" {
+		t.Fatalf("BudgetPublication = %+v, want no-fail planned child apply", result.BudgetPublication)
+	}
+}
+
+func TestPartitionPolicyPreplannedApplyCannotFailForNormalPolicyReasons(t *testing.T) {
+	partition := newPartitionPolicyUpdatePartition(t, "alpha", "beta")
+
+	result, err := partition.PublishPolicy(partitionPolicyUpdatePolicy(2*KiB, false))
+	requirePartitionNoError(t, err)
+	if result.RuntimePublished && !result.Published {
+		t.Fatalf("PublishPolicy() = %+v, runtime publication must imply successful planned Pool apply", result)
+	}
+	if !result.BudgetPublication.Published || result.BudgetPublication.FailureReason != "" {
+		t.Fatalf("BudgetPublication = %+v, want no-fail planned Pool apply", result.BudgetPublication)
+	}
+	for _, classReport := range result.BudgetPublication.ClassReports {
+		if !classReport.Published || classReport.FailureReason != "" {
+			t.Fatalf("ClassReport = %+v, want no-fail planned class apply", classReport)
+		}
+	}
+}
+
+func TestPoolPolicyPreplannedClassApplyCannotFailForNormalPolicyReasons(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+
+	result, err := pool.PublishPolicy(poolPolicyUpdateContractedPolicy(false))
+	requirePoolPolicyNoError(t, err)
+	if result.RuntimePublished && !result.Published {
+		t.Fatalf("PublishPolicy() = %+v, runtime publication must imply planned class apply", result)
+	}
+	if !result.ClassBudgetPublication.Published || result.ClassBudgetPublication.FailureReason != "" {
+		t.Fatalf("ClassBudgetPublication = %+v, want no-fail planned class apply", result.ClassBudgetPublication)
+	}
+}
+
 func TestPoolGroupPublishPolicyRuntimePublishedImpliesPartitionTargetsApplied(t *testing.T) {
 	group := newGroupPolicyUpdateGroup(t, "alpha", "beta")
 
@@ -155,6 +200,33 @@ func TestPoolTrimShardClosedReasonIsStable(t *testing.T) {
 	result := pool.TrimShard(ClassID(0), 0, 1, KiB)
 	if result.Attempted || result.Executed || result.Reason != errPoolTrimClosed {
 		t.Fatalf("TrimShard(closed) = %+v, want stable closed trim reason", result)
+	}
+}
+
+func TestPoolTrimClosedDoesNotInspectStorage(t *testing.T) {
+	pool := closedPolicyPublicationPool(t)
+
+	classResult := pool.TrimClass(ClassID(999), 1, KiB)
+	if classResult.Reason != errPoolTrimClosed || classResult.Attempted {
+		t.Fatalf("TrimClass(closed invalid class) = %+v, want lifecycle rejection before class inspection", classResult)
+	}
+	shardResult := pool.TrimShard(ClassID(999), 999, 1, KiB)
+	if shardResult.Reason != errPoolTrimClosed || shardResult.Attempted {
+		t.Fatalf("TrimShard(closed invalid shard) = %+v, want lifecycle rejection before shard inspection", shardResult)
+	}
+}
+
+func TestPoolTrimClosedDoesNotMutateRetainedCounters(t *testing.T) {
+	pool := closedPolicyPublicationPool(t)
+	before := pool.Metrics()
+
+	result := pool.Trim(PoolTrimPlan{MaxBuffers: 1, MaxBytes: KiB})
+	after := pool.Metrics()
+	if result.Attempted || result.Executed || result.Reason != errPoolTrimClosed {
+		t.Fatalf("Trim(closed) = %+v, want closed no-op", result)
+	}
+	if after.CurrentRetainedBytes != before.CurrentRetainedBytes || after.CurrentRetainedBuffers != before.CurrentRetainedBuffers {
+		t.Fatalf("closed trim mutated retained counters: before=%+v after=%+v", before, after)
 	}
 }
 
@@ -257,6 +329,161 @@ func TestPolicyPublicationFailureReasonIsStable(t *testing.T) {
 	}
 }
 
+func TestPolicyPublicationFailureReasonsDoNotExposeRawErrorText(t *testing.T) {
+	raw := newError(ErrInvalidPolicy, "bufferpool: raw validation detail")
+	report := PoolPartitionBudgetPublicationReport{
+		Allocation: BudgetAllocationDiagnostics{Feasible: true},
+	}
+
+	reason := groupPolicyPartitionPlanFailureReason(raw, report)
+	if reason != policyUpdateFailureInvalid {
+		t.Fatalf("failure reason = %q, want stable %q", reason, policyUpdateFailureInvalid)
+	}
+	if reason == raw.Error() {
+		t.Fatalf("failure reason exposed raw error text %q", reason)
+	}
+}
+
+func TestGroupPolicyPartitionPlanFailureReasonMapsInvalidPolicy(t *testing.T) {
+	err := newError(ErrInvalidPolicy, "bufferpool: detailed policy validation text")
+	report := PoolPartitionBudgetPublicationReport{Allocation: BudgetAllocationDiagnostics{Feasible: true}}
+	if got := groupPolicyPartitionPlanFailureReason(err, report); got != policyUpdateFailureInvalid {
+		t.Fatalf("reason = %q, want %q", got, policyUpdateFailureInvalid)
+	}
+}
+
+func TestGroupPolicyPartitionPlanFailureReasonMapsInvalidOptions(t *testing.T) {
+	err := newError(ErrInvalidOptions, "bufferpool: detailed options validation text")
+	report := PoolPartitionBudgetPublicationReport{Allocation: BudgetAllocationDiagnostics{Feasible: true}}
+	if got := groupPolicyPartitionPlanFailureReason(err, report); got != policyUpdateFailureInvalid {
+		t.Fatalf("reason = %q, want %q", got, policyUpdateFailureInvalid)
+	}
+}
+
+func TestGroupPolicyPartitionPlanFailureReasonMapsClosed(t *testing.T) {
+	err := newError(ErrClosed, "bufferpool: detailed close text")
+	report := PoolPartitionBudgetPublicationReport{Allocation: BudgetAllocationDiagnostics{Feasible: true}}
+	if got := groupPolicyPartitionPlanFailureReason(err, report); got != policyUpdateFailureClosed {
+		t.Fatalf("reason = %q, want %q", got, policyUpdateFailureClosed)
+	}
+}
+
+func TestPolicyPublicationFailureReasonStillReturnsWrappedError(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+
+	policy := poolPolicyUpdateExpandedPolicy()
+	policy.Retention.SoftRetainedBytes = 8 * KiB
+	policy.Retention.HardRetainedBytes = 4 * KiB
+	result, err := pool.PublishPolicy(policy)
+	requirePoolPolicyErrorIs(t, err, ErrInvalidPolicy)
+	if result.FailureReason != policyUpdateFailureInvalid {
+		t.Fatalf("FailureReason = %q, want %q", result.FailureReason, policyUpdateFailureInvalid)
+	}
+	if err == nil || err.Error() == result.FailureReason {
+		t.Fatalf("returned error = %v, want detailed wrapped error separate from stable report reason", err)
+	}
+}
+
+func TestPoolPublishPolicyNoBudgetOrNoChangeResultFields(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+
+	before := pool.currentRuntimeSnapshot()
+	result, err := pool.PublishPolicy(before.clonePolicy())
+	requirePoolPolicyNoError(t, err)
+	assertPolicyPublicationSuccessInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.Contracted || result.TrimAttempted || result.PreviousGeneration != before.Generation {
+		t.Fatalf("PublishPolicy(no change) = %+v, want non-contracted publication fields", result)
+	}
+}
+
+func TestPartitionPublishPolicyNoBudgetOrNoChangeResultFields(t *testing.T) {
+	partition := newPartitionPolicyUpdatePartition(t, "alpha")
+	before := partition.currentRuntimeSnapshot()
+	policy := DefaultPartitionPolicy()
+	policy.Pressure = PartitionPressurePolicy{Enabled: true, HighOwnedBytes: KiB}
+
+	result, err := partition.PublishPolicy(policy)
+	requirePartitionNoError(t, err)
+	assertPolicyPublicationSuccessInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.Contracted || result.TrimAttempted || result.PreviousGeneration != before.Generation {
+		t.Fatalf("PublishPolicy(no budget) = %+v, want runtime-only publication fields", result)
+	}
+	if result.BudgetPublication.Published || result.BudgetPublication.FailureReason != partitionPolicyPublicationNoBudgetTarget {
+		t.Fatalf("BudgetPublication = %+v, want no-budget report", result.BudgetPublication)
+	}
+}
+
+func TestGroupPublishPolicyNoBudgetTargetResultFields(t *testing.T) {
+	group := newGroupPolicyUpdateGroup(t, "alpha")
+	before := group.currentRuntimeSnapshot()
+	policy := DefaultPoolGroupPolicy()
+	policy.Pressure = PartitionPressurePolicy{Enabled: true, HighOwnedBytes: KiB}
+
+	result, err := group.PublishPolicy(policy)
+	requireGroupNoError(t, err)
+	assertPolicyPublicationSuccessInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.Contracted || result.PreviousGeneration != before.Generation {
+		t.Fatalf("PublishPolicy(no budget) = %+v, want runtime-only group fields", result)
+	}
+	if result.BudgetPublication.Published || result.BudgetPublication.FailureReason != groupPolicyPublicationNoBudgetTarget {
+		t.Fatalf("BudgetPublication = %+v, want no-budget report", result.BudgetPublication)
+	}
+}
+
+func TestPoolPolicyPublicationRejectedResultFields(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+	policy := pool.Snapshot().Policy
+	policy.Shards.ShardsPerClass++
+
+	result, err := pool.PublishPolicy(policy)
+	requirePoolPolicyErrorIs(t, err, ErrInvalidPolicy)
+	assertPolicyPublicationRejectedInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.FailureReason != policyUpdateFailureShapeChange {
+		t.Fatalf("FailureReason = %q, want %q", result.FailureReason, policyUpdateFailureShapeChange)
+	}
+}
+
+func TestPartitionPolicyPublicationRejectedResultFields(t *testing.T) {
+	partition := newPartitionPolicyUpdatePartition(t, "alpha")
+	partitionPolicyUpdateCorruptPoolPolicy(t, partition, "alpha", func(policy *Policy) {
+		policy.Shards.ShardsPerClass++
+	})
+
+	result, err := partition.PublishPolicy(partitionPolicyUpdatePolicy(KiB, false))
+	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+	assertPolicyPublicationRejectedInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.FailureReason != policyUpdateFailureShapeChange {
+		t.Fatalf("FailureReason = %q, want %q", result.FailureReason, policyUpdateFailureShapeChange)
+	}
+}
+
+func TestGroupPolicyPublicationRejectedResultFields(t *testing.T) {
+	group := newGroupPolicyUpdateGroup(t, "alpha")
+	corruptGroupPolicyUpdateChildPool(t, group, "alpha", "alpha-pool")
+
+	result, err := group.PublishPolicy(groupPolicyUpdatePolicy(KiB))
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+	assertPolicyPublicationRejectedInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.FailureReason != policyUpdateFailureShapeChange {
+		t.Fatalf("FailureReason = %q, want %q", result.FailureReason, policyUpdateFailureShapeChange)
+	}
+}
+
+func TestPolicyPublicationSuccessResultFields(t *testing.T) {
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	defer closePoolForTest(t, pool)
+
+	result, err := pool.PublishPolicy(poolPolicyUpdateExpandedPolicy())
+	requirePoolPolicyNoError(t, err)
+	assertPolicyPublicationSuccessInvariants(t, result.Published, result.RuntimePublished, result.Generation, result.FailureReason)
+	if result.Published && !result.RuntimePublished {
+		t.Fatalf("PublishPolicy() = %+v, published must imply runtime published", result)
+	}
+}
+
 func TestPolicyUpdateDoesNotEnterPoolHotPathAST(t *testing.T) {
 	for _, file := range []string{"pool_get.go", "pool_put.go"} {
 		facts := parsePolicyPublicationASTFacts(t, file)
@@ -288,9 +515,18 @@ func TestGroupPolicyUpdateDoesNotCallPoolTrimDirectlyAST(t *testing.T) {
 	}
 }
 
+func TestGroupPolicyUpdateDoesNotCallPoolTrimOrHotPathAST(t *testing.T) {
+	facts := parsePolicyPublicationASTFacts(t, "group_policy_update.go")
+	for _, forbidden := range []string{"Trim", "TrimClass", "TrimShard", "Get", "Put"} {
+		if facts.hasCall(forbidden) {
+			t.Fatalf("group_policy_update.go calls %q; group policy update must not call Pool data-plane/trim APIs", forbidden)
+		}
+	}
+}
+
 func TestGroupPolicyUpdateDoesNotScanPoolShardInternalsAST(t *testing.T) {
 	facts := parsePolicyPublicationASTFacts(t, "group_policy_update.go")
-	for _, forbidden := range []string{"shards", "mustClassStateFor", "PoolShard", "ClassState"} {
+	for _, forbidden := range []string{"shards", "mustClassStateFor", "PoolShard", "ClassState", "classState", "shard", "bucket", "PoolTrimPlan"} {
 		if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
 			t.Fatalf("group_policy_update.go AST references %q; group policy update must not scan shard/class internals", forbidden)
 		}
@@ -309,7 +545,34 @@ func TestPartitionPolicyUpdateDoesNotReferencePoolGroupAST(t *testing.T) {
 	}
 }
 
+func TestPoolPolicyUpdateDoesNotReferencePartitionOrGroupAST(t *testing.T) {
+	facts := parsePolicyPublicationASTFacts(t, "pool_policy_update.go")
+	for _, forbidden := range []string{"PoolGroup", "PoolPartition", "groupCoordinator", "partitionController"} {
+		if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
+			t.Fatalf("pool_policy_update.go AST references %q; Pool policy update must stay Pool-local", forbidden)
+		}
+	}
+}
+
+func TestPoolPublishPolicyFinalInterleavings(t *testing.T) {
+	runPoolPublishPolicyInterleavings(t)
+}
+
+func TestPoolPartitionPublishPolicyFinalInterleavings(t *testing.T) {
+	runPartitionPublishPolicyInterleavings(t)
+}
+
+func TestPoolGroupPublishPolicyFinalInterleavings(t *testing.T) {
+	runGroupPublishPolicyInterleavings(t)
+}
+
 func TestPoolPublishPolicyRaceStyleInterleavings(t *testing.T) {
+	runPoolPublishPolicyInterleavings(t)
+}
+
+func runPoolPublishPolicyInterleavings(t *testing.T) {
+	t.Helper()
+
 	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
 	start := make(chan struct{})
 	errs := make(chan error, 96)
@@ -362,6 +625,12 @@ func TestPoolPublishPolicyRaceStyleInterleavings(t *testing.T) {
 }
 
 func TestPartitionPublishPolicyRaceStyleInterleavings(t *testing.T) {
+	runPartitionPublishPolicyInterleavings(t)
+}
+
+func runPartitionPublishPolicyInterleavings(t *testing.T) {
+	t.Helper()
+
 	partition := MustNewPoolPartition(partitionPolicyUpdateConfig("alpha"))
 	start := make(chan struct{})
 	errs := make(chan error, 128)
@@ -423,6 +692,12 @@ func TestPartitionPublishPolicyRaceStyleInterleavings(t *testing.T) {
 }
 
 func TestGroupPublishPolicyRaceStyleInterleavings(t *testing.T) {
+	runGroupPublishPolicyInterleavings(t)
+}
+
+func runGroupPublishPolicyInterleavings(t *testing.T) {
+	t.Helper()
+
 	group := MustNewPoolGroup(groupPolicyUpdateConfig("alpha"))
 	start := make(chan struct{})
 	errs := make(chan error, 128)
@@ -520,6 +795,25 @@ func assertPolicyPublicationSuccessInvariants(
 	}
 	if failureReason != "" {
 		t.Fatalf("FailureReason = %q, want empty on success", failureReason)
+	}
+}
+
+func assertPolicyPublicationRejectedInvariants(
+	t *testing.T,
+	published bool,
+	runtimePublished bool,
+	generation Generation,
+	failureReason string,
+) {
+	t.Helper()
+	if published || runtimePublished {
+		t.Fatalf("Published=%v RuntimePublished=%v, want both false", published, runtimePublished)
+	}
+	if generation != NoGeneration {
+		t.Fatalf("Generation = %s, want NoGeneration on rejected publication", generation)
+	}
+	if failureReason == "" {
+		t.Fatal("FailureReason empty on rejected publication")
 	}
 }
 

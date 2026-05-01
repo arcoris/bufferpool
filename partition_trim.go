@@ -220,7 +220,7 @@ func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 func (p *PoolPartition) ExecuteTrim() PartitionTrimResult {
 	p.mustBeInitialized()
 	if err := p.beginForegroundOperation(); err != nil {
-		return PartitionTrimResult{Reason: err.Error()}
+		return PartitionTrimResult{Reason: errPoolTrimClosed}
 	}
 	defer p.endForegroundOperation()
 
