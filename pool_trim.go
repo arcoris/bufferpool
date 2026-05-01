@@ -118,6 +118,7 @@ type PoolTrimCandidate struct {
 // zero limits make the call a no-op.
 func (p *Pool) Trim(plan PoolTrimPlan) PoolTrimResult {
 	p.mustBeInitialized()
+
 	if plan.MaxBuffers < 0 {
 		return PoolTrimResult{Reason: errPoolTrimInvalidLimit}
 	}
@@ -125,7 +126,7 @@ func (p *Pool) Trim(plan PoolTrimPlan) PoolTrimResult {
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
 	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: errPoolTrimClosed}
+		return poolTrimClosedResult()
 	}
 	defer p.endOperation()
 
@@ -163,6 +164,7 @@ func (p *Pool) trimLocked(plan PoolTrimPlan) PoolTrimResult {
 // TrimClass removes retained buffers from one Pool class.
 func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTrimResult {
 	p.mustBeInitialized()
+
 	if maxBuffers < 0 {
 		return PoolTrimResult{Reason: errPoolTrimInvalidLimit}
 	}
@@ -170,12 +172,14 @@ func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTri
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
 	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: errPoolTrimClosed}
+		return poolTrimClosedResult()
 	}
 	defer p.endOperation()
+
 	if _, ok := p.table.classByID(classID); !ok {
 		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
 	}
+
 	p.controlMu.Lock()
 	defer p.controlMu.Unlock()
 	result := PoolTrimResult{Attempted: true, VisitedClasses: 1, Reason: errPoolTrimCompleted}
@@ -186,6 +190,7 @@ func (p *Pool) TrimClass(classID ClassID, maxBuffers int, maxBytes Size) PoolTri
 // TrimShard removes retained buffers from one class shard.
 func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxBytes Size) PoolTrimResult {
 	p.mustBeInitialized()
+
 	if maxBuffers < 0 {
 		return PoolTrimResult{Reason: errPoolTrimInvalidLimit}
 	}
@@ -193,16 +198,19 @@ func (p *Pool) TrimShard(classID ClassID, shardIndex int, maxBuffers int, maxByt
 		return PoolTrimResult{Reason: errPoolTrimNoLimit}
 	}
 	if err := p.beginPoolControlOperation(); err != nil {
-		return PoolTrimResult{Reason: errPoolTrimClosed}
+		return poolTrimClosedResult()
 	}
 	defer p.endOperation()
+
 	if _, ok := p.table.classByID(classID); !ok {
 		return PoolTrimResult{Reason: errPoolTrimInvalidClass}
 	}
+
 	state := &p.classes[classID.Index()]
 	if shardIndex < 0 || shardIndex >= state.shardCount() {
 		return PoolTrimResult{Reason: errPoolTrimInvalidShard}
 	}
+
 	p.controlMu.Lock()
 	defer p.controlMu.Unlock()
 	bucketResult := state.trimShardBounded(shardIndex, maxBuffers, maxBytes.Bytes())
@@ -216,10 +224,12 @@ func (p *Pool) trimClassState(state *classState, maxBuffers int, maxBytes uint64
 	if maxBuffers <= 0 || maxBytes == 0 {
 		return result
 	}
+
 	for _, candidate := range classTrimShardCandidates(state, pressureLevel) {
 		if maxShards > 0 && int(result.VisitedShards) >= maxShards {
 			break
 		}
+
 		remainingBuffers := maxBuffers - int(result.TrimmedBuffers)
 		remainingBytes := maxBytes - result.TrimmedBytes
 		if remainingBuffers <= 0 || remainingBytes == 0 {
@@ -257,22 +267,27 @@ func (p *Pool) poolTrimCandidates(pressureLevel PressureLevel) []poolTrimCandida
 	candidates := make([]poolTrimCandidate, 0, len(p.classes))
 	for index := range p.classes {
 		state := p.classes[index].state()
+
 		retainedBytes := state.CurrentRetainedBytes
 		if retainedBytes == 0 {
 			continue
 		}
+
 		overTargetBytes := poolTrimClassOverTargetBytes(state)
-		classBytes := state.Class.Size().Bytes()
 		retainedBuffers := state.CurrentRetainedBuffers
+		classBytes := state.Class.Size().Bytes()
 		capacityWaste := trimVictimCapacityWasteBytes(retainedBytes, retainedBuffers, classBytes)
-		score := NewTrimVictimScore(TrimVictimScoreInput{
+
+		scoreInput := TrimVictimScoreInput{
 			OverTargetBytes:    overTargetBytes,
 			RetainedBytes:      retainedBytes,
 			RetainedBuffers:    retainedBuffers,
 			ClassBytes:         classBytes,
 			CapacityWasteBytes: capacityWaste,
 			PressureLevel:      pressureLevel,
-		})
+		}
+
+		score := NewTrimVictimScore(scoreInput)
 		candidates = append(candidates, poolTrimCandidate{
 			index:           index,
 			classID:         state.Class.ID(),
@@ -328,6 +343,11 @@ func poolTrimCandidateReports(candidates []poolTrimCandidate) []PoolTrimCandidat
 	return reports
 }
 
+// poolTrimClosedResult returns the stable closed-path trim report.
+func poolTrimClosedResult() PoolTrimResult {
+	return PoolTrimResult{Reason: errPoolTrimClosed}
+}
+
 func poolTrimClassOverTargetBytes(state classStateSnapshot) uint64 {
 	if !state.Budget.IsEffective() {
 		return state.CurrentRetainedBytes
@@ -346,20 +366,24 @@ func classTrimShardCandidates(state *classState, pressureLevel PressureLevel) []
 		if retainedBytes == 0 {
 			continue
 		}
+
 		overTargetBytes := poolTrimShardOverTargetBytes(shard)
 		retainedBuffers := shard.Counters.CurrentRetainedBuffers
 		classBytes := snapshot.Class.Size().Bytes()
 		capacityWaste := trimVictimCapacityWasteBytes(retainedBytes, retainedBuffers, classBytes)
+
+		scoreInput := TrimVictimScoreInput{
+			OverTargetBytes:    overTargetBytes,
+			RetainedBytes:      retainedBytes,
+			RetainedBuffers:    retainedBuffers,
+			ClassBytes:         classBytes,
+			CapacityWasteBytes: capacityWaste,
+			PressureLevel:      pressureLevel,
+		}
+
 		candidates = append(candidates, classTrimShardCandidate{
-			index: index,
-			score: NewTrimVictimScore(TrimVictimScoreInput{
-				OverTargetBytes:    overTargetBytes,
-				RetainedBytes:      retainedBytes,
-				RetainedBuffers:    retainedBuffers,
-				ClassBytes:         classBytes,
-				CapacityWasteBytes: capacityWaste,
-				PressureLevel:      pressureLevel,
-			}),
+			index:           index,
+			score:           NewTrimVictimScore(scoreInput),
 			overTargetBytes: overTargetBytes,
 			retainedBytes:   retainedBytes,
 			retainedBuffers: retainedBuffers,

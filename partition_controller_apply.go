@@ -33,7 +33,7 @@ func (p *PoolPartition) controllerSampleIndexes(dst []int) []int {
 	return unionPartitionPoolIndexes(active, dirty, p.registry.len())
 }
 
-// allPartitionPoolIndexes appends every registry index in deterministic order.
+// allPartitionPoolIndexes appends every registry index in ascending order.
 func (p *PoolPartition) allPartitionPoolIndexes(dst []int) []int {
 	dst = dst[:0]
 	for index := range p.registry.entries {
@@ -43,7 +43,7 @@ func (p *PoolPartition) allPartitionPoolIndexes(dst []int) []int {
 }
 
 // unionPartitionPoolIndexes merges active and dirty indexes in deterministic
-// registry order.
+// ascending index order.
 func unionPartitionPoolIndexes(active []int, dirty []int, total int) []int {
 	if total <= 0 {
 		return active[:0]
@@ -128,17 +128,20 @@ func copyPoolClassEWMAStateMap(src map[poolClassKey]PoolClassEWMAState) map[pool
 // was used. Scoring is pure control-plane work and does not publish policy or
 // execute trim.
 func controllerClassScoreMap(window PoolPartitionWindow, elapsed time.Duration, ewma map[poolClassKey]PoolClassEWMAState) map[poolClassKey]PoolClassScore {
-	scores := make(map[poolClassKey]PoolClassScore)
+	scores := make(map[poolClassKey]PoolClassScore, partitionWindowClassCount(window))
 	for _, poolWindow := range window.Pools {
 		for _, classWindow := range poolWindow.Classes {
 			key := poolClassKey{PoolName: poolWindow.Name, ClassID: classWindow.ClassID}
 			activity := newPoolPartitionClassActivity(classWindow, elapsed)
-			scores[key] = NewPoolClassScore(PoolClassScoreInput{
+
+			scoreInput := PoolClassScoreInput{
 				Current:  classWindow.Current,
 				Window:   classWindow,
 				Activity: activity,
 				EWMA:     ewma[key],
-			})
+			}
+
+			scores[key] = NewPoolClassScore(scoreInput)
 		}
 	}
 	return scores
@@ -163,7 +166,11 @@ func (p *PoolPartition) controllerPoolBudgetReport(
 		}
 	}
 
+	// Phase 1: build typed class scores from the tick-local EWMA snapshot.
 	classScores := controllerClassScoreMap(window, elapsed, updatedEWMA)
+
+	// Phase 2: build typed Pool scores and allocator inputs from the same
+	// snapshot. Pool score.Value is the only field consumed by allocators.
 	poolScores := make(map[string]PoolBudgetScore, len(window.Pools))
 	inputs := make([]poolBudgetAllocationInput, 0, len(window.Pools))
 	for _, poolWindow := range window.Pools {
@@ -171,16 +178,21 @@ func (p *PoolPartition) controllerPoolBudgetReport(
 		if !ok {
 			continue
 		}
+
 		poolScore := poolWindowScore(poolWindow, classScores)
 		poolScores[poolWindow.Name] = poolScore
-		inputs = append(inputs, poolBudgetAllocationInput{
+
+		budgetInput := poolBudgetAllocationInput{
 			PoolName:          poolWindow.Name,
 			BaseRetainedBytes: SizeFromBytes(poolWindowCurrentBudgetBytes(poolWindow)),
 			MaxRetainedBytes:  SizeFromBytes(poolControllerRetainedBudget(pool)),
 			Score:             poolScore.Value,
-		})
+		}
+
+		inputs = append(inputs, budgetInput)
 	}
 
+	// Phase 3: allocate the retained parent budget and build the report shell.
 	retainedBytes := runtime.Policy.Budget.MaxRetainedBytes
 	if retainedBytes.IsZero() {
 		retainedBytes = SizeFromBytes(partitionControllerDefaultRetainedBudget(p, inputs))
@@ -197,6 +209,8 @@ func (p *PoolPartition) controllerPoolBudgetReport(
 		report.FailureReason = allocation.Allocation.Reason
 		return report
 	}
+
+	// Phase 4: materialize nested class reports after Pool feasibility is known.
 	targets := allocation.Targets
 	for index := range targets {
 		if poolWindow, ok := findPoolPartitionPoolWindow(window, targets[index].PoolName); ok {
@@ -226,6 +240,7 @@ func (p *PoolPartition) controllerClassBudgetReport(
 	retainedBytes Size,
 	classScores map[poolClassKey]PoolClassScore,
 ) PoolClassBudgetPublicationReport {
+	// Phase 1: assemble class-level allocator inputs and score diagnostics.
 	inputs := make([]classBudgetAllocationInput, 0, len(window.Classes))
 	policy := pool.currentRuntimeSnapshot().Policy
 	scoreReports := make([]PoolClassScoreReport, 0, len(window.Classes))
@@ -234,13 +249,17 @@ func (p *PoolPartition) controllerClassBudgetReport(
 		classScore := classScores[key]
 		scoreReports = append(scoreReports, newPoolClassScoreReport(window.Name, classWindow.ClassID, classScore))
 
-		inputs = append(inputs, classBudgetAllocationInput{
+		classInput := classBudgetAllocationInput{
 			ClassID:         classWindow.ClassID,
 			BaseTargetBytes: SizeFromBytes(classWindow.Current.Budget.AssignedBytes),
 			MaxTargetBytes:  SizeFromBytes(poolClassStaticBudgetCap(policy, classWindow.Class.Size())),
 			Score:           classScore.Value,
-		})
+		}
+
+		inputs = append(inputs, classInput)
 	}
+
+	// Phase 2: allocate class targets and package the report.
 	allocation := allocateClassBudgetTargetsReport(generation, retainedBytes, inputs)
 	report := PoolClassBudgetPublicationReport{
 		Generation:  generation,
@@ -303,6 +322,16 @@ func poolBudgetScoreReports(scores map[string]PoolBudgetScore, window PoolPartit
 		reports = append(reports, newPoolBudgetScoreReport(score))
 	}
 	return reports
+}
+
+// partitionWindowClassCount returns the number of class windows in the sampled
+// partition window.
+func partitionWindowClassCount(window PoolPartitionWindow) int {
+	total := 0
+	for _, poolWindow := range window.Pools {
+		total += len(poolWindow.Classes)
+	}
+	return total
 }
 
 // poolControllerRetainedBudget returns the local retained target available to a

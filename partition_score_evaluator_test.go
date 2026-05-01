@@ -523,16 +523,22 @@ func isFiniteUnit(value float64) bool {
 // allocation-oriented rewrites.
 func assertPoolPartitionScoreValuesFinite(t *testing.T, values PoolPartitionScoreValues) {
 	t.Helper()
-	for name, value := range map[string]float64{
-		"usefulness": values.Usefulness,
-		"waste":      values.Waste,
-		"budget":     values.Budget,
-		"pressure":   values.Pressure,
-		"activity":   values.Activity,
-		"risk":       values.Risk,
-	} {
-		if !isFiniteUnit(value) {
-			t.Fatalf("%s score value = %v, want finite [0,1]", name, value)
+
+	signals := []struct {
+		name  string
+		value float64
+	}{
+		{name: "usefulness", value: values.Usefulness},
+		{name: "waste", value: values.Waste},
+		{name: "budget", value: values.Budget},
+		{name: "pressure", value: values.Pressure},
+		{name: "activity", value: values.Activity},
+		{name: "risk", value: values.Risk},
+	}
+
+	for _, signal := range signals {
+		if !isFiniteUnit(signal.value) {
+			t.Fatalf("%s score value = %v, want finite [0,1]", signal.name, signal.value)
 		}
 	}
 }
