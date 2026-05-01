@@ -226,10 +226,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		return budgetPublicationErr
 	}
 	if len(poolBudgetTargets) > 0 && !budgetPublication.Published {
-		statusReason := budgetPublication.FailureReason
-		if statusReason == "" {
-			statusReason = controllerCycleReasonUnpublished
-		}
+		statusReason := controllerCycleUnpublishedFailureReason(budgetPublication.FailureReason)
 		status := p.controller.status.publish(ControllerCycleStatusUnpublished, generation, NoGeneration, statusReason)
 
 		poolScoreReports := copyPoolBudgetScoreReports(budgetPublication.PoolScores)

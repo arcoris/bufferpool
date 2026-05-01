@@ -493,6 +493,8 @@ func TestPolicyUpdateDoesNotEnterPoolHotPathAST(t *testing.T) {
 			"ControllerStatus",
 			"ControllerCycleStatus",
 			"TickInto",
+			"controllerCycleGate",
+			"controllerCycleStatusStore",
 			"policyUpdate",
 			"PoolPartition",
 			"PoolGroup",
@@ -592,6 +594,8 @@ func TestScoringDoesNotEnterPoolHotPathAST(t *testing.T) {
 			"PlanTrim",
 			"TrimPlan",
 			"cycleGate",
+			"controllerCycleGate",
+			"controllerCycleStatusStore",
 			"activeRegistry",
 		} {
 			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {

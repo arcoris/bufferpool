@@ -141,7 +141,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	} else if !budgetPublication.Published {
 		statusKind = ControllerCycleStatusUnpublished
 		appliedGeneration = NoGeneration
-		statusReason = controllerCycleReasonUnpublished
+		statusReason = controllerCycleUnpublishedFailureReason(budgetPublication.FailureReason)
 	}
 
 	g.coordinator.previousSample = copyPoolGroupSampleInto(g.coordinator.previousSample, sample)

@@ -189,6 +189,40 @@ func BenchmarkPoolGroupTickOverlapRejected(b *testing.B) {
 	group.coordinator.cycleGate.running.Store(false)
 }
 
+// BenchmarkPoolGroupControllerStatusSequenceSkipped measures repeated no-work
+// skipped status publication for manual group coordinator cycles.
+func BenchmarkPoolGroupControllerStatusSequenceSkipped(b *testing.B) {
+	group := benchmarkPoolGroup(b, 1)
+	var report PoolGroupCoordinatorReport
+	_ = group.TickInto(&report)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := group.TickInto(&report); err != nil {
+			b.Fatal(err)
+		}
+		controllerStatusBenchmarkSink = report.Status
+	}
+}
+
+// BenchmarkPoolGroupTickReportStatusConsistency measures one manual coordinator
+// tick plus retained-status read used to assert report/status consistency.
+func BenchmarkPoolGroupTickReportStatusConsistency(b *testing.B) {
+	group := benchmarkPoolGroup(b, 4)
+	var report PoolGroupCoordinatorReport
+	_ = group.TickInto(&report)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := group.TickInto(&report); err != nil {
+			b.Fatal(err)
+		}
+		controllerStatusBenchmarkSink = group.ControllerStatus()
+	}
+}
+
 func BenchmarkPoolGroupTickAppliedCoordinator(b *testing.B) {
 	group := benchmarkBudgetedPoolGroup(b, 4, 4*MiB)
 	var report PoolGroupCoordinatorReport

@@ -279,6 +279,39 @@ func BenchmarkPoolPartitionTickOverlapRejected(b *testing.B) {
 	partition.controller.cycleGate.running.Store(false)
 }
 
+// BenchmarkPoolPartitionControllerStatusSequenceApplied measures retained
+// status publication for repeated applied manual cycles without retaining full
+// controller reports.
+func BenchmarkPoolPartitionControllerStatusSequenceApplied(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		generation := Generation(i + 1)
+		controllerStatusBenchmarkSink = partition.controller.status.publish(ControllerCycleStatusApplied, generation, generation, "")
+	}
+}
+
+// BenchmarkPoolPartitionTickReportStatusConsistency measures the ordinary
+// manual tick plus retained-status read used to assert report/status consistency.
+func BenchmarkPoolPartitionTickReportStatusConsistency(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	report := PartitionControllerReport{Sample: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 16)}}
+	if err := partition.TickInto(&report); err != nil {
+		b.Fatalf("warm TickInto() returned error: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() returned error: %v", err)
+		}
+		controllerStatusBenchmarkSink = partition.ControllerStatus()
+	}
+}
+
 // BenchmarkPoolPartitionTickClassSamples measures class-aware partition sampling
 // used by applied controller ticks.
 func BenchmarkPoolPartitionTickClassSamples(b *testing.B) {

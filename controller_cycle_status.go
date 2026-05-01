@@ -177,6 +177,12 @@ func (g *controllerCycleGate) isRunning() bool {
 }
 
 // controllerCycleStatusStore owns the retained lightweight controller status.
+//
+// FailureReason follows a compact policy: applied cycles clear it, lifecycle and
+// overlap rejections use controller-cycle reasons, returned errors use stable
+// error mappings, and unpublished cycles may carry a more specific nested budget
+// publication reason when one is available. The detailed returned error remains
+// separate from this machine-readable status field.
 type controllerCycleStatusStore struct {
 	mu       sync.RWMutex
 	snapshot ControllerCycleStatusSnapshot
@@ -265,4 +271,13 @@ func controllerCycleFailureReasonForError(err error, fallback string) string {
 // machine-readable value.
 func controllerCycleBudgetPublicationFailureReasonForError(err error, fallback string) string {
 	return controllerCycleFailureReasonForError(err, fallback)
+}
+
+// controllerCycleUnpublishedFailureReason returns the most specific stable
+// reason available for a diagnostic-only non-publication.
+func controllerCycleUnpublishedFailureReason(reason string) string {
+	if reason != "" {
+		return reason
+	}
+	return controllerCycleReasonUnpublished
 }
