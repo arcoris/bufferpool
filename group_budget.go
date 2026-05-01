@@ -184,7 +184,7 @@ func (g *PoolGroup) publishPartitionBudgetTargets(
 			return skipped, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+target.PartitionName)
 		}
 		if !partition.lifecycle.AllowsWork() {
-			skipped = append(skipped, PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: errPartitionClosed})
+			skipped = append(skipped, PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: policyUpdateFailureClosed})
 		}
 	}
 	if len(skipped) > 0 {
@@ -197,7 +197,7 @@ func (g *PoolGroup) publishPartitionBudgetTargets(
 		}
 		if err := partition.applyPartitionBudget(target); err != nil {
 			if errors.Is(err, ErrClosed) {
-				skipped = append(skipped, PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: err.Error()})
+				skipped = append(skipped, PoolGroupSkippedPartition{PartitionName: target.PartitionName, Reason: policyUpdateFailureClosed})
 				continue
 			}
 			return skipped, err

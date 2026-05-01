@@ -333,7 +333,7 @@ func TestBudgetFeasibilityVisibleInControllerReports(t *testing.T) {
 	}
 }
 
-func TestPoolPartitionTickUnpublishedBudgetDoesNotCommitControllerState(t *testing.T) {
+func TestPoolPartitionTickBudgetPublicationErrorDoesNotCommitRuntimeBudgetState(t *testing.T) {
 	t.Parallel()
 
 	partition := MustNewPoolPartition(poolBudgetTestPartitionConfig())
@@ -356,18 +356,21 @@ func TestPoolPartitionTickUnpublishedBudgetDoesNotCommitControllerState(t *testi
 	beforeDirty := partition.controllerDirtyIndexes(nil)
 
 	var report PartitionControllerReport
-	requirePartitionNoError(t, partition.TickInto(&report))
+	requirePartitionErrorIs(t, partition.TickInto(&report), ErrClosed)
 	if report.Generation.IsZero() {
 		t.Fatal("Generation is zero, want observed tick attempt")
+	}
+	if report.Status.Status != ControllerCycleStatusFailed {
+		t.Fatalf("Status = %+v, want failed budget publication", report.Status)
 	}
 	if report.BudgetPublication.Published {
 		t.Fatalf("BudgetPublication.Published = true, want false: %+v", report.BudgetPublication)
 	}
-	if report.BudgetPublication.FailureReason == "" {
-		t.Fatalf("BudgetPublication.FailureReason empty: %+v", report.BudgetPublication)
+	if report.BudgetPublication.FailureReason != controllerCycleReasonClosed {
+		t.Fatalf("BudgetPublication.FailureReason = %q, want %q", report.BudgetPublication.FailureReason, controllerCycleReasonClosed)
 	}
 	if report.TrimResult.Attempted || report.TrimResult.Executed {
-		t.Fatalf("TrimResult = %+v, want no trim after unpublished budget", report.TrimResult)
+		t.Fatalf("TrimResult = %+v, want no trim after failed budget publication", report.TrimResult)
 	}
 	if after := partition.controller.generation.Load(); after != beforeGeneration {
 		t.Fatalf("controller generation = %s, want unchanged %s", after, beforeGeneration)

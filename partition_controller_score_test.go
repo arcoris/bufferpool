@@ -482,11 +482,11 @@ func TestAdaptiveScoringDoesNotBreakBudgetFeasibilityReports(t *testing.T) {
 	}
 }
 
-// TestAdaptiveScoringUnpublishedTickDoesNotCommitControllerState mirrors the
-// controller non-commit contract with score diagnostics present. An unpublished
-// scored tick remains diagnostic-only and cannot age dirty markers or commit
+// TestAdaptiveScoringFailedPublicationDoesNotCommitControllerState mirrors the
+// controller non-commit contract with score diagnostics present. A returned
+// publication error is a failed cycle and cannot age dirty markers or commit
 // EWMA/sample state.
-func TestAdaptiveScoringUnpublishedTickDoesNotCommitControllerState(t *testing.T) {
+func TestAdaptiveScoringFailedPublicationDoesNotCommitControllerState(t *testing.T) {
 	t.Parallel()
 
 	partition := testPartitionControllerScorePartition(t, "primary")
@@ -501,10 +501,13 @@ func TestAdaptiveScoringUnpublishedTickDoesNotCommitControllerState(t *testing.T
 	beforeClassEWMA := copyPoolClassEWMAStateMap(partition.controller.ewmaByPoolClass)
 	beforeDirty := partition.controllerDirtyIndexes(nil)
 	var report PartitionControllerReport
-	requirePartitionNoError(t, partition.TickInto(&report))
+	requirePartitionErrorIs(t, partition.TickInto(&report), ErrClosed)
 
-	if report.BudgetPublication.Published || len(report.PoolScores) == 0 {
-		t.Fatalf("TickInto() = %+v, want unpublished diagnostic tick with score reports", report)
+	if report.Status.Status != ControllerCycleStatusFailed ||
+		report.BudgetPublication.Published ||
+		report.BudgetPublication.FailureReason != controllerCycleReasonClosed ||
+		len(report.PoolScores) == 0 {
+		t.Fatalf("TickInto() = %+v, want failed diagnostic tick with score reports", report)
 	}
 	if partition.controller.generation.Load() != beforeGeneration ||
 		partition.controller.ewma != beforeEWMA ||
@@ -514,7 +517,7 @@ func TestAdaptiveScoringUnpublishedTickDoesNotCommitControllerState(t *testing.T
 	}
 }
 
-func TestPartitionControllerUnpublishedBudgetDoesNotCommitScoresOrEWMA(t *testing.T) {
+func TestPartitionControllerFailedBudgetPublicationDoesNotCommitScoresOrEWMA(t *testing.T) {
 	t.Parallel()
 
 	partition := testPartitionControllerScorePartition(t, "primary")
@@ -530,12 +533,15 @@ func TestPartitionControllerUnpublishedBudgetDoesNotCommitScoresOrEWMA(t *testin
 	beforeDirty := partition.controllerDirtyIndexes(nil)
 
 	var report PartitionControllerReport
-	requirePartitionNoError(t, partition.TickInto(&report))
+	requirePartitionErrorIs(t, partition.TickInto(&report), ErrClosed)
+	if report.Status.Status != ControllerCycleStatusFailed {
+		t.Fatalf("Status = %+v, want failed", report.Status)
+	}
 	if report.BudgetPublication.Published {
-		t.Fatalf("BudgetPublication = %+v, want unpublished", report.BudgetPublication)
+		t.Fatalf("BudgetPublication = %+v, want failed unpublished publication", report.BudgetPublication)
 	}
 	if len(report.BudgetPublication.PoolScores) == 0 {
-		t.Fatalf("unpublished report missing score diagnostics: %+v", report.BudgetPublication)
+		t.Fatalf("failed publication report missing score diagnostics: %+v", report.BudgetPublication)
 	}
 	if after := partition.controller.generation.Load(); after != beforeGeneration {
 		t.Fatalf("controller generation = %s, want unchanged %s", after, beforeGeneration)

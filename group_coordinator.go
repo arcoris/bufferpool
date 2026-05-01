@@ -41,10 +41,12 @@ func (g *PoolGroup) Tick() (PoolGroupCoordinatorReport, error) {
 // manual foreground call, not a scheduler tick from a background goroutine. dst
 // must not be shared by concurrent callers without external synchronization.
 //
-// An unpublished budget cycle still reports the attempt Generation and commits
-// coordinator observation state. PublishedGeneration remains NoGeneration unless
-// every partition accepts the budget target batch. That separation lets callers
-// distinguish "observed and reported" from "runtime budget state changed".
+// A group skipped status means the coordinator found no group-level budget
+// target work to publish. An unpublished budget cycle still reports the attempt
+// Generation and commits coordinator observation state, but PublishedGeneration
+// remains NoGeneration unless every partition accepts the target batch. That
+// separation lets callers distinguish "observed and reported" from "runtime
+// budget state changed".
 func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	g.mustBeInitialized()
 	g.runtimeMu.RLock()
@@ -122,7 +124,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 		budgetPublication.SkippedPartitions = skippedPartitions
 		budgetPublication.Published = len(skippedPartitions) == 0
 		if !budgetPublication.Published {
-			budgetPublication.FailureReason = errGroupClosed
+			budgetPublication.FailureReason = policyUpdateFailureSkippedChild
 		}
 	}
 	publishedGeneration := NoGeneration

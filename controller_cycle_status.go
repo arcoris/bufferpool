@@ -137,6 +137,11 @@ type ControllerCycleStatusSnapshot struct {
 	// ConsecutiveSkipped counts adjacent no-work skipped cycles.
 	ConsecutiveSkipped uint64
 
+	// ConsecutiveUnpublished counts adjacent diagnostic-only cycles. These are
+	// not failures, but they are visible because repeated non-publication is a
+	// useful generation-based freshness signal for future foreground orchestration.
+	ConsecutiveUnpublished uint64
+
 	// FailureReason is empty on success and a stable machine-readable reason for
 	// closed, failed, unpublished, skipped, or overlap-rejected cycles.
 	FailureReason string
@@ -202,6 +207,7 @@ func (s *controllerCycleStatusStore) publish(
 		LastSuccessfulGeneration: s.snapshot.LastSuccessfulGeneration,
 		ConsecutiveFailures:      s.snapshot.ConsecutiveFailures,
 		ConsecutiveSkipped:       s.snapshot.ConsecutiveSkipped,
+		ConsecutiveUnpublished:   s.snapshot.ConsecutiveUnpublished,
 		FailureReason:            reason,
 	}
 
@@ -210,18 +216,24 @@ func (s *controllerCycleStatusStore) publish(
 		next.LastSuccessfulGeneration = appliedGeneration
 		next.ConsecutiveFailures = 0
 		next.ConsecutiveSkipped = 0
+		next.ConsecutiveUnpublished = 0
 		next.FailureReason = ""
 	case ControllerCycleStatusSkipped:
 		next.ConsecutiveSkipped++
 		next.ConsecutiveFailures = 0
+		next.ConsecutiveUnpublished = 0
 	case ControllerCycleStatusFailed:
 		next.ConsecutiveFailures++
 		next.ConsecutiveSkipped = 0
+		next.ConsecutiveUnpublished = 0
 	case ControllerCycleStatusUnpublished:
+		next.ConsecutiveUnpublished++
+		next.ConsecutiveFailures = 0
 		next.ConsecutiveSkipped = 0
 	case ControllerCycleStatusClosed, ControllerCycleStatusAlreadyRunning:
 		// Closed and overlap-rejected calls are lifecycle/orchestration outcomes,
-		// not controller computation failures.
+		// not controller computation failures, skips, or unpublished cycles. They
+		// leave the computation streak counters intact.
 	default:
 	}
 
@@ -245,4 +257,12 @@ func controllerCycleFailureReasonForError(err error, fallback string) string {
 		return policyUpdateFailureInvalid
 	}
 	return fallback
+}
+
+// controllerCycleBudgetPublicationFailureReasonForError maps budget publication
+// errors into stable retained status/report reasons. The returned error still
+// carries detailed wrapping for errors.Is checks; report fields use this compact
+// machine-readable value.
+func controllerCycleBudgetPublicationFailureReasonForError(err error, fallback string) string {
+	return controllerCycleFailureReasonForError(err, fallback)
 }

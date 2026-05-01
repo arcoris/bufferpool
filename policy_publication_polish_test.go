@@ -490,6 +490,9 @@ func TestPolicyUpdateDoesNotEnterPoolHotPathAST(t *testing.T) {
 		for _, forbidden := range []string{
 			"PublishPolicy",
 			"UpdatePolicy",
+			"ControllerStatus",
+			"ControllerCycleStatus",
+			"TickInto",
 			"policyUpdate",
 			"PoolPartition",
 			"PoolGroup",
@@ -497,6 +500,7 @@ func TestPolicyUpdateDoesNotEnterPoolHotPathAST(t *testing.T) {
 			"groupCoordinator",
 			"ExecuteTrim",
 			"PlanTrim",
+			"cycleGate",
 			"activeRegistry",
 		} {
 			if facts.hasIdentifier(forbidden) || facts.hasCall(forbidden) || facts.hasSelector(forbidden) {
@@ -587,6 +591,7 @@ func TestScoringDoesNotEnterPoolHotPathAST(t *testing.T) {
 			"ExecuteTrim",
 			"PlanTrim",
 			"TrimPlan",
+			"cycleGate",
 			"activeRegistry",
 		} {
 			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
