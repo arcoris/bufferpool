@@ -24,6 +24,7 @@ var (
 	trimVictimScoreSink         TrimVictimScore
 	poolTrimCandidatesSink      []poolTrimCandidate
 	partitionTrimCandidatesSink []partitionTrimCandidate
+	poolTrimResultSink          PoolTrimResult
 )
 
 // BenchmarkPoolTrimClass measures one class-bounded physical trim operation.
@@ -188,6 +189,32 @@ func BenchmarkPoolTrimWithScoring(b *testing.B) {
 		result := pool.Trim(PoolTrimPlan{MaxBuffers: pressureTrimBenchmarkBatch, MaxBytes: SizeFromBytes(pressureTrimBenchmarkBatch * 512)})
 		if !result.Executed || result.TrimmedBuffers != pressureTrimBenchmarkBatch {
 			b.Fatalf("Trim() = %+v, want %d trimmed buffers", result, pressureTrimBenchmarkBatch)
+		}
+	}
+}
+
+// BenchmarkTrimResultWithScoreDiagnostics measures Pool trim result candidate
+// score diagnostics. Retained setup is outside the timed region because trim is
+// a bounded mutating operation.
+func BenchmarkTrimResultWithScoreDiagnostics(b *testing.B) {
+	pool := poolBenchmarkNewPool(b, poolBenchmarkPolicyForCase(poolBenchmarkCase{
+		capacity:    512,
+		shards:      1,
+		selector:    ShardSelectionModeSingle,
+		bucketSlots: 128,
+	}))
+	buffer := make([]byte, 0, 512)
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		poolBenchmarkClearRetained(pool)
+		benchmarkSeedRetainedBuffers(b, pool, buffer, pressureTrimBenchmarkBatch)
+		b.StartTimer()
+
+		poolTrimResultSink = pool.Trim(PoolTrimPlan{MaxBuffers: pressureTrimBenchmarkBatch, MaxBytes: SizeFromBytes(pressureTrimBenchmarkBatch * 512)})
+		if !poolTrimResultSink.Executed || len(poolTrimResultSink.CandidateClasses) == 0 {
+			b.Fatalf("Trim() = %+v, want trim with score diagnostics", poolTrimResultSink)
 		}
 	}
 }

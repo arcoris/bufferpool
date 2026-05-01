@@ -285,6 +285,29 @@ func TestPoolTrimCandidateOrderingUsesTrimVictimScore(t *testing.T) {
 	}
 }
 
+func TestTrimResultIncludesCandidateScoreDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	pool := MustNew(PoolConfig{Policy: poolTestSmallSingleShardPolicy()})
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Fatalf("Pool.Close() error = %v", err)
+		}
+	})
+	seedPoolRetainedBuffers(t, pool, 1, 512)
+
+	result := pool.Trim(PoolTrimPlan{MaxBuffers: 1, MaxBytes: KiB})
+	if len(result.CandidateClasses) == 0 {
+		t.Fatalf("Trim() = %+v, want candidate score diagnostics", result)
+	}
+	candidate := result.CandidateClasses[0]
+	assertScoreValueFiniteAndClamped(t, candidate.Score.Value)
+	assertRuntimeScoreComponentsFiniteAndClamped(t, candidate.Score.Components)
+	if len(candidate.Score.Components) == 0 {
+		t.Fatalf("candidate score = %+v, want explainable components", candidate.Score)
+	}
+}
+
 func TestTrimScoringDoesNotBypassMaxBuffers(t *testing.T) {
 	t.Parallel()
 

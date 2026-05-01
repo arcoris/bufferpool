@@ -317,7 +317,7 @@ func poolTrimCandidateReports(candidates []poolTrimCandidate) []PoolTrimCandidat
 	for index, candidate := range candidates {
 		reports[index] = PoolTrimCandidate{
 			ClassID:            candidate.classID,
-			Score:              candidate.score,
+			Score:              candidate.score.Clamp(),
 			OverTargetBytes:    candidate.overTargetBytes,
 			RetainedBytes:      candidate.retainedBytes,
 			CapacityWasteBytes: candidate.capacityWaste,

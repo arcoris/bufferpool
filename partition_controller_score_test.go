@@ -144,6 +144,25 @@ func TestPartitionControllerReportsPoolScoreDiagnostics(t *testing.T) {
 	}
 }
 
+func TestPartitionControllerReportIncludesPoolScoreDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary")
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	if len(report.PoolScores) == 0 {
+		t.Fatalf("PoolScores = %+v, want controller-level pool score diagnostics", report.PoolScores)
+	}
+	if !reflect.DeepEqual(report.PoolScores, report.BudgetPublication.PoolScores) {
+		t.Fatalf("PoolScores = %+v, want budget publication scores %+v", report.PoolScores, report.BudgetPublication.PoolScores)
+	}
+	report.BudgetPublication.PoolScores[0].Components[0].Name = "mutated"
+	if report.PoolScores[0].Components[0].Name == "mutated" {
+		t.Fatalf("controller PoolScores share component storage with BudgetPublication")
+	}
+}
+
 func TestPartitionControllerReportsClassScoreDiagnostics(t *testing.T) {
 	t.Parallel()
 
@@ -162,6 +181,25 @@ func TestPartitionControllerReportsClassScoreDiagnostics(t *testing.T) {
 		if score.PoolName != "primary" || score.Score < 0 || score.Score > 1 || len(score.Components) == 0 {
 			t.Fatalf("class score diagnostic = %+v, want normalized component diagnostics", score)
 		}
+	}
+}
+
+func TestPartitionControllerReportIncludesClassScoreDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary")
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	if len(report.ClassScores) == 0 {
+		t.Fatalf("ClassScores = %+v, want controller-level class score diagnostics", report.ClassScores)
+	}
+	if len(report.BudgetPublication.ClassReports) == 0 || len(report.BudgetPublication.ClassReports[0].ClassScores) != len(report.ClassScores) {
+		t.Fatalf("BudgetPublication class reports = %+v, controller ClassScores = %+v", report.BudgetPublication.ClassReports, report.ClassScores)
+	}
+	report.BudgetPublication.ClassReports[0].ClassScores[0].Components[0].Name = "mutated"
+	if report.ClassScores[0].Components[0].Name == "mutated" {
+		t.Fatalf("controller ClassScores share component storage with BudgetPublication")
 	}
 }
 
@@ -196,6 +234,34 @@ func TestPartitionControllerScoreDiagnosticsMatchBudgetInputs(t *testing.T) {
 	}
 }
 
+func TestBudgetPublicationScoreDiagnosticsMatchAllocationInputs(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary")
+	window := testPartitionControllerScoreWindow(map[string][]classCountersDelta{
+		"primary": {
+			{Gets: 48, Hits: 48, Puts: 48, Retains: 48},
+			{Gets: 3, Misses: 3, Allocations: 3, Puts: 3, Drops: 3},
+		},
+	})
+	updatedEWMA := controllerUpdatedEWMAForTest(window, 64)
+	classScores := controllerClassScoreMap(window, time.Second, updatedEWMA)
+	poolScore := poolWindowScore(window.Pools[0], classScores)
+
+	report := partition.controllerPoolBudgetReport(Generation(303), partition.currentRuntimeSnapshot(), window, time.Second, updatedEWMA)
+	gotPoolScore := testPoolBudgetScoreReportByName(t, report.PoolScores, "primary")
+	if gotPoolScore.Score != poolScore.Value {
+		t.Fatalf("pool score diagnostic = %v, want allocation input %v", gotPoolScore.Score, poolScore.Value)
+	}
+	for _, classWindow := range window.Pools[0].Classes {
+		key := poolClassKey{PoolName: "primary", ClassID: classWindow.ClassID}
+		got := testPoolClassScoreReportByID(t, report.ClassReports[0].ClassScores, classWindow.ClassID)
+		if got.Score != classScores[key].Value {
+			t.Fatalf("class score diagnostic = %v, want allocation input %v", got.Score, classScores[key].Value)
+		}
+	}
+}
+
 func TestPartitionControllerMissingClassScoreUsesNeutralScore(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +280,101 @@ func TestPartitionControllerMissingClassScoreUsesNeutralScore(t *testing.T) {
 		if !entry.Score.IsZero() {
 			t.Fatalf("missing class score entry = %+v, want zero score", entry)
 		}
+	}
+}
+
+func TestMissingScoreDiagnosticIsNeutral(t *testing.T) {
+	t.Parallel()
+
+	window := testPartitionControllerScoreWindow(map[string][]classCountersDelta{
+		"primary": {
+			{Gets: 32, Hits: 32},
+		},
+	})
+	poolScore := poolWindowScore(window.Pools[0], nil)
+	report := newPoolBudgetScoreReport(poolScore)
+	if report.Score != 0 || len(report.ClassScores) != 1 {
+		t.Fatalf("missing score report = %+v, want one neutral class score", report)
+	}
+	classScore := report.ClassScores[0]
+	if len(classScore.Components) != 1 || classScore.Components[0].Name != poolClassScoreComponentNeutralMissing {
+		t.Fatalf("missing class score components = %+v, want stable neutral reason", classScore.Components)
+	}
+}
+
+func TestScoreReportComponentsAreCopied(t *testing.T) {
+	t.Parallel()
+
+	score := PoolClassScore{
+		Value: 0.75,
+		Components: []PoolClassScoreComponent{
+			{Name: "activity", Value: 0.75, Weight: 1},
+		},
+	}
+	report := newPoolClassScoreReport("primary", ClassID(0), score)
+	score.Components[0].Name = "mutated"
+	if report.Components[0].Name == "mutated" {
+		t.Fatalf("score report components share storage with source score")
+	}
+}
+
+func TestScoreDiagnosticsDoNotExposeMutableInternalSlices(t *testing.T) {
+	t.Parallel()
+
+	source := []PoolBudgetScoreReport{
+		{
+			PoolName: "primary",
+			Score:    0.5,
+			Components: []PoolBudgetScoreComponent{
+				{Name: "class:0", Value: 0.5, Weight: 1},
+			},
+			ClassScores: []PoolClassScoreReport{
+				{
+					PoolName: "primary",
+					ClassID:  ClassID(0),
+					Score:    0.5,
+					Components: []PoolClassScoreComponent{
+						{Name: "activity", Value: 0.5, Weight: 1},
+					},
+				},
+			},
+		},
+	}
+	copied := copyPoolBudgetScoreReports(source)
+	source[0].Components[0].Name = "mutated"
+	source[0].ClassScores[0].Components[0].Name = "mutated"
+
+	if copied[0].Components[0].Name == "mutated" || copied[0].ClassScores[0].Components[0].Name == "mutated" {
+		t.Fatalf("copied score diagnostics share mutable component storage: %+v", copied)
+	}
+}
+
+func TestScoreDiagnosticsAreFiniteAndClamped(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary")
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	assertPoolBudgetScoreReportsFiniteAndClamped(t, report.PoolScores)
+	assertPoolClassScoreReportsFiniteAndClamped(t, report.ClassScores)
+}
+
+func TestScoreDiagnosticsWeightsAreNonNegative(t *testing.T) {
+	t.Parallel()
+
+	partition := testPartitionControllerScorePartition(t, "primary")
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+
+	for _, score := range report.PoolScores {
+		assertRuntimeScoreComponentsNonNegativeWeights(t, score.Components)
+		for _, classScore := range score.ClassScores {
+			assertRuntimeScoreComponentsNonNegativeWeights(t, classScore.Components)
+		}
+	}
+	for _, score := range report.ClassScores {
+		assertRuntimeScoreComponentsNonNegativeWeights(t, score.Components)
 	}
 }
 
@@ -382,4 +543,47 @@ func testPoolClassScoreReportByID(t *testing.T, scores []PoolClassScoreReport, c
 	}
 	t.Fatalf("class score %s not found in %+v", classID, scores)
 	return PoolClassScoreReport{}
+}
+
+func assertPoolBudgetScoreReportsFiniteAndClamped(t *testing.T, reports []PoolBudgetScoreReport) {
+	t.Helper()
+	for _, report := range reports {
+		assertScoreValueFiniteAndClamped(t, report.Score)
+		assertRuntimeScoreComponentsFiniteAndClamped(t, report.Components)
+		assertPoolClassScoreReportsFiniteAndClamped(t, report.ClassScores)
+	}
+}
+
+func assertPoolClassScoreReportsFiniteAndClamped(t *testing.T, reports []PoolClassScoreReport) {
+	t.Helper()
+	for _, report := range reports {
+		assertScoreValueFiniteAndClamped(t, report.Score)
+		assertRuntimeScoreComponentsFiniteAndClamped(t, report.Components)
+	}
+}
+
+func assertRuntimeScoreComponentsFiniteAndClamped(t *testing.T, components []RuntimeScoreComponent) {
+	t.Helper()
+	for _, component := range components {
+		assertScoreValueFiniteAndClamped(t, component.Value)
+		if math.IsNaN(component.Weight) || math.IsInf(component.Weight, 0) {
+			t.Fatalf("component weight is not finite: %+v", component)
+		}
+	}
+}
+
+func assertRuntimeScoreComponentsNonNegativeWeights(t *testing.T, components []RuntimeScoreComponent) {
+	t.Helper()
+	for _, component := range components {
+		if component.Weight < 0 || math.IsNaN(component.Weight) || math.IsInf(component.Weight, 0) {
+			t.Fatalf("component weight = %v, want finite non-negative component %+v", component.Weight, component)
+		}
+	}
+}
+
+func assertScoreValueFiniteAndClamped(t *testing.T, value float64) {
+	t.Helper()
+	if value < 0 || value > 1 || math.IsNaN(value) || math.IsInf(value, 0) {
+		t.Fatalf("score value = %v, want finite [0,1]", value)
+	}
 }

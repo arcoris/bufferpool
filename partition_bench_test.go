@@ -477,6 +477,37 @@ func BenchmarkPartitionControllerBudgetReportWithScores(b *testing.B) {
 	}
 }
 
+// BenchmarkPartitionControllerReportWithScoreDiagnostics measures the applied
+// controller report path with score diagnostics enabled.
+func BenchmarkPartitionControllerReportWithScoreDiagnostics(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var report PartitionControllerReport
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() error = %v", err)
+		}
+		partitionBenchmarkReportSink = report
+	}
+}
+
+// BenchmarkBudgetPublicationWithScoreDiagnostics measures the budget
+// publication report diagnostics without executing Pool.Get or Pool.Put.
+func BenchmarkBudgetPublicationWithScoreDiagnostics(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	window := partitionBenchmarkScoreWindow(16)
+	ewma := partitionBenchmarkClassEWMA(window)
+	runtime := partition.currentRuntimeSnapshot()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkBudgetPublicationSink = partition.controllerPoolBudgetReport(Generation(i+1), runtime, window, time.Second, ewma)
+	}
+}
+
 // BenchmarkPoolPartitionControllerEvaluation measures the pure controller
 // projection from two samples. It does not mutate runtime policy or execute
 // trim; owning window construction may allocate to copy per-Pool sample slices.

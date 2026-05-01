@@ -274,9 +274,13 @@ func poolWindowScore(window PoolPartitionPoolWindow, classScores map[poolClassKe
 	entries := make([]PoolClassScoreEntry, 0, len(window.Classes))
 	for _, class := range window.Classes {
 		key := poolClassKey{PoolName: window.Name, ClassID: class.ClassID}
+		classScore, ok := classScores[key]
+		if !ok {
+			classScore = newNeutralMissingPoolClassScore()
+		}
 		entries = append(entries, PoolClassScoreEntry{
 			ClassID: class.ClassID,
-			Score:   classScores[key],
+			Score:   classScore,
 		})
 	}
 	return NewPoolBudgetScore(PoolBudgetScoreInput{

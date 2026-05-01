@@ -464,7 +464,7 @@ func partitionTrimCandidateReports(candidates []partitionTrimCandidate) []Partit
 	for index, candidate := range candidates {
 		reports[index] = PartitionTrimCandidate{
 			PoolName:           candidate.name,
-			Score:              candidate.score,
+			Score:              candidate.score.Clamp(),
 			OverTargetBytes:    candidate.overTargetBytes,
 			RetainedBytes:      candidate.retainedBytes,
 			CapacityWasteBytes: candidate.capacityWaste,

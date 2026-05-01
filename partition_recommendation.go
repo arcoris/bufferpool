@@ -187,7 +187,8 @@ func pressureWasteConfidence(scores PoolPartitionScores) float64 {
 //
 // The control decision package owns generic confidence clamping while this
 // adapter preserves partition-specific kind names and attaches the source
-// scores used for diagnostics.
+// scores used for diagnostics. The score copy is defensive: recommendations are
+// advisory report values and must not expose mutable score component slices.
 func newPoolPartitionRecommendation(
 	kind PoolPartitionRecommendationKind,
 	controlKind controldecision.Kind,
@@ -200,6 +201,6 @@ func newPoolPartitionRecommendation(
 		Kind:       kind,
 		Confidence: controlnumeric.Clamp01(recommendation.Confidence),
 		Reason:     recommendation.Reason,
-		Scores:     scores,
+		Scores:     copyPoolPartitionScores(scores),
 	}
 }

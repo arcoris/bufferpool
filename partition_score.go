@@ -177,6 +177,42 @@ func poolPartitionScoreComponents(components []controlscore.Component) []PoolPar
 	return copied
 }
 
+func copyPoolPartitionScores(scores PoolPartitionScores) PoolPartitionScores {
+	return PoolPartitionScores{
+		Usefulness: PoolPartitionUsefulnessScore{
+			Value:      controlnumeric.Clamp01(scores.Usefulness.Value),
+			Components: copyPoolPartitionScoreComponents(scores.Usefulness.Components),
+		},
+		Waste: PoolPartitionWasteScore{
+			Value:      controlnumeric.Clamp01(scores.Waste.Value),
+			Components: copyPoolPartitionScoreComponents(scores.Waste.Components),
+		},
+		Budget:   scores.Budget,
+		Pressure: scores.Pressure,
+		Activity: scores.Activity,
+		Risk:     scores.Risk,
+	}
+}
+
+func copyPoolPartitionScoreComponents(components []PoolPartitionScoreComponent) []PoolPartitionScoreComponent {
+	if len(components) == 0 {
+		return nil
+	}
+	copied := make([]PoolPartitionScoreComponent, len(components))
+	for i, component := range components {
+		weight := controlnumeric.FiniteOrZero(component.Weight)
+		if weight < 0 {
+			weight = 0
+		}
+		copied[i] = PoolPartitionScoreComponent{
+			Name:   component.Name,
+			Value:  controlnumeric.Clamp01(component.Value),
+			Weight: weight,
+		}
+	}
+	return copied
+}
+
 // maxFloat64 returns the largest finite value in values.
 //
 // Non-finite values are treated as zero so score projection cannot propagate

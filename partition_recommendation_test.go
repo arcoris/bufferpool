@@ -118,3 +118,28 @@ func TestPoolPartitionRecommendationDoesNotMutateScores(t *testing.T) {
 		t.Fatalf("recommendation scores = %+v, want original %+v", recommendation.Scores, original)
 	}
 }
+
+func TestPartitionRecommendationUsesUpdatedScoreSemantics(t *testing.T) {
+	scores := PoolPartitionScores{
+		Pressure: PoolPartitionPressureScore{Value: DefaultRecommendationHighPressureThreshold},
+		Waste: PoolPartitionWasteScore{
+			Value: 0.9,
+			Components: []PoolPartitionScoreComponent{
+				{Name: "retained_pressure", Value: 0.9, Weight: 1},
+			},
+		},
+	}
+	recommendation := NewPoolPartitionRecommendation(scores)
+	if recommendation.Kind != PoolPartitionRecommendationTrim || recommendation.Reason != "pressure_waste" {
+		t.Fatalf("recommendation = %+v, want pressure/waste trim advice", recommendation)
+	}
+	wantConfidence := (scores.Pressure.Value + scores.Waste.Value) / recommendationPressureWasteConfidenceSignalCount
+	if recommendation.Confidence != wantConfidence {
+		t.Fatalf("confidence = %v, want paired pressure/waste confidence %v", recommendation.Confidence, wantConfidence)
+	}
+
+	scores.Waste.Components[0].Name = "mutated"
+	if recommendation.Scores.Waste.Components[0].Name == "mutated" {
+		t.Fatalf("recommendation scores share mutable component storage with input")
+	}
+}

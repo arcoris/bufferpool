@@ -29,6 +29,7 @@ const (
 	poolClassScoreComponentRetainRatio         = "retain_ratio"
 	poolClassScoreComponentWasteAvoidance      = "waste_avoidance"
 	poolClassScoreComponentRiskAvoidance       = "risk_avoidance"
+	poolClassScoreComponentNeutralMissing      = "neutral_missing_score"
 
 	poolClassScoreActivityWeight            = 0.25
 	poolClassScoreHitRatioWeight            = 0.25
@@ -277,6 +278,21 @@ func NewPoolClassScore(input PoolClassScoreInput) PoolClassScore {
 	return poolClassScoreFromWeighted(controlscore.NewWeightedScore(components))
 }
 
+// newNeutralMissingPoolClassScore returns the conservative score used when a
+// sampled class is missing a score input.
+//
+// The stable component name makes a missing diagnostic visible in reports while
+// keeping the scalar score at zero. Budget allocators still consume only
+// Score.Value, so the missing-input path cannot inflate retained targets.
+func newNeutralMissingPoolClassScore() PoolClassScore {
+	return PoolClassScore{
+		Value: 0,
+		Components: []PoolClassScoreComponent{
+			{Name: poolClassScoreComponentNeutralMissing, Value: 0, Weight: 1},
+		},
+	}
+}
+
 // NewPoolBudgetScore aggregates class scores into one typed Pool score.
 //
 // Empty class input returns a documented zero score. Non-empty input is weighted
@@ -435,6 +451,38 @@ func copyPoolClassScoreEntries(entries []PoolClassScoreEntry) []PoolClassScoreEn
 		copied[i] = PoolClassScoreEntry{
 			ClassID: entry.ClassID,
 			Score:   entry.Score.Clamp(),
+		}
+	}
+	return copied
+}
+
+func copyPoolClassScoreReports(reports []PoolClassScoreReport) []PoolClassScoreReport {
+	if len(reports) == 0 {
+		return nil
+	}
+	copied := make([]PoolClassScoreReport, len(reports))
+	for i, report := range reports {
+		copied[i] = PoolClassScoreReport{
+			PoolName:   report.PoolName,
+			ClassID:    report.ClassID,
+			Score:      controlnumeric.Clamp01(report.Score),
+			Components: copyRuntimeScoreComponents(report.Components),
+		}
+	}
+	return copied
+}
+
+func copyPoolBudgetScoreReports(reports []PoolBudgetScoreReport) []PoolBudgetScoreReport {
+	if len(reports) == 0 {
+		return nil
+	}
+	copied := make([]PoolBudgetScoreReport, len(reports))
+	for i, report := range reports {
+		copied[i] = PoolBudgetScoreReport{
+			PoolName:    report.PoolName,
+			Score:       controlnumeric.Clamp01(report.Score),
+			Components:  copyRuntimeScoreComponents(report.Components),
+			ClassScores: copyPoolClassScoreReports(report.ClassScores),
 		}
 	}
 	return copied

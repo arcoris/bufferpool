@@ -51,6 +51,15 @@ type PartitionControllerReport struct {
 	// smoothed signals.
 	Scores PoolPartitionScores
 
+	// PoolScores are compact diagnostics for the typed Pool scores consumed by
+	// budget allocation. The controller allocators use only Score.Value; the
+	// components explain the value and do not cause additional decisions.
+	PoolScores []PoolBudgetScoreReport
+
+	// ClassScores are compact diagnostics for the typed class scores consumed by
+	// class budget allocation. They are copied report values, not internal maps.
+	ClassScores []PoolClassScoreReport
+
 	// Budget is the partition budget projection from Sample.
 	Budget PartitionBudgetSnapshot
 
@@ -159,6 +168,8 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		}
 	}
 	if len(poolBudgetTargets) > 0 && !budgetPublication.Published {
+		poolScoreReports := copyPoolBudgetScoreReports(budgetPublication.PoolScores)
+		classScoreReports := partitionControllerClassScoreReports(budgetPublication)
 		*dst = PartitionControllerReport{
 			Generation:        generation,
 			PolicyGeneration:  sample.PolicyGeneration,
@@ -169,6 +180,8 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 			Rates:             rates,
 			EWMA:              ewma,
 			Scores:            scores,
+			PoolScores:        poolScoreReports,
+			ClassScores:       classScoreReports,
 			Budget:            budget,
 			Pressure:          pressure,
 			TrimPlan:          trimPlan,
@@ -190,6 +203,8 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	p.controller.cycles++
 	_ = p.controller.generation.Advance()
 
+	poolScoreReports := copyPoolBudgetScoreReports(budgetPublication.PoolScores)
+	classScoreReports := partitionControllerClassScoreReports(budgetPublication)
 	*dst = PartitionControllerReport{
 		Generation:        generation,
 		PolicyGeneration:  sample.PolicyGeneration,
@@ -200,6 +215,8 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		Rates:             rates,
 		EWMA:              ewma,
 		Scores:            scores,
+		PoolScores:        poolScoreReports,
+		ClassScores:       classScoreReports,
 		Budget:            budget,
 		Pressure:          pressure,
 		TrimPlan:          trimPlan,
@@ -208,6 +225,21 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		BudgetPublication: budgetPublication,
 	}
 	return nil
+}
+
+func partitionControllerClassScoreReports(report PoolPartitionBudgetPublicationReport) []PoolClassScoreReport {
+	var total int
+	for _, classReport := range report.ClassReports {
+		total += len(classReport.ClassScores)
+	}
+	if total == 0 {
+		return nil
+	}
+	scores := make([]PoolClassScoreReport, 0, total)
+	for _, classReport := range report.ClassReports {
+		scores = append(scores, copyPoolClassScoreReports(classReport.ClassScores)...)
+	}
+	return scores
 }
 
 func markControllerClassReportsPublished(report *PoolPartitionBudgetPublicationReport, applied PoolPartitionBudgetPublicationReport) {
