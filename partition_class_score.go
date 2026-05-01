@@ -33,9 +33,13 @@ type poolClassKey struct {
 	ClassID ClassID
 }
 
-// poolPartitionClassActivity is the bounded-window activity input used by the
-// partition controller for one Pool class.
-type poolPartitionClassActivity struct {
+// PoolPartitionClassActivity is the bounded-window activity input used by
+// partition-local control projections for one Pool class.
+//
+// The value is derived from window deltas, not lifetime counters. It is a
+// control-plane projection only: it does not publish policy, mutate runtime
+// snapshots, execute trim, or participate in Pool.Get/Pool.Put.
+type PoolPartitionClassActivity struct {
 	// Activity is a finite weighted event score for this class window.
 	Activity float64
 
@@ -60,6 +64,11 @@ type poolPartitionClassActivity struct {
 	// DropRatio is drop pressure relative to puts.
 	DropRatio float64
 }
+
+// poolPartitionClassActivity is kept as the internal spelling used by the
+// existing partition controller while typed pool/class scoring adopts the
+// exported value name. The alias preserves current controller behavior.
+type poolPartitionClassActivity = PoolPartitionClassActivity
 
 // newPoolPartitionClassActivity converts one class window into finite activity
 // signals.
