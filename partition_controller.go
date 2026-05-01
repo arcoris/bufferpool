@@ -20,6 +20,11 @@ import "time"
 
 // PartitionControllerReport describes one explicit controller tick.
 type PartitionControllerReport struct {
+	// Status is the lightweight retained controller-cycle status published for
+	// this manual TickInto attempt. Full diagnostic data remains in the report
+	// fields below; ControllerStatus keeps only generation and outcome counters.
+	Status PoolPartitionControllerStatus
+
 	// Generation is the partition event generation for this tick attempt. It
 	// means the partition was sampled and a diagnostic report was produced; it
 	// does not by itself mean Pool/class budgets were published.
@@ -118,6 +123,10 @@ func (p *PoolPartition) Tick() (PartitionControllerReport, error) {
 func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	p.mustBeInitialized()
 	if err := p.beginForegroundOperation(); err != nil {
+		status := p.controller.status.publish(ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
+		if dst != nil {
+			*dst = PartitionControllerReport{Status: status, Lifecycle: p.lifecycle.Load()}
+		}
 		return err
 	}
 	defer p.endForegroundOperation()
@@ -125,6 +134,18 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	if dst == nil {
 		return nil
 	}
+	if !p.controller.cycleGate.begin() {
+		status := p.controller.status.publish(
+			ControllerCycleStatusAlreadyRunning,
+			NoGeneration,
+			NoGeneration,
+			controllerCycleReasonAlreadyRunning,
+		)
+		*dst = PartitionControllerReport{Status: status, Lifecycle: p.lifecycle.Load()}
+		return nil
+	}
+	defer p.controller.cycleGate.end()
+
 	p.controller.mu.Lock()
 	defer p.controller.mu.Unlock()
 
@@ -156,8 +177,10 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	activeDeltas := controllerPoolActivityDeltas(indexes, window, dirtyIndexes)
 	budgetPublication := p.controllerPoolBudgetReport(generation, runtime, window, elapsed, nextClassEWMA)
 	poolBudgetTargets := budgetPublication.Targets
+	var budgetPublicationErr error
 	if len(poolBudgetTargets) > 0 && budgetPublication.CanPublish() {
 		appliedPublication, err := p.applyPoolBudgetTargetsLocked(poolBudgetTargets)
+		budgetPublicationErr = err
 		budgetPublication.Published = appliedPublication.Published
 		markControllerClassReportsPublished(&budgetPublication, appliedPublication)
 		if err != nil {
@@ -168,9 +191,19 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		}
 	}
 	if len(poolBudgetTargets) > 0 && !budgetPublication.Published {
+		statusReason := budgetPublication.FailureReason
+		if statusReason == "" {
+			statusReason = controllerCycleReasonUnpublished
+		}
+		if budgetPublicationErr != nil {
+			statusReason = controllerCycleFailureReasonForError(budgetPublicationErr, controllerCycleReasonUnpublished)
+		}
+		status := p.controller.status.publish(ControllerCycleStatusUnpublished, generation, NoGeneration, statusReason)
+
 		poolScoreReports := copyPoolBudgetScoreReports(budgetPublication.PoolScores)
 		classScoreReports := partitionControllerClassScoreReports(budgetPublication)
 		*dst = PartitionControllerReport{
+			Status:            status,
 			Generation:        generation,
 			PolicyGeneration:  sample.PolicyGeneration,
 			Lifecycle:         p.lifecycle.Load(),
@@ -192,6 +225,13 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	}
 	trimResult := p.executeTrimPlanWithScoring(trimPlan, newPartitionTrimScoringContext(window))
 	if err := p.activeRegistry.observeControllerActivityWithDirtyIndexes(indexes, activeDeltas, dirtyIndexes); err != nil {
+		status := p.controller.status.publish(
+			ControllerCycleStatusFailed,
+			generation,
+			NoGeneration,
+			controllerCycleFailureReasonForError(err, controllerCycleReasonFailed),
+		)
+		*dst = PartitionControllerReport{Status: status, Generation: generation, Lifecycle: p.lifecycle.Load()}
 		return err
 	}
 	p.markDirtyProcessed()
@@ -203,9 +243,11 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	p.controller.cycles++
 	_ = p.controller.generation.Advance()
 
+	status := p.controller.status.publish(ControllerCycleStatusApplied, generation, generation, "")
 	poolScoreReports := copyPoolBudgetScoreReports(budgetPublication.PoolScores)
 	classScoreReports := partitionControllerClassScoreReports(budgetPublication)
 	*dst = PartitionControllerReport{
+		Status:            status,
 		Generation:        generation,
 		PolicyGeneration:  sample.PolicyGeneration,
 		Lifecycle:         p.lifecycle.Load(),
@@ -225,6 +267,16 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		BudgetPublication: budgetPublication,
 	}
 	return nil
+}
+
+// ControllerStatus returns the lightweight status for the last manual
+// partition controller cycle.
+//
+// The accessor is safe after Close and returns a copy. It does not sample Pools,
+// publish budgets, execute trim, or retain the heavy report returned by TickInto.
+func (p *PoolPartition) ControllerStatus() PoolPartitionControllerStatus {
+	p.mustBeInitialized()
+	return p.controller.status.load()
 }
 
 func partitionControllerClassScoreReports(report PoolPartitionBudgetPublicationReport) []PoolClassScoreReport {

@@ -33,6 +33,14 @@ type groupCoordinator struct {
 	// mu serializes all coordinator state mutation.
 	mu sync.Mutex
 
+	// cycleGate rejects overlapping manual TickInto calls before they block on
+	// mu. It is not a scheduler and does not replace group lifecycle gates.
+	cycleGate controllerCycleGate
+
+	// status stores the lightweight outcome of the last foreground coordinator
+	// attempt. Full reports are returned to callers and are not retained here.
+	status controllerCycleStatusStore
+
 	// previousSample is the last group sample retained for window deltas.
 	previousSample PoolGroupSample
 

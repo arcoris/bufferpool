@@ -573,15 +573,20 @@ func TestScoringDoesNotEnterPoolHotPathAST(t *testing.T) {
 		for _, forbidden := range []string{
 			"Score",
 			"Scorer",
+			"ControllerStatus",
+			"ControllerCycleStatus",
+			"TickInto",
 			"PublishPolicy",
 			"UpdatePolicy",
+			"PublishPressure",
 			"PartitionController",
 			"GroupCoordinator",
 			"partitionController",
 			"groupCoordinator",
+			"EWMA",
 			"ExecuteTrim",
 			"PlanTrim",
-			"EWMA",
+			"TrimPlan",
 			"activeRegistry",
 		} {
 			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
@@ -625,6 +630,30 @@ func TestGroupDoesNotComputeClassOrShardScoresAST(t *testing.T) {
 		} {
 			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
 				t.Fatalf("%s AST references %q; group code must not compute class, shard, or trim scores", file, forbidden)
+			}
+		}
+	}
+}
+
+// TestPoolGroupTickDoesNotScanPoolShardsOrClasses keeps manual group
+// orchestration at the partition boundary. The coordinator may score
+// partitions and publish partition targets, but it must not inspect Pool-local
+// class, shard, bucket, or trim structures.
+func TestPoolGroupTickDoesNotScanPoolShardsOrClasses(t *testing.T) {
+	for _, file := range []string{"group_coordinator.go", "group_coordinator_apply.go"} {
+		facts := parsePolicyPublicationASTFacts(t, file)
+		for _, forbidden := range []string{
+			"PoolTrimPlan",
+			"TrimClass",
+			"TrimShard",
+			"mustClassStateFor",
+			"classState",
+			"PoolShard",
+			"shards",
+			"bucket",
+		} {
+			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
+				t.Fatalf("%s AST references %q; group TickInto must stay above Pool internals", file, forbidden)
 			}
 		}
 	}

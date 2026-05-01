@@ -139,6 +139,56 @@ func BenchmarkPoolGroupTickInto(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupTickWithControllerStatus measures one manual foreground
+// coordinator tick with lightweight status publication enabled.
+func BenchmarkPoolGroupTickWithControllerStatus(b *testing.B) {
+	group := benchmarkPoolGroup(b, 4)
+	var report PoolGroupCoordinatorReport
+	_ = group.TickInto(&report)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := group.TickInto(&report); err != nil {
+			b.Fatal(err)
+		}
+		controllerStatusBenchmarkSink = report.Status
+	}
+}
+
+// BenchmarkPoolGroupControllerStatus measures the lightweight status accessor
+// without sampling partitions or publishing budget targets.
+func BenchmarkPoolGroupControllerStatus(b *testing.B) {
+	group := benchmarkPoolGroup(b, 1)
+	var report PoolGroupCoordinatorReport
+	_ = group.TickInto(&report)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		controllerStatusBenchmarkSink = group.ControllerStatus()
+	}
+}
+
+// BenchmarkPoolGroupTickOverlapRejected measures explicit coordinator
+// no-overlap rejection without waiting on coordinator.mu.
+func BenchmarkPoolGroupTickOverlapRejected(b *testing.B) {
+	group := benchmarkPoolGroup(b, 1)
+	group.coordinator.cycleGate.running.Store(true)
+	var report PoolGroupCoordinatorReport
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := group.TickInto(&report); err != nil {
+			b.Fatal(err)
+		}
+		controllerStatusBenchmarkSink = report.Status
+	}
+	b.StopTimer()
+	group.coordinator.cycleGate.running.Store(false)
+}
+
 func BenchmarkPoolGroupTickAppliedCoordinator(b *testing.B) {
 	group := benchmarkBudgetedPoolGroup(b, 4, 4*MiB)
 	var report PoolGroupCoordinatorReport

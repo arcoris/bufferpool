@@ -42,6 +42,14 @@ type partitionController struct {
 	// mu serializes all controller state mutation.
 	mu sync.Mutex
 
+	// cycleGate rejects overlapping manual TickInto calls before they block on
+	// mu. It is not a scheduler and does not replace partition lifecycle gates.
+	cycleGate controllerCycleGate
+
+	// status stores the lightweight outcome of the last foreground controller
+	// attempt. Full reports are returned to callers and are not retained here.
+	status controllerCycleStatusStore
+
 	// previousSample is the last sample retained for window deltas.
 	previousSample PoolPartitionSample
 

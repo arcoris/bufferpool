@@ -35,6 +35,9 @@ var (
 	// partitionBenchmarkReportSink prevents tick benchmark results being optimized away.
 	partitionBenchmarkReportSink PartitionControllerReport
 
+	// controllerStatusBenchmarkSink prevents controller status results being optimized away.
+	controllerStatusBenchmarkSink ControllerCycleStatusSnapshot
+
 	// partitionBenchmarkWindowSink prevents window benchmark results being optimized away.
 	partitionBenchmarkWindowSink PoolPartitionWindow
 
@@ -221,6 +224,59 @@ func BenchmarkPoolPartitionTickInto(b *testing.B) {
 		}
 		partitionBenchmarkReportSink = report
 	}
+}
+
+// BenchmarkPoolPartitionTickWithControllerStatus measures a reusable manual
+// tick with lightweight status publication enabled.
+func BenchmarkPoolPartitionTickWithControllerStatus(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	report := PartitionControllerReport{Sample: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 16)}}
+	if err := partition.TickInto(&report); err != nil {
+		b.Fatalf("warm TickInto() returned error: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() returned error: %v", err)
+		}
+		controllerStatusBenchmarkSink = report.Status
+	}
+}
+
+// BenchmarkPoolPartitionControllerStatus measures the lightweight status
+// accessor without sampling, scoring, publication, or trim.
+func BenchmarkPoolPartitionControllerStatus(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 1)
+	if err := partition.TickInto(&PartitionControllerReport{}); err != nil {
+		b.Fatalf("warm TickInto() returned error: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		controllerStatusBenchmarkSink = partition.ControllerStatus()
+	}
+}
+
+// BenchmarkPoolPartitionTickOverlapRejected measures explicit no-overlap
+// rejection without waiting on the partition controller mutex.
+func BenchmarkPoolPartitionTickOverlapRejected(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 1)
+	partition.controller.cycleGate.running.Store(true)
+	report := PartitionControllerReport{}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := partition.TickInto(&report); err != nil {
+			b.Fatalf("TickInto() returned error: %v", err)
+		}
+		controllerStatusBenchmarkSink = report.Status
+	}
+	b.StopTimer()
+	partition.controller.cycleGate.running.Store(false)
 }
 
 // BenchmarkPoolPartitionTickClassSamples measures class-aware partition sampling

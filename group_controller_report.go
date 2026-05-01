@@ -26,6 +26,11 @@ import "time"
 // not execute trim, scan shards directly, compute class EWMA, propagate
 // pressure, or start a controller loop.
 type PoolGroupCoordinatorReport struct {
+	// Status is the lightweight retained coordinator-cycle status published for
+	// this manual TickInto attempt. Full samples, scores, and budget diagnostics
+	// remain in the report fields below and are not retained by ControllerStatus.
+	Status PoolGroupControllerStatus
+
 	// Generation is the group event generation for this tick attempt. It means
 	// group state was sampled and a report was produced; it does not by itself
 	// mean budget targets were published.

@@ -51,11 +51,27 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	defer g.runtimeMu.RUnlock()
 
 	if !g.lifecycle.AllowsWork() {
+		status := g.coordinator.status.publish(ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
+		if dst != nil {
+			*dst = PoolGroupCoordinatorReport{Status: status, Lifecycle: g.lifecycle.Load()}
+		}
 		return newError(ErrClosed, errGroupClosed)
 	}
 	if dst == nil {
 		return nil
 	}
+	if !g.coordinator.cycleGate.begin() {
+		status := g.coordinator.status.publish(
+			ControllerCycleStatusAlreadyRunning,
+			NoGeneration,
+			NoGeneration,
+			controllerCycleReasonAlreadyRunning,
+		)
+		*dst = PoolGroupCoordinatorReport{Status: status, Lifecycle: g.lifecycle.Load()}
+		return nil
+	}
+	defer g.coordinator.cycleGate.end()
+
 	g.coordinator.mu.Lock()
 	defer g.coordinator.mu.Unlock()
 
@@ -94,6 +110,13 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	} else if len(partitionBudgetTargets) > 0 {
 		skippedPartitions, err = g.publishPartitionBudgetTargets(partitionBudgetTargets, skippedPartitions)
 		if err != nil {
+			status := g.coordinator.status.publish(
+				ControllerCycleStatusFailed,
+				generation,
+				NoGeneration,
+				controllerCycleFailureReasonForError(err, controllerCycleReasonFailed),
+			)
+			*dst = PoolGroupCoordinatorReport{Status: status, Generation: generation, Lifecycle: g.lifecycle.Load()}
 			return err
 		}
 		budgetPublication.SkippedPartitions = skippedPartitions
@@ -106,11 +129,26 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	if budgetPublication.Published {
 		publishedGeneration = generation
 	}
+	statusKind := ControllerCycleStatusApplied
+	appliedGeneration := generation
+	statusReason := ""
+	if len(partitionBudgetTargets) == 0 {
+		statusKind = ControllerCycleStatusSkipped
+		appliedGeneration = NoGeneration
+		statusReason = controllerCycleReasonNoWork
+	} else if !budgetPublication.Published {
+		statusKind = ControllerCycleStatusUnpublished
+		appliedGeneration = NoGeneration
+		statusReason = controllerCycleReasonUnpublished
+	}
+
 	g.coordinator.previousSample = copyPoolGroupSampleInto(g.coordinator.previousSample, sample)
 	g.coordinator.previousSampleTime = now
 	g.coordinator.hasPreviousSample = true
 	coordinatorGeneration := g.coordinator.generation.Advance()
+	status := g.coordinator.status.publish(statusKind, generation, appliedGeneration, statusReason)
 	*dst = PoolGroupCoordinatorReport{
+		Status:                 status,
 		Generation:             generation,
 		CoordinatorGeneration:  coordinatorGeneration,
 		PolicyGeneration:       sample.PolicyGeneration,
@@ -129,6 +167,17 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 		SkippedPartitions:      skippedPartitions,
 	}
 	return nil
+}
+
+// ControllerStatus returns the lightweight status for the last manual group
+// coordinator cycle.
+//
+// The accessor is safe after Close and returns a copy. It does not sample
+// partitions, publish targets, run child ticks, or retain the heavy report
+// returned by TickInto.
+func (g *PoolGroup) ControllerStatus() PoolGroupControllerStatus {
+	g.mustBeInitialized()
+	return g.coordinator.status.load()
 }
 
 // newGroupBudgetSnapshot projects group aggregate sample usage against group limits.
