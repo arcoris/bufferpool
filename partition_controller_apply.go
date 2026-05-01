@@ -120,14 +120,25 @@ func copyPoolClassEWMAStateMap(src map[poolClassKey]PoolClassEWMAState) map[pool
 	return copied
 }
 
-// controllerClassScoreMap computes class scores from one EWMA snapshot.
-func controllerClassScoreMap(window PoolPartitionWindow, elapsed time.Duration, ewma map[poolClassKey]PoolClassEWMAState) map[poolClassKey]float64 {
-	scores := make(map[poolClassKey]float64)
+// controllerClassScoreMap computes typed class scores from one EWMA snapshot.
+//
+// The same updated EWMA map must be used by both class and Pool score phases.
+// Budget allocators consume only PoolClassScore.Value; the component slices are
+// retained for reports so a controller tick can explain why each numeric weight
+// was used. Scoring is pure control-plane work and does not publish policy or
+// execute trim.
+func controllerClassScoreMap(window PoolPartitionWindow, elapsed time.Duration, ewma map[poolClassKey]PoolClassEWMAState) map[poolClassKey]PoolClassScore {
+	scores := make(map[poolClassKey]PoolClassScore)
 	for _, poolWindow := range window.Pools {
 		for _, classWindow := range poolWindow.Classes {
 			key := poolClassKey{PoolName: poolWindow.Name, ClassID: classWindow.ClassID}
 			activity := newPoolPartitionClassActivity(classWindow, elapsed)
-			scores[key] = poolPartitionClassScore(classWindow.Current, activity, ewma[key])
+			scores[key] = NewPoolClassScore(PoolClassScoreInput{
+				Current:  classWindow.Current,
+				Window:   classWindow,
+				Activity: activity,
+				EWMA:     ewma[key],
+			})
 		}
 	}
 	return scores
@@ -153,17 +164,20 @@ func (p *PoolPartition) controllerPoolBudgetReport(
 	}
 
 	classScores := controllerClassScoreMap(window, elapsed, updatedEWMA)
+	poolScores := make(map[string]PoolBudgetScore, len(window.Pools))
 	inputs := make([]poolBudgetAllocationInput, 0, len(window.Pools))
 	for _, poolWindow := range window.Pools {
 		pool, ok := p.registry.pool(poolWindow.Name)
 		if !ok {
 			continue
 		}
+		poolScore := poolWindowScore(poolWindow, classScores)
+		poolScores[poolWindow.Name] = poolScore
 		inputs = append(inputs, poolBudgetAllocationInput{
 			PoolName:          poolWindow.Name,
 			BaseRetainedBytes: SizeFromBytes(poolWindowCurrentBudgetBytes(poolWindow)),
 			MaxRetainedBytes:  SizeFromBytes(poolControllerRetainedBudget(pool)),
-			Score:             poolWindowScore(poolWindow, classScores),
+			Score:             poolScore.Value,
 		})
 	}
 
@@ -176,6 +190,7 @@ func (p *PoolPartition) controllerPoolBudgetReport(
 		Generation: generation,
 		Allocation: newBudgetAllocationDiagnostics(allocation.Allocation),
 		Targets:    allocation.Targets,
+		PoolScores: poolBudgetScoreReports(poolScores, window),
 		Published:  false,
 	}
 	if !allocation.Allocation.Feasible {
@@ -209,26 +224,30 @@ func (p *PoolPartition) controllerClassBudgetReport(
 	pool *Pool,
 	window PoolPartitionPoolWindow,
 	retainedBytes Size,
-	classScores map[poolClassKey]float64,
+	classScores map[poolClassKey]PoolClassScore,
 ) PoolClassBudgetPublicationReport {
 	inputs := make([]classBudgetAllocationInput, 0, len(window.Classes))
 	policy := pool.currentRuntimeSnapshot().Policy
+	scoreReports := make([]PoolClassScoreReport, 0, len(window.Classes))
 	for _, classWindow := range window.Classes {
 		key := poolClassKey{PoolName: window.Name, ClassID: classWindow.ClassID}
+		classScore := classScores[key]
+		scoreReports = append(scoreReports, newPoolClassScoreReport(window.Name, classWindow.ClassID, classScore))
 
 		inputs = append(inputs, classBudgetAllocationInput{
 			ClassID:         classWindow.ClassID,
 			BaseTargetBytes: SizeFromBytes(classWindow.Current.Budget.AssignedBytes),
 			MaxTargetBytes:  SizeFromBytes(poolClassStaticBudgetCap(policy, classWindow.Class.Size())),
-			Score:           classScores[key],
+			Score:           classScore.Value,
 		})
 	}
 	allocation := allocateClassBudgetTargetsReport(generation, retainedBytes, inputs)
 	report := PoolClassBudgetPublicationReport{
-		Generation: generation,
-		Allocation: newBudgetAllocationDiagnostics(allocation.Allocation),
-		Targets:    allocation.Targets,
-		Published:  false,
+		Generation:  generation,
+		Allocation:  newBudgetAllocationDiagnostics(allocation.Allocation),
+		Targets:     allocation.Targets,
+		ClassScores: scoreReports,
+		Published:   false,
 	}
 	if !allocation.Allocation.Feasible {
 		report.FailureReason = allocation.Allocation.Reason
@@ -245,14 +264,41 @@ func poolWindowCurrentBudgetBytes(window PoolPartitionPoolWindow) uint64 {
 	return total
 }
 
-// poolWindowScore aggregates class scores from the tick-local score snapshot.
-func poolWindowScore(window PoolPartitionPoolWindow, classScores map[poolClassKey]float64) float64 {
-	var score float64
+// poolWindowScore aggregates typed class scores from the tick-local score
+// snapshot.
+//
+// Missing class scores are treated as zero, not as a high-priority signal. That
+// keeps incomplete controller samples conservative while making the missing
+// input visible through the returned PoolBudgetScore diagnostics.
+func poolWindowScore(window PoolPartitionPoolWindow, classScores map[poolClassKey]PoolClassScore) PoolBudgetScore {
+	entries := make([]PoolClassScoreEntry, 0, len(window.Classes))
 	for _, class := range window.Classes {
 		key := poolClassKey{PoolName: window.Name, ClassID: class.ClassID}
-		score += classScores[key]
+		entries = append(entries, PoolClassScoreEntry{
+			ClassID: class.ClassID,
+			Score:   classScores[key],
+		})
 	}
-	return score
+	return NewPoolBudgetScore(PoolBudgetScoreInput{
+		PoolName:    window.Name,
+		Window:      window,
+		ClassScores: entries,
+	})
+}
+
+func poolBudgetScoreReports(scores map[string]PoolBudgetScore, window PoolPartitionWindow) []PoolBudgetScoreReport {
+	if len(scores) == 0 {
+		return nil
+	}
+	reports := make([]PoolBudgetScoreReport, 0, len(scores))
+	for _, poolWindow := range window.Pools {
+		score, ok := scores[poolWindow.Name]
+		if !ok {
+			continue
+		}
+		reports = append(reports, newPoolBudgetScoreReport(score))
+	}
+	return reports
 }
 
 // poolControllerRetainedBudget returns the local retained target available to a

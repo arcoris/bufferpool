@@ -150,7 +150,7 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 	if len(poolBudgetTargets) > 0 && budgetPublication.CanPublish() {
 		appliedPublication, err := p.applyPoolBudgetTargetsLocked(poolBudgetTargets)
 		budgetPublication.Published = appliedPublication.Published
-		budgetPublication.ClassReports = appliedPublication.ClassReports
+		markControllerClassReportsPublished(&budgetPublication, appliedPublication)
 		if err != nil {
 			budgetPublication.FailureReason = err.Error()
 		}
@@ -208,4 +208,19 @@ func (p *PoolPartition) TickInto(dst *PartitionControllerReport) error {
 		BudgetPublication: budgetPublication,
 	}
 	return nil
+}
+
+func markControllerClassReportsPublished(report *PoolPartitionBudgetPublicationReport, applied PoolPartitionBudgetPublicationReport) {
+	for index := range report.ClassReports {
+		for _, appliedClassReport := range applied.ClassReports {
+			if report.ClassReports[index].PoolName != appliedClassReport.PoolName {
+				continue
+			}
+			report.ClassReports[index].Published = appliedClassReport.Published
+			if report.ClassReports[index].FailureReason == "" {
+				report.ClassReports[index].FailureReason = appliedClassReport.FailureReason
+			}
+			break
+		}
+	}
 }

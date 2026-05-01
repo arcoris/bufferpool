@@ -152,6 +152,42 @@ type PoolClassScoreEntry struct {
 	Score PoolClassScore
 }
 
+// PoolClassScoreReport is the compact diagnostic form of one class score used
+// by controller reports.
+//
+// Controller reports expose this value so callers can see why a numeric
+// allocation input was chosen. The report is still observational: score
+// diagnostics do not publish policy, execute trim, or enter Pool.Get/Pool.Put.
+type PoolClassScoreReport struct {
+	// PoolName identifies the partition-local Pool that owns ClassID.
+	PoolName string
+
+	// ClassID identifies the Pool class represented by Score.
+	ClassID ClassID
+
+	// Score is the normalized score value consumed by budget allocators.
+	Score float64
+
+	// Components explain Score in finite normalized terms.
+	Components []PoolClassScoreComponent
+}
+
+// PoolBudgetScoreReport is the compact diagnostic form of one Pool budget
+// score used by controller reports.
+type PoolBudgetScoreReport struct {
+	// PoolName identifies the partition-local Pool represented by Score.
+	PoolName string
+
+	// Score is the normalized pool score value consumed by budget allocators.
+	Score float64
+
+	// Components explain the Pool-level aggregation.
+	Components []PoolBudgetScoreComponent
+
+	// ClassScores contains the class scores used to build this Pool score.
+	ClassScores []PoolClassScoreReport
+}
+
 // PoolClassScoreInput contains the immutable inputs for one class score.
 //
 // Current supplies retained usage and budget context. Window and Activity must
@@ -402,4 +438,28 @@ func copyPoolClassScoreEntries(entries []PoolClassScoreEntry) []PoolClassScoreEn
 		}
 	}
 	return copied
+}
+
+func newPoolClassScoreReport(poolName string, classID ClassID, score PoolClassScore) PoolClassScoreReport {
+	clamped := score.Clamp()
+	return PoolClassScoreReport{
+		PoolName:   poolName,
+		ClassID:    classID,
+		Score:      clamped.Value,
+		Components: clamped.ComponentsCopy(),
+	}
+}
+
+func newPoolBudgetScoreReport(score PoolBudgetScore) PoolBudgetScoreReport {
+	clamped := score.Clamp()
+	classReports := make([]PoolClassScoreReport, 0, len(clamped.ClassScores))
+	for _, entry := range clamped.ClassScores {
+		classReports = append(classReports, newPoolClassScoreReport(clamped.PoolName, entry.ClassID, entry.Score))
+	}
+	return PoolBudgetScoreReport{
+		PoolName:    clamped.PoolName,
+		Score:       clamped.Value,
+		Components:  clamped.ComponentsCopy(),
+		ClassScores: classReports,
+	}
 }

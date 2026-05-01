@@ -80,6 +80,9 @@ type PoolClassBudgetPublicationReport struct {
 	// Targets are the class targets considered for publication.
 	Targets []ClassBudgetTarget
 
+	// ClassScores are typed class score diagnostics used to choose target weights.
+	ClassScores []PoolClassScoreReport
+
 	// Published reports whether the class budget batch was applied.
 	Published bool
 

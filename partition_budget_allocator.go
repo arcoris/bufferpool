@@ -70,6 +70,9 @@ type PoolPartitionBudgetPublicationReport struct {
 	// Targets are the Pool targets considered for publication.
 	Targets []PoolBudgetTarget
 
+	// PoolScores are typed Pool score diagnostics used to choose target weights.
+	PoolScores []PoolBudgetScoreReport
+
 	// ClassReports summarize each Pool-to-class publication plan.
 	ClassReports []PoolClassBudgetPublicationReport
 

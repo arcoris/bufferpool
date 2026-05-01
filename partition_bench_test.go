@@ -50,6 +50,15 @@ var (
 	// partitionBenchmarkEvaluationSink prevents evaluation benchmark results being optimized away.
 	partitionBenchmarkEvaluationSink PoolPartitionControllerEvaluation
 
+	// partitionBenchmarkClassScoreMapSink prevents class score maps being optimized away.
+	partitionBenchmarkClassScoreMapSink map[poolClassKey]PoolClassScore
+
+	// partitionBenchmarkPoolBudgetScoreSink prevents Pool score aggregation results being optimized away.
+	partitionBenchmarkPoolBudgetScoreSink PoolBudgetScore
+
+	// partitionBenchmarkBudgetPublicationSink prevents budget reports being optimized away.
+	partitionBenchmarkBudgetPublicationSink PoolPartitionBudgetPublicationReport
+
 	// partitionBenchmarkIndexSink prevents active-registry indexes being optimized away.
 	partitionBenchmarkIndexSink []int
 
@@ -425,6 +434,49 @@ func BenchmarkPoolPartitionEWMAUpdate(b *testing.B) {
 	partitionBenchmarkEWMASink = state
 }
 
+// BenchmarkPartitionControllerClassScoreMap measures the typed class score map
+// projection used by applied partition controller budget allocation.
+func BenchmarkPartitionControllerClassScoreMap(b *testing.B) {
+	window := partitionBenchmarkScoreWindow(16)
+	ewma := partitionBenchmarkClassEWMA(window)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkClassScoreMapSink = controllerClassScoreMap(window, time.Second, ewma)
+	}
+}
+
+// BenchmarkPartitionControllerPoolScoreAggregation measures typed Pool score
+// aggregation from precomputed class scores.
+func BenchmarkPartitionControllerPoolScoreAggregation(b *testing.B) {
+	window := partitionBenchmarkScoreWindow(16)
+	ewma := partitionBenchmarkClassEWMA(window)
+	classScores := controllerClassScoreMap(window, time.Second, ewma)
+	poolWindow := window.Pools[0]
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkPoolBudgetScoreSink = poolWindowScore(poolWindow, classScores)
+	}
+}
+
+// BenchmarkPartitionControllerBudgetReportWithScores measures score diagnostic
+// construction in the partition-to-Pool budget report path.
+func BenchmarkPartitionControllerBudgetReportWithScores(b *testing.B) {
+	partition := partitionBenchmarkNew(b, 16)
+	window := partitionBenchmarkScoreWindow(16)
+	ewma := partitionBenchmarkClassEWMA(window)
+	runtime := partition.currentRuntimeSnapshot()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		partitionBenchmarkBudgetPublicationSink = partition.controllerPoolBudgetReport(Generation(i+1), runtime, window, time.Second, ewma)
+	}
+}
+
 // BenchmarkPoolPartitionControllerEvaluation measures the pure controller
 // projection from two samples. It does not mutate runtime policy or execute
 // trim; owning window construction may allocate to copy per-Pool sample slices.
@@ -574,4 +626,59 @@ func partitionBenchmarkWindowSamples(poolCount int) (PoolPartitionSample, PoolPa
 		current.Pools[index] = PoolPartitionPoolSample{Name: name, Generation: Generation(1), Lifecycle: LifecycleActive}
 	}
 	return previous, current
+}
+
+func partitionBenchmarkScoreWindow(poolCount int) PoolPartitionWindow {
+	window := PoolPartitionWindow{
+		Pools: make([]PoolPartitionPoolWindow, poolCount),
+	}
+	for poolIndex := 0; poolIndex < poolCount; poolIndex++ {
+		name := "pool_" + strconv.Itoa(poolIndex)
+		window.Pools[poolIndex] = PoolPartitionPoolWindow{
+			Name:    name,
+			Classes: make([]PoolPartitionClassWindow, 2),
+		}
+		for classIndex := range window.Pools[poolIndex].Classes {
+			classID := ClassID(classIndex)
+			classBytes := uint64(512)
+			if classIndex > 0 {
+				classBytes = KiB.Bytes()
+			}
+			sample := testPoolClassScoreSample(classID, classBytes, 0, 0)
+			base := uint64((poolIndex + 1) * (classIndex + 1))
+			window.Pools[poolIndex].Classes[classIndex] = PoolPartitionClassWindow{
+				Class:   sample.Class,
+				ClassID: classID,
+				Current: sample,
+				Delta: classCountersDelta{
+					Gets:        16 + base,
+					Hits:        12 + base,
+					Misses:      4,
+					Allocations: 2,
+					Puts:        14 + base,
+					Retains:     12 + base,
+					Drops:       2,
+				},
+			}
+		}
+	}
+	return window
+}
+
+func partitionBenchmarkClassEWMA(window PoolPartitionWindow) map[poolClassKey]PoolClassEWMAState {
+	ewma := make(map[poolClassKey]PoolClassEWMAState, len(window.Pools)*2)
+	for _, poolWindow := range window.Pools {
+		for _, classWindow := range poolWindow.Classes {
+			activity := newPoolPartitionClassActivity(classWindow, time.Second)
+			ewma[poolClassKey{PoolName: poolWindow.Name, ClassID: classWindow.ClassID}] = PoolClassEWMAState{
+				Initialized:          true,
+				Activity:             activity.Activity,
+				GetsPerSecond:        activity.GetsPerSecond,
+				PutsPerSecond:        activity.PutsPerSecond,
+				AllocationsPerSecond: activity.AllocationsPerSecond,
+				DropRatio:            activity.DropRatio,
+			}
+		}
+	}
+	return ewma
 }
