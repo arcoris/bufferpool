@@ -17,9 +17,10 @@
 package bufferpool
 
 // partition_controller_report.go owns report models and report assembly helpers
-// for explicit PoolPartition controller cycles. The helpers may copy
-// diagnostics into caller-owned reports, but controller state mutation, budget
-// publication, trim execution, and status publication remain in TickInto.
+// for explicit PoolPartition controller cycles. The finish helpers publish the
+// retained status for a completed branch and copy diagnostics into caller-owned
+// reports, but they do not commit controller EWMA/sample state, publish budgets,
+// execute trim, or mutate runtime policy.
 
 // PartitionControllerReport describes one explicit controller tick.
 type PartitionControllerReport struct {
@@ -89,6 +90,113 @@ type PartitionControllerReport struct {
 	// BudgetPublication reports partition-to-Pool and Pool-to-class feasibility
 	// and publication status for this applied controller tick.
 	BudgetPublication PoolPartitionBudgetPublicationReport
+}
+
+func (p *PoolPartition) finishClosedPartitionControllerCycle(dst *PartitionControllerReport) {
+	status := p.controller.status.publish(ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
+	if dst != nil {
+		*dst = PartitionControllerReport{Status: status, Lifecycle: p.lifecycle.Load()}
+	}
+}
+
+func (p *PoolPartition) finishAlreadyRunningPartitionControllerCycle(dst *PartitionControllerReport) {
+	status := p.controller.status.publish(
+		ControllerCycleStatusAlreadyRunning,
+		NoGeneration,
+		NoGeneration,
+		controllerCycleReasonAlreadyRunning,
+	)
+	*dst = PartitionControllerReport{Status: status, Lifecycle: p.lifecycle.Load()}
+}
+
+// finishFailedPartitionControllerCycle reports a budget-publication failure.
+//
+// The failed branch is diagnostic-only. It preserves the evaluation and budget
+// diagnostics produced before publication failed, but it does not commit
+// controller state or execute trim.
+func (p *PoolPartition) finishFailedPartitionControllerCycle(
+	dst *PartitionControllerReport,
+	cycle *partitionControllerCycleEvaluation,
+	err error,
+) {
+	statusReason := controllerCycleBudgetPublicationFailureReasonForError(err, controllerCycleReasonFailed)
+	cycle.budgetPublication.FailureReason = statusReason
+
+	status := p.controller.status.publish(ControllerCycleStatusFailed, cycle.generation, NoGeneration, statusReason)
+	*dst = cycle.report(status, p.lifecycle.Load(), PartitionTrimResult{})
+}
+
+// finishUnpublishedPartitionControllerCycle reports non-error non-publication.
+//
+// The unpublished branch keeps the full diagnostics from evaluation and budget
+// planning. It intentionally does not commit EWMA, previous sample, dirty
+// indexes, trim, or controller generation.
+func (p *PoolPartition) finishUnpublishedPartitionControllerCycle(
+	dst *PartitionControllerReport,
+	cycle *partitionControllerCycleEvaluation,
+) {
+	statusReason := controllerCycleUnpublishedFailureReason(cycle.budgetPublication.FailureReason)
+	status := p.controller.status.publish(ControllerCycleStatusUnpublished, cycle.generation, NoGeneration, statusReason)
+	*dst = cycle.report(status, p.lifecycle.Load(), PartitionTrimResult{})
+}
+
+func (p *PoolPartition) finishFailedPartitionControllerCommit(
+	dst *PartitionControllerReport,
+	cycle *partitionControllerCycleEvaluation,
+	err error,
+) {
+	status := p.controller.status.publish(
+		ControllerCycleStatusFailed,
+		cycle.generation,
+		NoGeneration,
+		controllerCycleFailureReasonForError(err, controllerCycleReasonFailed),
+	)
+	*dst = PartitionControllerReport{Status: status, Generation: cycle.generation, Lifecycle: p.lifecycle.Load()}
+}
+
+// finishAppliedPartitionControllerCycle reports a fully applied controller tick.
+//
+// Applied report assembly runs after commitAppliedPartitionControllerCycle has
+// completed all physical trim and controller state mutation. This helper only
+// publishes the retained Applied status and copies report diagnostics.
+func (p *PoolPartition) finishAppliedPartitionControllerCycle(
+	dst *PartitionControllerReport,
+	cycle *partitionControllerCycleEvaluation,
+	trimResult PartitionTrimResult,
+) {
+	status := p.controller.status.publish(ControllerCycleStatusApplied, cycle.generation, cycle.generation, "")
+	*dst = cycle.report(status, p.lifecycle.Load(), trimResult)
+}
+
+// report builds the full partition controller report for branches that preserve
+// evaluation diagnostics. It copies score diagnostics out of publication
+// reports so callers receive stable report slices without retaining controller
+// internals.
+func (c *partitionControllerCycleEvaluation) report(
+	status PoolPartitionControllerStatus,
+	lifecycle LifecycleState,
+	trimResult PartitionTrimResult,
+) PartitionControllerReport {
+	return PartitionControllerReport{
+		Status:            status,
+		Generation:        c.generation,
+		PolicyGeneration:  c.sample.PolicyGeneration,
+		Lifecycle:         lifecycle,
+		Sample:            c.sample,
+		Metrics:           c.metrics,
+		Window:            c.window,
+		Rates:             c.rates,
+		EWMA:              c.ewma,
+		Scores:            c.scores,
+		PoolScores:        copyPoolBudgetScoreReports(c.budgetPublication.PoolScores),
+		ClassScores:       partitionControllerClassScoreReports(c.budgetPublication),
+		Budget:            c.budget,
+		Pressure:          c.pressure,
+		TrimPlan:          c.trimPlan,
+		TrimResult:        trimResult,
+		PoolBudgetTargets: c.poolBudgetTargets,
+		BudgetPublication: c.budgetPublication,
+	}
 }
 
 func partitionControllerClassScoreReports(report PoolPartitionBudgetPublicationReport) []PoolClassScoreReport {
