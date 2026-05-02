@@ -18,6 +18,11 @@ package bufferpool
 
 import "time"
 
+// group_coordinator_report.go owns report models and report assembly helpers
+// for explicit PoolGroup coordinator cycles. The helpers may project samples
+// into report diagnostics, but coordinator state mutation, child publication,
+// and retained status publication remain in TickInto.
+
 // PoolGroupCoordinatorReport describes one explicit foreground group coordinator
 // cycle.
 //
@@ -142,4 +147,14 @@ func NewPoolGroupControllerEvaluation(
 		Rates:  rates,
 		Scores: evaluator.ScoreValues(rates, budget, pressure),
 	}
+}
+
+// newGroupBudgetSnapshot projects group aggregate sample usage against group limits.
+func newGroupBudgetSnapshot(policy PartitionBudgetPolicy, sample PoolGroupSample) PoolGroupBudgetSnapshot {
+	return PoolGroupBudgetSnapshot(newPartitionBudgetSnapshot(policy, sample.Aggregate))
+}
+
+// newGroupPressureSnapshot projects group aggregate sample usage against pressure policy.
+func newGroupPressureSnapshot(policy PartitionPressurePolicy, sample PoolGroupSample) PoolGroupPressureSnapshot {
+	return PoolGroupPressureSnapshot(newPartitionPressureSnapshot(policy, sample.Aggregate))
 }
