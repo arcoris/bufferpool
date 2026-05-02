@@ -26,17 +26,37 @@ import (
 	"time"
 )
 
+// TestDefaultPoolPartitionDoesNotStartScheduler is the final-stage name for the
+// default manual-mode invariant. It intentionally repeats the assertion instead
+// of calling another Test function so failure output points at this contract.
+func TestDefaultPoolPartitionDoesNotStartScheduler(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+
+	assertPoolPartitionSchedulerStopped(t, partition, "default partition")
+}
+
 // TestPoolPartitionSchedulerDisabledByDefault pins the default partition mode
 // as manual-only. A newly constructed partition must not start the scheduler
 // unless policy opts in explicitly.
 func TestPoolPartitionSchedulerDisabledByDefault(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 
-	if partition.controllerScheduler.isRunning() {
-		t.Fatal("default partition unexpectedly started controller scheduler")
-	}
+	assertPoolPartitionSchedulerStopped(t, partition, "default partition")
 	if policy := partition.Policy().Controller; policy.Enabled || policy.TickInterval != 0 {
 		t.Fatalf("default controller policy = %+v, want manual scheduler-free policy", policy)
+	}
+}
+
+// TestPartitionSchedulerOptInOnly proves disabled construction stays manual and
+// enabled construction starts exactly the partition-local scheduler requested by
+// PartitionPolicy.Controller.
+func TestPartitionSchedulerOptInOnly(t *testing.T) {
+	manual := testNewPoolPartition(t, "primary")
+	assertPoolPartitionSchedulerStopped(t, manual, "manual partition")
+
+	scheduled, _ := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
+	if !scheduled.controllerScheduler.isRunning() {
+		t.Fatal("enabled partition controller policy did not start scheduler")
 	}
 }
 
@@ -57,6 +77,17 @@ func TestPoolPartitionSchedulerPolicyEnablesScheduler(t *testing.T) {
 func TestPoolPartitionSchedulerRejectsIntervalWithoutEnabled(t *testing.T) {
 	policy := DefaultPartitionPolicy()
 	policy.Controller.TickInterval = time.Second
+
+	err := policy.Validate()
+	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+}
+
+// TestPoolPartitionSchedulerRejectsNegativeInterval verifies an enabled
+// scheduler cannot use a negative cadence after normalization.
+func TestPoolPartitionSchedulerRejectsNegativeInterval(t *testing.T) {
+	policy := DefaultPartitionPolicy()
+	policy.Controller.Enabled = true
+	policy.Controller.TickInterval = -time.Second
 
 	err := policy.Validate()
 	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
@@ -188,6 +219,91 @@ func TestPoolPartitionSchedulerContinuesAfterTickFailure(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionSchedulerContinuesAfterFailedTick pins the owner-level
+// expectation for non-closed TickInto errors: TickInto publishes Failed status,
+// the scheduler runtime observes a non-closed error, and the next tick is still
+// accepted.
+func TestPoolPartitionSchedulerContinuesAfterFailedTick(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	ticker := newManualControllerSchedulerTicker()
+	statuses := make(chan ControllerCycleStatusSnapshot, 2)
+	var attempts int
+
+	// The normal partition TickInto error paths require closed child control
+	// gates or corrupted internal indexes. This owner-local runtime uses the
+	// same status publication contract a failed TickInto path uses, then returns
+	// a non-closed error so the scheduler continuation behavior is deterministic
+	// and does not need production-only failure hooks.
+	requireControllerSchedulerNoError(t, partition.controllerScheduler.Start(controllerSchedulerStartInput{
+		Interval: time.Second,
+		Tick: func() error {
+			attempts++
+			generation := partition.generation.Advance()
+			status := partition.controller.status.publish(
+				ControllerCycleStatusFailed,
+				generation,
+				NoGeneration,
+				controllerCycleReasonFailed,
+			)
+			statuses <- status
+			return errors.New("synthetic partition controller failure")
+		},
+		IsClosedError: func(err error) bool { return errors.Is(err, ErrClosed) },
+		TickerFactory: func(time.Duration) controllerSchedulerTicker {
+			return ticker
+		},
+	}))
+	t.Cleanup(partition.stopControllerScheduler)
+
+	ticker.tick()
+	first := requirePartitionSchedulerStatusValue(t, statuses, "first failed scheduled tick")
+	if first.Status != ControllerCycleStatusFailed {
+		t.Fatalf("first failed scheduled status = %+v, want Failed", first)
+	}
+	ticker.tick()
+	second := requirePartitionSchedulerStatusValue(t, statuses, "second failed scheduled tick")
+	if second.Status != ControllerCycleStatusFailed || attempts != 2 {
+		t.Fatalf("second failed scheduled status = %+v attempts=%d, want Failed after continuation", second, attempts)
+	}
+}
+
+// TestPoolPartitionSchedulerStopsAfterClosedTick verifies an ErrClosed result
+// from the scheduled Tick path exits the scheduler loop and stops its ticker.
+func TestPoolPartitionSchedulerStopsAfterClosedTick(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	ticker := newManualControllerSchedulerTicker()
+
+	requireControllerSchedulerNoError(t, partition.controllerScheduler.Start(controllerSchedulerStartInput{
+		Interval:      time.Second,
+		Tick:          func() error { return newError(ErrClosed, errPartitionClosed) },
+		IsClosedError: func(err error) bool { return errors.Is(err, ErrClosed) },
+		TickerFactory: func(time.Duration) controllerSchedulerTicker {
+			return ticker
+		},
+	}))
+
+	ticker.tick()
+	waitForPartitionSchedulerRuntimeStopped(t, partition, "closed partition tick")
+	assertManualControllerSchedulerTickerStopped(t, ticker)
+}
+
+// TestPoolPartitionSchedulerCloseWhileIdle verifies Close stops an enabled but
+// idle scheduler and that extra manual ticks on the stopped ticker cannot
+// advance controller status after Close.
+func TestPoolPartitionSchedulerCloseWhileIdle(t *testing.T) {
+	partition, ticker := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
+
+	before := partition.ControllerStatus()
+	requirePartitionNoError(t, partition.Close())
+	ticker.tick()
+
+	assertPoolPartitionSchedulerStopped(t, partition, "closed partition")
+	assertManualControllerSchedulerTickerStopped(t, ticker)
+	if after := partition.ControllerStatus(); after != before {
+		t.Fatalf("controller status after close+manual ticker tick = %+v, want unchanged %+v", after, before)
+	}
+}
+
 // TestPoolPartitionSchedulerStopsOnClose verifies Close stops the scheduler
 // before partition child cleanup can proceed.
 func TestPoolPartitionSchedulerStopsOnClose(t *testing.T) {
@@ -238,6 +354,53 @@ func TestPoolPartitionSchedulerCloseWhileTickRunningDoesNotDeadlock(t *testing.T
 	}
 }
 
+// TestPoolPartitionSchedulerCloseWhileManualTickRunning verifies scheduler-aware
+// Close remains deadlock-free when the scheduler is idle but a manual TickInto
+// already owns the foreground controller cycle.
+func TestPoolPartitionSchedulerCloseWhileManualTickRunning(t *testing.T) {
+	partition, _ := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
+
+	partition.controller.mu.Lock()
+	manual := make(chan error, 1)
+	go func() {
+		var report PartitionControllerReport
+		manual <- partition.TickInto(&report)
+	}()
+	waitForControllerCycleGate(t, "manual partition tick", partition.controller.cycleGate.isRunning)
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- partition.Close()
+	}()
+
+	partition.controller.mu.Unlock()
+	requirePartitionNoError(t, requirePartitionSchedulerError(t, manual, "manual TickInto while Close waits"))
+	requirePartitionNoError(t, requirePartitionSchedulerError(t, closed, "Close while manual TickInto is running"))
+	assertPoolPartitionSchedulerStopped(t, partition, "closed partition")
+}
+
+// TestPoolPartitionSchedulerManualTickOverlap is the final-stage name for the
+// scheduler/manual no-overlap contract. The scheduled tick owns the cycle gate;
+// the manual tick observes AlreadyRunning and does not publish a second cycle.
+func TestPoolPartitionSchedulerManualTickOverlap(t *testing.T) {
+	partition, ticker := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
+
+	partition.controller.mu.Lock()
+	ticker.tick()
+	waitForControllerCycleGate(t, "partition scheduler", partition.controller.cycleGate.isRunning)
+
+	var report PartitionControllerReport
+	requirePartitionNoError(t, partition.TickInto(&report))
+	if report.Status.Status != ControllerCycleStatusAlreadyRunning {
+		t.Fatalf("manual TickInto during scheduled tick status = %+v, want already running", report.Status)
+	}
+
+	partition.controller.mu.Unlock()
+	_ = waitForPartitionSchedulerStatus(t, partition, func(status ControllerCycleStatusSnapshot) bool {
+		return status.Status == ControllerCycleStatusApplied
+	})
+}
+
 // TestPoolPartitionSchedulerManualTickMayOverlapAndIsRejected proves scheduled
 // ticks and manual ticks share the same controller cycle gate. The second
 // foreground attempt is reported as AlreadyRunning rather than running a second
@@ -276,12 +439,31 @@ func TestPoolPartitionSchedulerDoesNotTouchPoolGetPutHotPath(t *testing.T) {
 			"ControllerStatus",
 			"TickInto",
 			"cycleGate",
+			"PublishPolicy",
+			"PublishPressure",
+			"PlanTrim",
+			"TrimPlan",
 			"EWMA",
 			"activeRegistry",
 		} {
 			if facts.hasIdentifier(forbidden) || facts.hasSelector(forbidden) || facts.hasCall(forbidden) {
 				t.Fatalf("%s AST references %q; Pool.Get/Put must not depend on partition scheduler code", file, forbidden)
 			}
+		}
+	}
+}
+
+// TestPoolPartitionSchedulerCallsOnlyTickIntoAST verifies the scheduler wrapper
+// stays a thin owner dispatch path. Partition controller logic, budget
+// publication, pressure publication, and trim execution remain behind TickInto.
+func TestPoolPartitionSchedulerCallsOnlyTickIntoAST(t *testing.T) {
+	facts := parsePolicyPublicationASTFacts(t, "partition_scheduler.go")
+	if !facts.hasCall("TickInto") {
+		t.Fatal("partition_scheduler.go must call TickInto")
+	}
+	for _, forbidden := range []string{"Get", "Put", "Trim", "TrimClass", "TrimShard", "PublishPolicy", "PublishPressure", "Acquire", "Release"} {
+		if facts.hasCall(forbidden) || facts.hasSelector(forbidden) {
+			t.Fatalf("partition_scheduler.go AST references %q; scheduler wrapper must dispatch only through TickInto", forbidden)
 		}
 	}
 }
@@ -321,6 +503,34 @@ func TestPoolPartitionPublishPolicyRejectsSchedulerEnableChange(t *testing.T) {
 	}
 }
 
+// TestPoolPartitionPublishPolicyRejectsSchedulerModeChange verifies any live
+// scheduler mode change is rejected before runtime publication.
+func TestPoolPartitionPublishPolicyRejectsSchedulerModeChange(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	policy := partition.Policy()
+	policy.Controller.Enabled = true
+	policy.Controller.TickInterval = defaultPartitionControllerTickInterval
+
+	result, err := partition.PublishPolicy(policy)
+	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+	if result.FailureReason != policyUpdateFailureSchedulerChange || result.RuntimePublished {
+		t.Fatalf("PublishPolicy(mode change) = %+v, want scheduler-change rejection before runtime publication", result)
+	}
+}
+
+// TestPoolPartitionPublishPolicyDoesNotStartScheduler is the final-stage name
+// for the live-enable side-effect invariant.
+func TestPoolPartitionPublishPolicyDoesNotStartScheduler(t *testing.T) {
+	partition := testNewPoolPartition(t, "primary")
+	policy := partition.Policy()
+	policy.Controller.Enabled = true
+	policy.Controller.TickInterval = defaultPartitionControllerTickInterval
+
+	_, err := partition.PublishPolicy(policy)
+	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+	assertPoolPartitionSchedulerStopped(t, partition, "PublishPolicy rejected enable")
+}
+
 // TestPoolPartitionPublishPolicyRejectsSchedulerIntervalChange verifies that a
 // running partition scheduler cannot be retimed through live policy publication
 // in this stage.
@@ -355,6 +565,32 @@ func TestPoolPartitionPublishPolicyDoesNotSilentlyStopScheduler(t *testing.T) {
 	if !partition.controllerScheduler.isRunning() {
 		t.Fatal("PublishPolicy scheduler disable change stopped scheduler")
 	}
+}
+
+// TestPoolPartitionPublishPolicyDoesNotStopScheduler is the final-stage name
+// for the live-disable side-effect invariant.
+func TestPoolPartitionPublishPolicyDoesNotStopScheduler(t *testing.T) {
+	partition, _ := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
+	policy := partition.Policy()
+	policy.Controller = PartitionControllerPolicy{}
+
+	_, err := partition.PublishPolicy(policy)
+	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+	if !partition.controllerScheduler.isRunning() {
+		t.Fatal("PublishPolicy scheduler disable rejection stopped scheduler")
+	}
+}
+
+// TestPoolPartitionSchedulerDoesNotRetainFullReports is the final-stage plural
+// name for the report-retention invariant.
+func TestPoolPartitionSchedulerDoesNotRetainFullReports(t *testing.T) {
+	partition, ticker := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
+
+	ticker.tick()
+	_ = waitForPartitionSchedulerStatus(t, partition, func(status ControllerCycleStatusSnapshot) bool {
+		return status.Status == ControllerCycleStatusApplied
+	})
+	assertPoolPartitionDoesNotHaveReportFields(t)
 }
 
 // BenchmarkPoolPartitionSchedulerDisabledConstruction measures the default
@@ -534,11 +770,63 @@ func requirePartitionSchedulerError(t partitionSchedulerTest, values <-chan erro
 	}
 }
 
+func requirePartitionSchedulerStatusValue(
+	t partitionSchedulerTest,
+	values <-chan ControllerCycleStatusSnapshot,
+	name string,
+) ControllerCycleStatusSnapshot {
+	t.Helper()
+
+	select {
+	case value := <-values:
+		return value
+	case <-t.Context().Done():
+		t.Fatalf("timed out waiting for %s", name)
+		return ControllerCycleStatusSnapshot{}
+	}
+}
+
+func waitForPartitionSchedulerRuntimeStopped(t partitionSchedulerTest, partition *PoolPartition, name string) {
+	t.Helper()
+
+	for {
+		if !partition.controllerScheduler.isRunning() {
+			return
+		}
+
+		select {
+		case <-t.Context().Done():
+			t.Fatalf("timed out waiting for %s scheduler stop", name)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
 // requirePartitionSchedulerNoError is the scheduler-test equivalent of the
 // partition test helper, generalized for both *testing.T and *testing.B.
 func requirePartitionSchedulerNoError(t partitionSchedulerTest, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("unexpected partition scheduler error: %v", err)
+	}
+}
+
+func assertPoolPartitionSchedulerStopped(t *testing.T, partition *PoolPartition, name string) {
+	t.Helper()
+	if partition.controllerScheduler.isRunning() {
+		t.Fatalf("%s unexpectedly has running controller scheduler", name)
+	}
+}
+
+func assertPoolPartitionDoesNotHaveReportFields(t *testing.T) {
+	t.Helper()
+
+	partitionType := reflect.TypeOf(PoolPartition{})
+	for index := 0; index < partitionType.NumField(); index++ {
+		field := partitionType.Field(index)
+		if strings.Contains(strings.ToLower(field.Name), "report") {
+			t.Fatalf("PoolPartition field %q suggests scheduler report retention", field.Name)
+		}
 	}
 }

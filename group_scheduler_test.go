@@ -26,17 +26,37 @@ import (
 	"time"
 )
 
+// TestDefaultPoolGroupDoesNotStartScheduler is the final-stage name for the
+// default manual-mode invariant. It intentionally repeats the assertion instead
+// of calling another Test function so failure output points at this contract.
+func TestDefaultPoolGroupDoesNotStartScheduler(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+
+	assertPoolGroupSchedulerStopped(t, group, "default group")
+}
+
 // TestPoolGroupSchedulerDisabledByDefault pins the default group mode as
 // manual-only. A newly constructed group must not start the coordinator
 // scheduler unless policy opts in explicitly.
 func TestPoolGroupSchedulerDisabledByDefault(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
-	if group.coordinatorScheduler.isRunning() {
-		t.Fatal("default group unexpectedly started coordinator scheduler")
-	}
+	assertPoolGroupSchedulerStopped(t, group, "default group")
 	if policy := group.Policy().Coordinator; policy.Enabled || policy.TickInterval != 0 {
 		t.Fatalf("default coordinator policy = %+v, want manual scheduler-free policy", policy)
+	}
+}
+
+// TestGroupSchedulerOptInOnly proves disabled construction stays manual and
+// enabled construction starts exactly the group-level scheduler requested by
+// PoolGroupPolicy.Coordinator.
+func TestGroupSchedulerOptInOnly(t *testing.T) {
+	manual := testNewPoolGroup(t, "alpha")
+	assertPoolGroupSchedulerStopped(t, manual, "manual group")
+
+	scheduled, _ := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
+	if !scheduled.coordinatorScheduler.isRunning() {
+		t.Fatal("enabled group coordinator policy did not start scheduler")
 	}
 }
 
@@ -57,6 +77,17 @@ func TestPoolGroupSchedulerPolicyEnablesScheduler(t *testing.T) {
 func TestPoolGroupSchedulerRejectsIntervalWithoutEnabled(t *testing.T) {
 	policy := DefaultPoolGroupPolicy()
 	policy.Coordinator.TickInterval = time.Second
+
+	err := policy.Validate()
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+}
+
+// TestPoolGroupSchedulerRejectsNegativeInterval verifies an enabled scheduler
+// cannot use a negative cadence after normalization.
+func TestPoolGroupSchedulerRejectsNegativeInterval(t *testing.T) {
+	policy := DefaultPoolGroupPolicy()
+	policy.Coordinator.Enabled = true
+	policy.Coordinator.TickInterval = -time.Second
 
 	err := policy.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidPolicy)
@@ -184,6 +215,91 @@ func TestPoolGroupSchedulerContinuesAfterTickFailure(t *testing.T) {
 	}
 }
 
+// TestPoolGroupSchedulerContinuesAfterFailedTick pins the owner-level
+// expectation for non-closed TickInto errors: TickInto publishes Failed status,
+// the scheduler runtime observes a non-closed error, and the next tick is still
+// accepted.
+func TestPoolGroupSchedulerContinuesAfterFailedTick(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+	ticker := newManualControllerSchedulerTicker()
+	statuses := make(chan ControllerCycleStatusSnapshot, 2)
+	var attempts int
+
+	// The normal group TickInto error paths require closed child control gates or
+	// corrupted internal state. This owner-local runtime uses the same status
+	// publication contract a failed TickInto path uses, then returns a non-closed
+	// error so the scheduler continuation behavior is deterministic and does not
+	// need production-only failure hooks.
+	requireControllerSchedulerNoError(t, group.coordinatorScheduler.Start(controllerSchedulerStartInput{
+		Interval: time.Second,
+		Tick: func() error {
+			attempts++
+			generation := group.generation.Advance()
+			status := group.coordinator.status.publish(
+				ControllerCycleStatusFailed,
+				generation,
+				NoGeneration,
+				controllerCycleReasonFailed,
+			)
+			statuses <- status
+			return errors.New("synthetic group coordinator failure")
+		},
+		IsClosedError: func(err error) bool { return errors.Is(err, ErrClosed) },
+		TickerFactory: func(time.Duration) controllerSchedulerTicker {
+			return ticker
+		},
+	}))
+	t.Cleanup(group.stopCoordinatorScheduler)
+
+	ticker.tick()
+	first := requireGroupSchedulerStatusValue(t, statuses, "first failed scheduled tick")
+	if first.Status != ControllerCycleStatusFailed {
+		t.Fatalf("first failed scheduled status = %+v, want Failed", first)
+	}
+	ticker.tick()
+	second := requireGroupSchedulerStatusValue(t, statuses, "second failed scheduled tick")
+	if second.Status != ControllerCycleStatusFailed || attempts != 2 {
+		t.Fatalf("second failed scheduled status = %+v attempts=%d, want Failed after continuation", second, attempts)
+	}
+}
+
+// TestPoolGroupSchedulerStopsAfterClosedTick verifies an ErrClosed result from
+// the scheduled Tick path exits the scheduler loop and stops its ticker.
+func TestPoolGroupSchedulerStopsAfterClosedTick(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+	ticker := newManualControllerSchedulerTicker()
+
+	requireControllerSchedulerNoError(t, group.coordinatorScheduler.Start(controllerSchedulerStartInput{
+		Interval:      time.Second,
+		Tick:          func() error { return newError(ErrClosed, errGroupClosed) },
+		IsClosedError: func(err error) bool { return errors.Is(err, ErrClosed) },
+		TickerFactory: func(time.Duration) controllerSchedulerTicker {
+			return ticker
+		},
+	}))
+
+	ticker.tick()
+	waitForGroupSchedulerRuntimeStopped(t, group, "closed group tick")
+	assertManualControllerSchedulerTickerStopped(t, ticker)
+}
+
+// TestPoolGroupSchedulerCloseWhileIdle verifies Close stops an enabled but idle
+// scheduler and that extra manual ticks on the stopped ticker cannot advance
+// coordinator status after Close.
+func TestPoolGroupSchedulerCloseWhileIdle(t *testing.T) {
+	group, ticker := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
+
+	before := group.ControllerStatus()
+	requireGroupNoError(t, group.Close())
+	ticker.tick()
+
+	assertPoolGroupSchedulerStopped(t, group, "closed group")
+	assertManualControllerSchedulerTickerStopped(t, ticker)
+	if after := group.ControllerStatus(); after != before {
+		t.Fatalf("controller status after close+manual ticker tick = %+v, want unchanged %+v", after, before)
+	}
+}
+
 // TestPoolGroupSchedulerStopsOnClose verifies Close stops the scheduler before
 // group child-partition cleanup proceeds.
 func TestPoolGroupSchedulerStopsOnClose(t *testing.T) {
@@ -234,6 +350,53 @@ func TestPoolGroupSchedulerCloseWhileTickRunningDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+// TestPoolGroupSchedulerCloseWhileManualTickRunning verifies scheduler-aware
+// Close remains deadlock-free when the scheduler is idle but a manual TickInto
+// already owns the foreground coordinator cycle.
+func TestPoolGroupSchedulerCloseWhileManualTickRunning(t *testing.T) {
+	group, _ := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
+
+	group.coordinator.mu.Lock()
+	manual := make(chan error, 1)
+	go func() {
+		var report PoolGroupCoordinatorReport
+		manual <- group.TickInto(&report)
+	}()
+	waitForControllerCycleGate(t, "manual group tick", group.coordinator.cycleGate.isRunning)
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- group.Close()
+	}()
+
+	group.coordinator.mu.Unlock()
+	requireGroupNoError(t, requireGroupSchedulerError(t, manual, "manual TickInto while Close waits"))
+	requireGroupNoError(t, requireGroupSchedulerError(t, closed, "Close while manual TickInto is running"))
+	assertPoolGroupSchedulerStopped(t, group, "closed group")
+}
+
+// TestPoolGroupSchedulerManualTickOverlap is the final-stage name for the
+// scheduler/manual no-overlap contract. The scheduled tick owns the cycle gate;
+// the manual tick observes AlreadyRunning and does not publish a second cycle.
+func TestPoolGroupSchedulerManualTickOverlap(t *testing.T) {
+	group, ticker := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
+
+	group.coordinator.mu.Lock()
+	ticker.tick()
+	waitForControllerCycleGate(t, "group scheduler", group.coordinator.cycleGate.isRunning)
+
+	var report PoolGroupCoordinatorReport
+	requireGroupNoError(t, group.TickInto(&report))
+	if report.Status.Status != ControllerCycleStatusAlreadyRunning {
+		t.Fatalf("manual TickInto during scheduled tick status = %+v, want already running", report.Status)
+	}
+
+	group.coordinator.mu.Unlock()
+	_ = waitForGroupSchedulerStatus(t, group, func(status ControllerCycleStatusSnapshot) bool {
+		return status.Status == ControllerCycleStatusSkipped
+	})
+}
+
 // TestPoolGroupSchedulerManualTickMayOverlapAndIsRejected proves scheduled
 // ticks and manual ticks share the same coordinator cycle gate. The second
 // foreground attempt is reported as AlreadyRunning rather than running a second
@@ -272,6 +435,11 @@ func TestPoolGroupSchedulerDoesNotTouchPoolGetPutHotPath(t *testing.T) {
 			"ControllerStatus",
 			"TickInto",
 			"cycleGate",
+			"coordinator",
+			"PublishPolicy",
+			"PublishPressure",
+			"PlanTrim",
+			"TrimPlan",
 			"EWMA",
 			"activeRegistry",
 		} {
@@ -302,6 +470,21 @@ func TestPoolGroupSchedulerDoesNotCallPoolTrim(t *testing.T) {
 	for _, forbidden := range []string{"Trim", "TrimClass", "TrimShard"} {
 		if facts.hasCall(forbidden) || facts.hasSelector(forbidden) {
 			t.Fatalf("group_scheduler.go AST references %q; group scheduler must not execute Pool trim", forbidden)
+		}
+	}
+}
+
+// TestPoolGroupSchedulerCallsOnlyTickIntoAST verifies the scheduler wrapper
+// stays a thin owner dispatch path. Group coordinator logic and partition target
+// publication remain behind TickInto.
+func TestPoolGroupSchedulerCallsOnlyTickIntoAST(t *testing.T) {
+	facts := parsePolicyPublicationASTFacts(t, "group_scheduler.go")
+	if !facts.hasCall("TickInto") {
+		t.Fatal("group_scheduler.go must call TickInto")
+	}
+	for _, forbidden := range []string{"Get", "Put", "Trim", "TrimClass", "TrimShard", "PublishPolicy", "PublishPressure", "Acquire", "Release"} {
+		if facts.hasCall(forbidden) || facts.hasSelector(forbidden) {
+			t.Fatalf("group_scheduler.go AST references %q; scheduler wrapper must dispatch only through TickInto", forbidden)
 		}
 	}
 }
@@ -354,6 +537,34 @@ func TestPoolGroupPublishPolicyRejectsSchedulerEnableChange(t *testing.T) {
 	}
 }
 
+// TestPoolGroupPublishPolicyRejectsSchedulerModeChange verifies any live
+// scheduler mode change is rejected before runtime publication.
+func TestPoolGroupPublishPolicyRejectsSchedulerModeChange(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+	policy := group.Policy()
+	policy.Coordinator.Enabled = true
+	policy.Coordinator.TickInterval = defaultGroupCoordinatorTickInterval
+
+	result, err := group.PublishPolicy(policy)
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+	if result.FailureReason != policyUpdateFailureSchedulerChange || result.RuntimePublished {
+		t.Fatalf("PublishPolicy(mode change) = %+v, want scheduler-change rejection before runtime publication", result)
+	}
+}
+
+// TestPoolGroupPublishPolicyDoesNotStartScheduler is the final-stage name for
+// the live-enable side-effect invariant.
+func TestPoolGroupPublishPolicyDoesNotStartScheduler(t *testing.T) {
+	group := testNewPoolGroup(t, "alpha")
+	policy := group.Policy()
+	policy.Coordinator.Enabled = true
+	policy.Coordinator.TickInterval = defaultGroupCoordinatorTickInterval
+
+	_, err := group.PublishPolicy(policy)
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+	assertPoolGroupSchedulerStopped(t, group, "PublishPolicy rejected enable")
+}
+
 // TestPoolGroupPublishPolicyRejectsSchedulerIntervalChange verifies that a
 // running group scheduler cannot be retimed through live policy publication in
 // this stage.
@@ -388,6 +599,32 @@ func TestPoolGroupPublishPolicyDoesNotSilentlyStopScheduler(t *testing.T) {
 	if !group.coordinatorScheduler.isRunning() {
 		t.Fatal("PublishPolicy scheduler disable change stopped scheduler")
 	}
+}
+
+// TestPoolGroupPublishPolicyDoesNotStopScheduler is the final-stage name for
+// the live-disable side-effect invariant.
+func TestPoolGroupPublishPolicyDoesNotStopScheduler(t *testing.T) {
+	group, _ := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
+	policy := group.Policy()
+	policy.Coordinator = PoolGroupCoordinatorPolicy{}
+
+	_, err := group.PublishPolicy(policy)
+	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+	if !group.coordinatorScheduler.isRunning() {
+		t.Fatal("PublishPolicy scheduler disable rejection stopped scheduler")
+	}
+}
+
+// TestPoolGroupSchedulerDoesNotRetainFullReports is the final-stage plural name
+// for the report-retention invariant.
+func TestPoolGroupSchedulerDoesNotRetainFullReports(t *testing.T) {
+	group, ticker := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
+
+	ticker.tick()
+	_ = waitForGroupSchedulerStatus(t, group, func(status ControllerCycleStatusSnapshot) bool {
+		return status.Status == ControllerCycleStatusSkipped
+	})
+	assertPoolGroupDoesNotHaveReportFields(t)
 }
 
 // BenchmarkPoolGroupSchedulerDisabledConstruction measures the default
@@ -567,11 +804,63 @@ func requireGroupSchedulerError(t groupSchedulerTest, values <-chan error, name 
 	}
 }
 
+func requireGroupSchedulerStatusValue(
+	t groupSchedulerTest,
+	values <-chan ControllerCycleStatusSnapshot,
+	name string,
+) ControllerCycleStatusSnapshot {
+	t.Helper()
+
+	select {
+	case value := <-values:
+		return value
+	case <-t.Context().Done():
+		t.Fatalf("timed out waiting for %s", name)
+		return ControllerCycleStatusSnapshot{}
+	}
+}
+
+func waitForGroupSchedulerRuntimeStopped(t groupSchedulerTest, group *PoolGroup, name string) {
+	t.Helper()
+
+	for {
+		if !group.coordinatorScheduler.isRunning() {
+			return
+		}
+
+		select {
+		case <-t.Context().Done():
+			t.Fatalf("timed out waiting for %s scheduler stop", name)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
 // requireGroupSchedulerNoError is the scheduler-test equivalent of the group
 // test helper, generalized for both *testing.T and *testing.B.
 func requireGroupSchedulerNoError(t groupSchedulerTest, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("unexpected group scheduler error: %v", err)
+	}
+}
+
+func assertPoolGroupSchedulerStopped(t *testing.T, group *PoolGroup, name string) {
+	t.Helper()
+	if group.coordinatorScheduler.isRunning() {
+		t.Fatalf("%s unexpectedly has running coordinator scheduler", name)
+	}
+}
+
+func assertPoolGroupDoesNotHaveReportFields(t *testing.T) {
+	t.Helper()
+
+	groupType := reflect.TypeOf(PoolGroup{})
+	for index := 0; index < groupType.NumField(); index++ {
+		field := groupType.Field(index)
+		if strings.Contains(strings.ToLower(field.Name), "report") {
+			t.Fatalf("PoolGroup field %q suggests scheduler report retention", field.Name)
+		}
 	}
 }

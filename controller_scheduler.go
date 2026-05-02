@@ -48,10 +48,10 @@ type controllerSchedulerTickerFactory func(time.Duration) controllerSchedulerTic
 // controllerSchedulerStartInput contains the cold control-plane dependencies
 // needed to start one internal scheduler runtime.
 //
-// This is not public policy. PartitionPolicy and PoolGroupPolicy still reject
-// automatic scheduling until owner integration exists. Tick is intentionally the
-// only owner callback; the scheduler does not allocate or retain controller
-// reports, score diagnostics, trim candidates, samples, or snapshots.
+// This is not public policy. PoolPartition and PoolGroup policy decide whether
+// construction starts the runtime. Tick is intentionally the only owner
+// callback; the scheduler does not allocate or retain controller reports, score
+// diagnostics, trim candidates, samples, or snapshots.
 type controllerSchedulerStartInput struct {
 	// Interval is the fixed ticker cadence for this scheduler run.
 	Interval time.Duration
@@ -77,9 +77,9 @@ type controllerSchedulerStartInput struct {
 //
 // It only owns start/stop mechanics and ticker dispatch. It does not interpret
 // policy, does not publish runtime snapshots, does not retain full reports, and
-// does not decide whether a PoolPartition or PoolGroup should enable automatic
-// scheduling. Owner integration must call Start explicitly after policy support
-// is added in a later stage.
+// does not decide whether a PoolPartition or PoolGroup should enable
+// scheduling. Owner integration calls Start explicitly after construction policy
+// validation and calls Stop before cleanup locks that Tick may need.
 type controllerSchedulerRuntime struct {
 	mu       sync.Mutex
 	running  bool
@@ -240,8 +240,8 @@ type controllerSchedulerTimeTicker struct {
 // newControllerSchedulerTicker creates the production ticker.
 //
 // This is the only production timer construction in the scheduler foundation.
-// Owner constructors do not call it in this stage because scheduler policy is
-// still rejected and no owner starts the runtime automatically.
+// Owner constructors reach it only through explicit opt-in scheduler policy; the
+// default manual policy path never constructs a ticker or starts a goroutine.
 func newControllerSchedulerTicker(interval time.Duration) controllerSchedulerTicker {
 	return controllerSchedulerTimeTicker{ticker: time.NewTicker(interval)}
 }
