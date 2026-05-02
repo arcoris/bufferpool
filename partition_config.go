@@ -89,6 +89,7 @@ func (c PoolPartitionConfig) Normalize() PoolPartitionConfig {
 	normalized.Name = normalizePartitionName(normalized.Name)
 	normalized.Policy = normalized.Policy.Normalize()
 	normalized.Lease = normalized.Lease.Normalize()
+
 	if len(normalized.Pools) > 0 {
 		pools := make([]PartitionPoolConfig, len(normalized.Pools))
 		for index, poolConfig := range normalized.Pools {
@@ -96,6 +97,7 @@ func (c PoolPartitionConfig) Normalize() PoolPartitionConfig {
 		}
 		normalized.Pools = pools
 	}
+
 	return normalized
 }
 
@@ -103,12 +105,14 @@ func (c PoolPartitionConfig) Normalize() PoolPartitionConfig {
 func (c PoolPartitionConfig) Validate() error {
 	normalized := c.Normalize()
 	var err error
+
 	if policyErr := normalized.Policy.Validate(); policyErr != nil {
 		multierr.AppendInto(&err, wrapError(ErrInvalidOptions, policyErr, errPartitionConfigInvalidPolicy))
 	}
 	if leaseErr := normalized.Lease.Validate(); leaseErr != nil {
 		multierr.AppendInto(&err, wrapError(ErrInvalidOptions, leaseErr, errPartitionConfigInvalidLease))
 	}
+
 	seen := make(map[string]struct{}, len(normalized.Pools))
 	for _, poolConfig := range normalized.Pools {
 		if poolConfig.Name == "" {
@@ -120,6 +124,7 @@ func (c PoolPartitionConfig) Validate() error {
 			continue
 		}
 		seen[poolConfig.Name] = struct{}{}
+
 		normalizedPool := poolConfig.Config.Normalize()
 		if poolErr := normalizedPool.Validate(); poolErr != nil {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, poolErr, errPartitionConfigInvalidPool+": "+poolConfig.Name))
@@ -129,6 +134,7 @@ func (c PoolPartitionConfig) Validate() error {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, supportErr, errPartitionConfigInvalidPool+": "+poolConfig.Name))
 		}
 	}
+
 	return err
 }
 
@@ -164,6 +170,7 @@ func normalizePartitionName(name string) string {
 func clonePartitionConfig(config PoolPartitionConfig) PoolPartitionConfig {
 	config.Policy = config.Policy.Normalize()
 	config.Lease = config.Lease.Normalize()
+
 	if len(config.Pools) > 0 {
 		pools := make([]PartitionPoolConfig, len(config.Pools))
 		for index, poolConfig := range config.Pools {
@@ -172,5 +179,6 @@ func clonePartitionConfig(config PoolPartitionConfig) PoolPartitionConfig {
 		}
 		config.Pools = pools
 	}
+
 	return config
 }

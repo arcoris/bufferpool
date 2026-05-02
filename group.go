@@ -150,21 +150,26 @@ func newPoolGroup(config PoolGroupConfig, tickerFactory controllerSchedulerTicke
 	if err := normalized.Validate(); err != nil {
 		return nil, err
 	}
+
 	partitions, directory, err := newGroupPartitionAssignments(normalized)
 	if err != nil {
 		return nil, err
 	}
+
 	registry, err := newGroupRegistry(partitions)
 	if err != nil {
 		return nil, err
 	}
+
 	directory, err = directory.bindRegistry(registry)
 	if err != nil {
 		_ = registry.closeAll()
 		return nil, err
 	}
+
 	normalized.Partitions = partitions
 	normalized.Pools = nil
+
 	group := &PoolGroup{
 		name:           normalized.Name,
 		config:         cloneGroupConfig(normalized),
@@ -172,14 +177,17 @@ func newPoolGroup(config PoolGroupConfig, tickerFactory controllerSchedulerTicke
 		poolDirectory:  directory,
 		scoreEvaluator: NewPoolGroupScoreEvaluator(normalized.Policy.Score),
 	}
+
 	group.coordinator.init(normalized.Policy)
 	group.generation.Store(InitialGeneration)
 	group.publishRuntimeSnapshot(newGroupRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	group.lifecycle.Activate()
+
 	if err := group.startCoordinatorScheduler(tickerFactory); err != nil {
 		_ = group.Close()
 		return nil, err
 	}
+
 	return group, nil
 }
 
@@ -265,6 +273,7 @@ func (g *PoolGroup) Acquire(poolName string, size int) (Lease, error) {
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errGroupPoolMissing+": "+poolName)
 	}
+
 	partition, _ := g.registry.partition(location.PartitionName)
 	return partition.Acquire(location.PoolName, size)
 }
@@ -285,6 +294,7 @@ func (g *PoolGroup) AcquireSize(poolName string, size Size) (Lease, error) {
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errGroupPoolMissing+": "+poolName)
 	}
+
 	partition, _ := g.registry.partition(location.PartitionName)
 	return partition.AcquireSize(location.PoolName, size)
 }
@@ -305,6 +315,7 @@ func (g *PoolGroup) Release(lease Lease, buffer []byte) error {
 	if !ok {
 		return newError(ErrInvalidLease, errGroupLeasePoolMissing)
 	}
+
 	partition, _ := g.registry.partition(location.PartitionName)
 	return partition.Release(lease, buffer)
 }
@@ -325,6 +336,7 @@ func (g *PoolGroup) AcquireFromPartition(partitionName string, poolName string, 
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+partitionName)
 	}
+
 	return partition.Acquire(poolName, size)
 }
 
@@ -341,6 +353,7 @@ func (g *PoolGroup) AcquireSizeFromPartition(partitionName string, poolName stri
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errGroupPartitionMissing+": "+partitionName)
 	}
+
 	return partition.AcquireSize(poolName, size)
 }
 
@@ -358,6 +371,7 @@ func (g *PoolGroup) ReleaseToPartition(partitionName string, lease Lease, buffer
 	if !ok {
 		return newError(ErrInvalidOptions, errGroupPartitionMissing+": "+partitionName)
 	}
+
 	return partition.Release(lease, buffer)
 }
 

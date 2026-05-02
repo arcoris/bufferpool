@@ -190,6 +190,7 @@ func newPool(config PoolConfig, mode poolConstructionMode) (*Pool, error) {
 	if err := normalized.Validate(); err != nil {
 		return nil, err
 	}
+
 	if err := validatePoolSupportedPolicy(normalized.Policy, mode); err != nil {
 		return nil, wrapError(ErrInvalidOptions, err, errPoolConfigInvalidPolicy)
 	}
@@ -198,7 +199,6 @@ func newPool(config PoolConfig, mode poolConstructionMode) (*Pool, error) {
 
 	table := newClassTable(normalized.Policy.Classes.Sizes)
 	classes := newPoolClassStates(table, normalized.Policy)
-
 	selectors, err := newPoolShardSelectors(len(classes), normalized.Policy.Shards.Selection)
 	if err != nil {
 		return nil, err
@@ -215,6 +215,7 @@ func newPool(config PoolConfig, mode poolConstructionMode) (*Pool, error) {
 	}
 
 	pool.closeCond = sync.NewCond(&pool.closeMu)
+
 	pool.publishRuntimeSnapshot(newPoolRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	pool.publishInitialBudgets()
 	pool.lifecycle.Activate()

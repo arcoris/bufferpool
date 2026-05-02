@@ -130,6 +130,7 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 	if err := validateGroupPolicyPublicationCandidate(normalized, &result); err != nil {
 		return result, err
 	}
+
 	if err := validateGroupPolicySchedulerPublicationCompatibility(runtime.Policy, normalized, &result); err != nil {
 		return result, err
 	}
@@ -189,6 +190,7 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 			}
 			return result, err
 		}
+
 		result.BudgetPublication = budgetBatch.report
 		if !budgetBatch.report.CanPublish() {
 			if !budgetBatch.report.Allocation.Feasible {
@@ -268,6 +270,7 @@ func newPoolGroupPolicyPublicationResult(
 		previousPolicy = runtime.Policy.Normalize()
 		previousGeneration = runtime.Generation
 	}
+
 	diff := classifyGroupPolicyUpdate(previousPolicy, candidate)
 	return PoolGroupPolicyPublicationResult{
 		PreviousGeneration: previousGeneration,
@@ -288,6 +291,7 @@ func validateGroupPolicyPublicationCandidate(
 		result.FailureReason = policyUpdateFailureInvalid
 		return err
 	}
+
 	return nil
 }
 
@@ -310,6 +314,7 @@ func validateGroupPolicySchedulerPublicationCompatibility(
 	if previous.Coordinator == next.Coordinator {
 		return nil
 	}
+
 	result.FailureReason = policyUpdateFailureSchedulerChange
 	return newError(ErrInvalidPolicy, policyUpdateFailureSchedulerChange)
 }
@@ -382,6 +387,7 @@ func (g *PoolGroup) planGroupPolicyBudgetPublicationBatchLocked(
 	batch.report.Allocation = newBudgetAllocationDiagnostics(allocation.Allocation)
 	batch.report.Targets = append([]PartitionBudgetTarget(nil), allocation.Targets...)
 	batch.report.FailureReason = ""
+
 	if !allocation.Allocation.Feasible {
 		batch.report.FailureReason = allocation.Allocation.Reason
 		return batch, nil
@@ -398,14 +404,18 @@ func (g *PoolGroup) planGroupPolicyBudgetPublicationBatchLocked(
 			batch.report.FailureReason = policyUpdateFailureSkippedChild
 			continue
 		}
+
 		if err := partition.validatePartitionBudgetTarget(target); err != nil {
 			return batch, err
 		}
+
 		batch.plans = append(batch.plans, groupPolicyPartitionBudgetPlan{target: target, partition: partition})
 	}
+
 	if len(batch.report.SkippedPartitions) > 0 {
 		return batch, nil
 	}
+
 	return batch, nil
 }
 
@@ -428,8 +438,10 @@ func (b *groupPolicyPartitionBudgetBatch) beginPartitionForegroundOperations() e
 			b.report.FailureReason = policyUpdateFailureSkippedChild
 			return err
 		}
+
 		plan.admitted = true
 	}
+
 	return nil
 }
 
@@ -482,6 +494,7 @@ func (b *groupPolicyPartitionBudgetBatch) planPartitionBudgetApplications() erro
 			b.report.Published = false
 			return err
 		}
+
 		if !application.report.CanPublish() {
 			reason := groupPolicyPartitionPlanFailureReason(nil, application.report)
 			b.report.SkippedPartitions = append(b.report.SkippedPartitions, PoolGroupSkippedPartition{

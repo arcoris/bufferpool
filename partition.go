@@ -127,15 +127,18 @@ func newPoolPartition(config PoolPartitionConfig, tickerFactory controllerSchedu
 	if err := normalized.Validate(); err != nil {
 		return nil, err
 	}
+
 	leases, err := NewLeaseRegistry(normalized.Lease)
 	if err != nil {
 		return nil, err
 	}
+
 	registry, err := newPartitionRegistry(normalized.Pools)
 	if err != nil {
 		_ = leases.Close()
 		return nil, err
 	}
+
 	partition := &PoolPartition{
 		name:           normalized.Name,
 		config:         clonePartitionConfig(normalized),
@@ -143,14 +146,17 @@ func newPoolPartition(config PoolPartitionConfig, tickerFactory controllerSchedu
 		activeRegistry: newPartitionActiveRegistry(registry.names),
 		leases:         leases,
 	}
+
 	partition.controller.init(clock.Default(), normalized.Policy)
 	partition.generation.Store(InitialGeneration)
 	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	partition.lifecycle.Activate()
+
 	if err := partition.startControllerScheduler(tickerFactory); err != nil {
 		_ = partition.Close()
 		return nil, err
 	}
+
 	return partition, nil
 }
 
@@ -220,11 +226,13 @@ func (p *PoolPartition) Acquire(poolName string, size int) (Lease, error) {
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+poolName)
 	}
+
 	index, _ := p.registry.poolIndex(poolName)
 	lease, err := p.leases.Acquire(pool, size)
 	if err != nil {
 		return Lease{}, err
 	}
+
 	p.markPoolActiveAndDirty(index)
 	return lease, nil
 }
@@ -241,11 +249,13 @@ func (p *PoolPartition) AcquireSize(poolName string, size Size) (Lease, error) {
 	if !ok {
 		return Lease{}, newError(ErrInvalidOptions, errPartitionPoolMissing+": "+poolName)
 	}
+
 	index, _ := p.registry.poolIndex(poolName)
 	lease, err := p.leases.AcquireSize(pool, size)
 	if err != nil {
 		return Lease{}, err
 	}
+
 	p.markPoolActiveAndDirty(index)
 	return lease, nil
 }
@@ -259,6 +269,7 @@ func (p *PoolPartition) Release(lease Lease, buffer []byte) error {
 	if err := p.leases.Release(lease, buffer); err != nil {
 		return err
 	}
+
 	p.markReleasedLeasePoolDirty(lease)
 	return nil
 }

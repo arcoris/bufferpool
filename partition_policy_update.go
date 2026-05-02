@@ -136,9 +136,11 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 	if err := validatePartitionPolicyPublicationCandidate(normalized, &result); err != nil {
 		return result, err
 	}
+
 	if err := validatePartitionPolicySchedulerPublicationCompatibility(runtime.Policy, normalized, &result); err != nil {
 		return result, err
 	}
+
 	if err := p.validateOwnedPoolRuntimePoliciesForPolicyPublication(&result); err != nil {
 		return result, err
 	}
@@ -221,6 +223,7 @@ func newPoolPartitionPolicyPublicationResult(
 		previousPolicy = runtime.Policy.Normalize()
 		previousGeneration = runtime.Generation
 	}
+
 	diff := classifyPartitionPolicyUpdate(previousPolicy, candidate)
 	return PoolPartitionPolicyPublicationResult{
 		PreviousGeneration: previousGeneration,
@@ -241,6 +244,7 @@ func validatePartitionPolicyPublicationCandidate(
 		result.FailureReason = policyUpdateFailureInvalid
 		return err
 	}
+
 	return nil
 }
 
@@ -263,6 +267,7 @@ func validatePartitionPolicySchedulerPublicationCompatibility(
 	if previous.Controller == next.Controller {
 		return nil
 	}
+
 	result.FailureReason = policyUpdateFailureSchedulerChange
 	return newError(ErrInvalidPolicy, policyUpdateFailureSchedulerChange)
 }
@@ -291,13 +296,16 @@ func (p *PoolPartition) validateOwnedPoolRuntimePoliciesForPolicyPublication(res
 
 		result.Diff.ShapeChanged = result.Diff.ShapeChanged || compatibility.Diff.Diagnostics.ShapeChanged
 		result.Diff.OwnershipChanged = result.Diff.OwnershipChanged || compatibility.Diff.Diagnostics.OwnershipChanged
+
 		reason := compatibility.FailureReason
 		if reason == "" {
 			reason = policyUpdateFailureInvalid
 		}
+
 		result.FailureReason = reason
 		return newError(ErrInvalidPolicy, reason)
 	}
+
 	return nil
 }
 
@@ -338,6 +346,7 @@ func (p *PoolPartition) planPartitionPolicyBudgetBatchLocked(
 	batch.report.Allocation = newBudgetAllocationDiagnostics(allocation.Allocation)
 	batch.report.Targets = append([]PoolBudgetTarget(nil), allocation.Targets...)
 	batch.report.FailureReason = ""
+
 	if !allocation.Allocation.Feasible {
 		batch.report.FailureReason = allocation.Allocation.Reason
 		return batch, nil

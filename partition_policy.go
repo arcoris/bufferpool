@@ -94,6 +94,7 @@ func (p PartitionPolicy) Normalize() PartitionPolicy {
 	if p.Controller.Enabled && p.Controller.TickInterval == 0 {
 		p.Controller.TickInterval = defaultPartitionControllerTickInterval
 	}
+
 	p.Trim = p.Trim.Normalize()
 	return p
 }
@@ -101,6 +102,7 @@ func (p PartitionPolicy) Normalize() PartitionPolicy {
 // Validate validates partition policy values.
 func (p PartitionPolicy) Validate() error {
 	p = p.Normalize()
+
 	if p.Controller.Enabled {
 		if p.Controller.TickInterval <= 0 {
 			return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval must be positive")
@@ -118,6 +120,7 @@ func (p PartitionPolicy) Validate() error {
 	if err := p.Trim.Validate(); err != nil {
 		return err
 	}
+
 	return nil
 }
 

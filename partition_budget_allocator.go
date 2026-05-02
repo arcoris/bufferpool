@@ -131,14 +131,17 @@ func (r PoolPartitionBudgetPublicationReport) CanPublish() bool {
 	if len(r.Targets) == 0 {
 		return false
 	}
+
 	if !r.Allocation.Feasible {
 		return false
 	}
+
 	for _, classReport := range r.ClassReports {
 		if !classReport.Allocation.Feasible || classReport.FailureReason != "" {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -306,9 +309,11 @@ func (p *PoolPartition) applyPoolBudgetTargets(targets []PoolBudgetTarget) error
 	if err != nil {
 		return err
 	}
+
 	if !report.Published {
 		return newError(ErrInvalidPolicy, report.FailureReason)
 	}
+
 	return nil
 }
 
@@ -375,6 +380,7 @@ func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) 
 	if len(targets) > 0 {
 		report.Generation = targets[0].Generation
 	}
+
 	batch := plannedPoolBudgetBatch{
 		plans:  make([]plannedPoolBudget, 0, len(targets)),
 		report: report,
@@ -409,6 +415,7 @@ func (p *PoolPartition) planPoolBudgetTargetsLocked(targets []PoolBudgetTarget) 
 		}
 
 		batch.report.ClassReports = append(batch.report.ClassReports, classReport)
+
 		index, _ := p.registry.poolIndex(target.PoolName)
 		target.ClassTargets = classAllocation.Targets
 		batch.report.Targets = append(batch.report.Targets, target)

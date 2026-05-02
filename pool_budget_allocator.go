@@ -103,6 +103,7 @@ func (p *Pool) applyPoolBudget(target PoolBudgetTarget) (Generation, error) {
 	if err != nil {
 		return p.currentRuntimeSnapshot().Generation, err
 	}
+
 	if !report.Allocation.Feasible {
 		return p.currentRuntimeSnapshot().Generation, newError(ErrInvalidPolicy, report.Allocation.Reason)
 	}
@@ -168,6 +169,7 @@ func (p *Pool) applyPlannedClassBudgetTargetsAndPublishLocked(targets []ClassBud
 	generation := p.applyPlannedClassBudgetTargetsLocked(targets)
 	runtime := p.currentRuntimeSnapshot()
 	poolGeneration := budgetPublicationGeneration(runtime.Generation, generation)
+
 	p.publishRuntimeSnapshot(newPoolRuntimeSnapshotWithPressure(poolGeneration, runtime.Policy, runtime.Pressure))
 	return poolGeneration
 }
@@ -277,8 +279,10 @@ func (p *Pool) validateClassBudgetTargets(targets []ClassBudgetTarget) error {
 		if _, ok := seen[target.ClassID]; ok {
 			return newError(ErrInvalidOptions, errPoolBudgetTargetDuplicateClass)
 		}
+
 		seen[target.ClassID] = struct{}{}
 	}
+
 	return nil
 }
 
@@ -295,10 +299,12 @@ func classBudgetAllocationReportFromTargets(
 	copied := append([]ClassBudgetTarget(nil), targets...)
 	results := make([]budgetAllocationResult, len(copied))
 	var assigned uint64
+
 	for index := range copied {
 		if copied[index].Generation.IsZero() {
 			copied[index].Generation = generation
 		}
+
 		targetBytes := copied[index].TargetBytes.Bytes()
 		assigned = poolSaturatingAdd(assigned, targetBytes)
 		results[index] = budgetAllocationResult{AssignedBytes: targetBytes}
@@ -315,11 +321,13 @@ func classBudgetAllocationReportFromTargets(
 		AssignedBytes:  assigned,
 		Reason:         budgetAllocationReasonFeasible,
 	}
+
 	if assigned > requested {
 		allocation.Feasible = false
 		allocation.OvercommittedBytes = assigned - requested
 		allocation.Reason = budgetAllocationReasonMinimumsExceedParent
 	}
+
 	return classBudgetAllocationReport{Targets: copied, Allocation: allocation}
 }
 

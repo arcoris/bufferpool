@@ -89,6 +89,7 @@ func (p PoolGroupPolicy) Normalize() PoolGroupPolicy {
 // Validate validates group policy values.
 func (p PoolGroupPolicy) Validate() error {
 	p = p.Normalize()
+
 	if p.Coordinator.Enabled {
 		if p.Coordinator.TickInterval <= 0 {
 			return newError(ErrInvalidPolicy, "bufferpool.PoolGroupPolicy: coordinator tick interval must be positive")
@@ -103,6 +104,7 @@ func (p PoolGroupPolicy) Validate() error {
 	if err := p.Pressure.Validate(); err != nil {
 		return err
 	}
+
 	return nil
 }
 

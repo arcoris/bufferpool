@@ -211,9 +211,11 @@ func (p PartitionTrimPolicy) Validate() error {
 // PlanTrim returns a non-mutating trim plan.
 func (p *PoolPartition) PlanTrim() PartitionTrimPlan {
 	p.mustBeInitialized()
+
 	runtime := p.currentRuntimeSnapshot()
 	var sample PoolPartitionSample
 	p.sampleWithRuntimeAndGeneration(&sample, runtime, p.generation.Load(), false)
+
 	pressure := newEffectivePartitionPressureSnapshot(runtime.Policy.Pressure, runtime.Pressure, sample)
 	return newPartitionTrimPlan(runtime.Policy.Trim, pressure, sample)
 }
@@ -254,6 +256,7 @@ func newPartitionTrimPlan(policy PartitionTrimPolicy, pressure PartitionPressure
 		plan.Reason = "trim_disabled"
 		return plan
 	}
+
 	if policy.TrimOnPressure {
 		if pressure.Level == PressureLevelNormal {
 			plan.Enabled = false
@@ -263,6 +266,7 @@ func newPartitionTrimPlan(policy PartitionTrimPolicy, pressure PartitionPressure
 		plan.Reason = "pressure"
 		return plan
 	}
+
 	plan.Reason = "policy"
 	return plan
 }
@@ -292,11 +296,13 @@ func newPartitionPolicyShrinkTrimPlan(policy PartitionTrimPolicy, pressureLevel 
 		plan.Reason = "trim_disabled"
 		return plan
 	}
+
 	if !policy.TrimOnPolicyShrink {
 		plan.Enabled = false
 		plan.Reason = "policy_shrink_trim_disabled"
 		return plan
 	}
+
 	return plan
 }
 
@@ -341,11 +347,13 @@ func (p *PoolPartition) executeTrimPlanWithScoring(plan PartitionTrimPlan, scori
 		if poolResult.Executed {
 			result.Executed = true
 		}
+
 		if poolResult.TrimmedBytes >= remainingBytes {
 			remainingBytes = 0
 			break
 		}
 		remainingBytes -= poolResult.TrimmedBytes
+
 		if poolResult.TrimmedBuffers >= remainingBuffers {
 			remainingBuffers = 0
 			break
@@ -356,6 +364,7 @@ func (p *PoolPartition) executeTrimPlanWithScoring(plan PartitionTrimPlan, scori
 	if result.Executed {
 		p.activeRegistry.markAllDirty()
 	}
+
 	return result
 }
 
@@ -367,10 +376,12 @@ func newPartitionTrimScoringContext(window PoolPartitionWindow) partitionTrimSco
 	if len(window.Pools) == 0 {
 		return partitionTrimScoringContext{}
 	}
+
 	activityByPool := make(map[string]float64, len(window.Pools))
 	for _, pool := range window.Pools {
 		activityByPool[pool.Name] = partitionTrimPoolWindowActivity(pool)
 	}
+
 	return partitionTrimScoringContext{activityByPool: activityByPool}
 }
 
@@ -378,6 +389,7 @@ func (c partitionTrimScoringContext) activity(poolName string) (float64, bool) {
 	if len(c.activityByPool) == 0 {
 		return 0, false
 	}
+
 	activity, ok := c.activityByPool[poolName]
 	return activity, ok
 }
@@ -426,6 +438,7 @@ func (p *PoolPartition) partitionTrimCandidates(pressureLevel PressureLevel, sco
 			ActivityKnown:      activityKnown,
 			PressureLevel:      pressureLevel,
 		}
+
 		score := NewTrimVictimScore(scoreInput)
 
 		candidates = append(candidates, partitionTrimCandidate{
@@ -464,6 +477,7 @@ func (p *PoolPartition) partitionTrimCandidates(pressureLevel PressureLevel, sco
 		}
 		return left.index < right.index
 	})
+
 	return candidates
 }
 
@@ -471,6 +485,7 @@ func partitionTrimCandidateReports(candidates []partitionTrimCandidate) []Partit
 	if len(candidates) == 0 {
 		return nil
 	}
+
 	reports := make([]PartitionTrimCandidate, len(candidates))
 	for index, candidate := range candidates {
 		reports[index] = PartitionTrimCandidate{
@@ -483,6 +498,7 @@ func partitionTrimCandidateReports(candidates []partitionTrimCandidate) []Partit
 			PressureSeverity:   candidate.pressure,
 		}
 	}
+
 	return reports
 }
 
@@ -491,11 +507,13 @@ func partitionTrimPoolUsage(pool *Pool) (uint64, uint64, uint64, uint64) {
 	var retainedBuffers uint64
 	var overTarget uint64
 	var capacityWaste uint64
+
 	for index := range pool.classes {
 		state := pool.classes[index].state()
 		if state.CurrentRetainedBytes == 0 {
 			continue
 		}
+
 		retainedBytes = poolSaturatingAdd(retainedBytes, state.CurrentRetainedBytes)
 		retainedBuffers = poolSaturatingAdd(retainedBuffers, state.CurrentRetainedBuffers)
 		overTarget = poolSaturatingAdd(overTarget, poolTrimClassOverTargetBytes(state))
@@ -508,6 +526,7 @@ func partitionTrimPoolUsage(pool *Pool) (uint64, uint64, uint64, uint64) {
 			),
 		)
 	}
+
 	return retainedBytes, retainedBuffers, overTarget, capacityWaste
 }
 
@@ -515,9 +534,11 @@ func partitionTrimUint64ToInt(value uint64) int {
 	if value == 0 {
 		return 0
 	}
+
 	maxInt := uint64(^uint(0) >> 1)
 	if value > maxInt {
 		return int(maxInt)
 	}
+
 	return int(value)
 }

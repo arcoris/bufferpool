@@ -112,6 +112,7 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 	if err := p.validatePoolPolicyPublicationCandidate(normalized, &result); err != nil {
 		return result, err
 	}
+
 	if err := p.validatePoolPolicyPublication(initial.Policy, normalized, &result); err != nil {
 		return result, err
 	}
@@ -132,6 +133,7 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 	if err := p.validatePoolPolicyPublicationCandidate(normalized, &result); err != nil {
 		return result, err
 	}
+
 	if err := p.validatePoolPolicyPublication(runtime.Policy, normalized, &result); err != nil {
 		return result, err
 	}
@@ -151,6 +153,7 @@ func (p *Pool) PublishPolicy(policy Policy) (PoolPolicyPublicationResult, error)
 		result.FailureReason = policyUpdateFailureInvalid
 		return result, err
 	}
+
 	if !classAllocation.Allocation.Feasible {
 		result.ClassBudgetPublication.FailureReason = classAllocation.Allocation.Reason
 		result.FailureReason = policyUpdateFailureInfeasibleBudget
@@ -196,6 +199,7 @@ func newPoolPolicyPublicationResult(runtime *poolRuntimeSnapshot, candidate Poli
 		previousPolicy = runtime.clonePolicy()
 		previousGeneration = runtime.Generation
 	}
+
 	diff := classifyPolicyUpdate(previousPolicy, candidate)
 	return PoolPolicyPublicationResult{
 		PreviousGeneration: previousGeneration,
@@ -220,6 +224,7 @@ func (p *Pool) validatePoolPolicyPublicationCandidate(policy Policy, result *Poo
 		result.FailureReason = policyUpdateFailureInvalid
 		return err
 	}
+
 	if err := validatePoolSupportedPolicy(policy, p.constructionMode); err != nil {
 		result.FailureReason = policyUpdateFailureInvalid
 		return err
@@ -240,6 +245,7 @@ func (p *Pool) validatePoolPolicyPublication(previous Policy, next Policy, resul
 	if reason == "" {
 		reason = policyUpdateFailureInvalid
 	}
+
 	result.FailureReason = reason
 	return newError(ErrInvalidPolicy, reason)
 }

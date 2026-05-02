@@ -125,6 +125,7 @@ func (c PoolGroupConfig) Normalize() PoolGroupConfig {
 	normalized.Name = normalizeGroupName(normalized.Name)
 	normalized.Policy = normalized.Policy.Normalize()
 	normalized.Partitioning = normalized.Partitioning.Normalize()
+
 	if len(normalized.Pools) > 0 {
 		pools := make([]GroupPoolConfig, len(normalized.Pools))
 		for index, poolConfig := range normalized.Pools {
@@ -132,6 +133,7 @@ func (c PoolGroupConfig) Normalize() PoolGroupConfig {
 		}
 		normalized.Pools = pools
 	}
+
 	if len(normalized.Partitions) > 0 {
 		partitions := make([]GroupPartitionConfig, len(normalized.Partitions))
 		for index, partitionConfig := range normalized.Partitions {
@@ -139,6 +141,7 @@ func (c PoolGroupConfig) Normalize() PoolGroupConfig {
 		}
 		normalized.Partitions = partitions
 	}
+
 	return normalized
 }
 
@@ -146,12 +149,14 @@ func (c PoolGroupConfig) Normalize() PoolGroupConfig {
 func (c PoolGroupConfig) Validate() error {
 	normalized := c.Normalize()
 	var err error
+
 	if policyErr := normalized.Policy.Validate(); policyErr != nil {
 		multierr.AppendInto(&err, wrapError(ErrInvalidOptions, policyErr, errGroupConfigInvalidPolicy))
 	}
 	if _, _, assignmentErr := newGroupPartitionAssignments(normalized); assignmentErr != nil {
 		multierr.AppendInto(&err, assignmentErr)
 	}
+
 	return err
 }
 
@@ -159,6 +164,7 @@ func (c PoolGroupConfig) Validate() error {
 func validateGroupPartitions(partitions []GroupPartitionConfig) error {
 	var err error
 	seen := make(map[string]struct{}, len(partitions))
+
 	for _, partitionConfig := range partitions {
 		if partitionConfig.Name == "" {
 			multierr.AppendInto(&err, newError(ErrInvalidOptions, errGroupConfigEmptyPartitionName))
@@ -169,6 +175,7 @@ func validateGroupPartitions(partitions []GroupPartitionConfig) error {
 			continue
 		}
 		seen[partitionConfig.Name] = struct{}{}
+
 		if nameErr := validateGroupPartitionNameMatch(partitionConfig); nameErr != nil {
 			multierr.AppendInto(&err, nameErr)
 			continue
@@ -177,6 +184,7 @@ func validateGroupPartitions(partitions []GroupPartitionConfig) error {
 			multierr.AppendInto(&err, wrapError(ErrInvalidOptions, partitionErr, errGroupConfigInvalidPartition+": "+partitionConfig.Name))
 		}
 	}
+
 	return err
 }
 
@@ -241,6 +249,7 @@ func normalizeGroupName(name string) string {
 func cloneGroupConfig(config PoolGroupConfig) PoolGroupConfig {
 	config.Policy = config.Policy.Normalize()
 	config.Partitioning = config.Partitioning.Normalize()
+
 	if len(config.Pools) > 0 {
 		pools := make([]GroupPoolConfig, len(config.Pools))
 		for index, poolConfig := range config.Pools {
@@ -249,6 +258,7 @@ func cloneGroupConfig(config PoolGroupConfig) PoolGroupConfig {
 		}
 		config.Pools = pools
 	}
+
 	if len(config.Partitions) > 0 {
 		partitions := make([]GroupPartitionConfig, len(config.Partitions))
 		for index, partitionConfig := range config.Partitions {
@@ -257,5 +267,6 @@ func cloneGroupConfig(config PoolGroupConfig) PoolGroupConfig {
 		}
 		config.Partitions = partitions
 	}
+
 	return config
 }

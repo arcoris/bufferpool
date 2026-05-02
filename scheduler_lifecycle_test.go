@@ -34,6 +34,7 @@ func TestManualTickStillWorksWithoutScheduler(t *testing.T) {
 
 	requirePartitionNoError(t, partition.TickInto(&partitionReport))
 	assertPoolPartitionSchedulerStopped(t, partition, "manual partition")
+
 	if partitionReport.Status.Status == ControllerCycleStatusUnset {
 		t.Fatalf("partition TickInto status = %+v, want a published manual cycle status", partitionReport.Status)
 	}
@@ -43,6 +44,7 @@ func TestManualTickStillWorksWithoutScheduler(t *testing.T) {
 
 	requireGroupNoError(t, group.TickInto(&groupReport))
 	assertPoolGroupSchedulerStopped(t, group, "manual group")
+
 	if groupReport.Status.Status == ControllerCycleStatusUnset {
 		t.Fatalf("group TickInto status = %+v, want a published manual cycle status", groupReport.Status)
 	}
@@ -54,10 +56,12 @@ func TestManualTickStillWorksWithoutScheduler(t *testing.T) {
 func TestSchedulerRejectsIntervalWithoutEnabled(t *testing.T) {
 	partitionPolicy := DefaultPartitionPolicy()
 	partitionPolicy.Controller.TickInterval = time.Second
+
 	requirePartitionErrorIs(t, partitionPolicy.Validate(), ErrInvalidPolicy)
 
 	groupPolicy := DefaultPoolGroupPolicy()
 	groupPolicy.Coordinator.TickInterval = time.Second
+
 	requireGroupErrorIs(t, groupPolicy.Validate(), ErrInvalidPolicy)
 }
 
@@ -68,11 +72,13 @@ func TestSchedulerRejectsNegativeInterval(t *testing.T) {
 	partitionPolicy := DefaultPartitionPolicy()
 	partitionPolicy.Controller.Enabled = true
 	partitionPolicy.Controller.TickInterval = -time.Second
+
 	requirePartitionErrorIs(t, partitionPolicy.Validate(), ErrInvalidPolicy)
 
 	groupPolicy := DefaultPoolGroupPolicy()
 	groupPolicy.Coordinator.Enabled = true
 	groupPolicy.Coordinator.TickInterval = -time.Second
+
 	requireGroupErrorIs(t, groupPolicy.Validate(), ErrInvalidPolicy)
 }
 
@@ -83,6 +89,7 @@ func TestSchedulerRejectsNegativeInterval(t *testing.T) {
 func TestPoolPartitionCloseDoesNotRewriteLastControllerStatus(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 	var report PartitionControllerReport
+
 	requirePartitionNoError(t, partition.TickInto(&report))
 	before := partition.ControllerStatus()
 
@@ -91,6 +98,7 @@ func TestPoolPartitionCloseDoesNotRewriteLastControllerStatus(t *testing.T) {
 	if after := partition.ControllerStatus(); after != before {
 		t.Fatalf("ControllerStatus after Close = %+v, want unchanged last cycle %+v", after, before)
 	}
+
 	if !partition.IsClosed() || partition.Lifecycle() != LifecycleClosed {
 		t.Fatalf("partition lifecycle after Close = %s closed=%v, want closed lifecycle", partition.Lifecycle(), partition.IsClosed())
 	}
@@ -103,6 +111,7 @@ func TestPoolPartitionCloseDoesNotRewriteLastControllerStatus(t *testing.T) {
 func TestPoolGroupCloseDoesNotRewriteLastControllerStatus(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	var report PoolGroupCoordinatorReport
+
 	requireGroupNoError(t, group.TickInto(&report))
 	before := group.ControllerStatus()
 
@@ -111,6 +120,7 @@ func TestPoolGroupCloseDoesNotRewriteLastControllerStatus(t *testing.T) {
 	if after := group.ControllerStatus(); after != before {
 		t.Fatalf("ControllerStatus after Close = %+v, want unchanged last cycle %+v", after, before)
 	}
+
 	if !group.IsClosed() || group.Lifecycle() != LifecycleClosed {
 		t.Fatalf("group lifecycle after Close = %s closed=%v, want closed lifecycle", group.Lifecycle(), group.IsClosed())
 	}
@@ -130,6 +140,7 @@ func TestPoolPartitionTickIntoAfterClosePublishesClosedStatus(t *testing.T) {
 	if report.Status.Status != ControllerCycleStatusClosed {
 		t.Fatalf("TickInto after Close status = %+v, want Closed", report.Status)
 	}
+
 	if retained := partition.ControllerStatus(); retained != report.Status {
 		t.Fatalf("retained status = %+v, want TickInto report status %+v", retained, report.Status)
 	}
@@ -149,6 +160,7 @@ func TestPoolGroupTickIntoAfterClosePublishesClosedStatus(t *testing.T) {
 	if report.Status.Status != ControllerCycleStatusClosed {
 		t.Fatalf("TickInto after Close status = %+v, want Closed", report.Status)
 	}
+
 	if retained := group.ControllerStatus(); retained != report.Status {
 		t.Fatalf("retained status = %+v, want TickInto report status %+v", retained, report.Status)
 	}
@@ -163,6 +175,7 @@ func TestPoolPartitionLifecycleIsClosedAfterSchedulerClose(t *testing.T) {
 	requirePartitionNoError(t, partition.Close())
 
 	assertPoolPartitionSchedulerStopped(t, partition, "closed scheduled partition")
+
 	if !partition.IsClosed() || partition.Lifecycle() != LifecycleClosed {
 		t.Fatalf("scheduled partition lifecycle after Close = %s closed=%v, want closed lifecycle",
 			partition.Lifecycle(), partition.IsClosed())
@@ -178,6 +191,7 @@ func TestPoolGroupLifecycleIsClosedAfterSchedulerClose(t *testing.T) {
 	requireGroupNoError(t, group.Close())
 
 	assertPoolGroupSchedulerStopped(t, group, "closed scheduled group")
+
 	if !group.IsClosed() || group.Lifecycle() != LifecycleClosed {
 		t.Fatalf("scheduled group lifecycle after Close = %s closed=%v, want closed lifecycle",
 			group.Lifecycle(), group.IsClosed())
@@ -199,6 +213,7 @@ func TestPoolPartitionSchedulerDoesNotRetainFullReportState(t *testing.T) {
 	var report PartitionControllerReport
 	requirePartitionNoError(t, partition.TickInto(&report))
 	retained := partition.ControllerStatus()
+
 	report.Status.FailureReason = "mutated_report_status"
 	report.Status.Status = ControllerCycleStatusFailed
 	report.Generation = NoGeneration
@@ -226,6 +241,7 @@ func TestPoolGroupSchedulerDoesNotRetainFullReportState(t *testing.T) {
 	var report PoolGroupCoordinatorReport
 	requireGroupNoError(t, group.TickInto(&report))
 	retained := group.ControllerStatus()
+
 	report.Status.FailureReason = "mutated_report_status"
 	report.Status.Status = ControllerCycleStatusFailed
 	report.Generation = NoGeneration

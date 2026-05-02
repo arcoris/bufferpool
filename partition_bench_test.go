@@ -230,7 +230,12 @@ func BenchmarkPoolPartitionTickInto(b *testing.B) {
 // tick with lightweight status publication enabled.
 func BenchmarkPoolPartitionTickWithControllerStatus(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 16)
-	report := PartitionControllerReport{Sample: PoolPartitionSample{Pools: make([]PoolPartitionPoolSample, 0, 16)}}
+	report := PartitionControllerReport{
+		Sample: PoolPartitionSample{
+			Pools: make([]PoolPartitionPoolSample, 0, 16),
+		},
+	}
+
 	if err := partition.TickInto(&report); err != nil {
 		b.Fatalf("warm TickInto() returned error: %v", err)
 	}

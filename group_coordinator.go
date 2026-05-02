@@ -59,9 +59,11 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 		}
 		return newError(ErrClosed, errGroupClosed)
 	}
+
 	if dst == nil {
 		return nil
 	}
+
 	if !g.coordinator.cycleGate.begin() {
 		status := g.coordinator.status.publish(
 			ControllerCycleStatusAlreadyRunning,
@@ -80,23 +82,28 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	generation := g.generation.Advance()
 	runtime := g.currentRuntimeSnapshot()
 	now := clockNow(g.coordinator.clock)
+
 	sample := dst.Sample
 	g.sampleWithRuntimeAndGeneration(&sample, runtime, generation)
+
 	previous := sample
 	elapsed := time.Duration(0)
 	if g.coordinator.hasPreviousSample {
 		previous = g.coordinator.previousSample
 		elapsed = clockElapsed(g.coordinator.previousSampleTime, now)
 	}
+
 	window := dst.Window
 	window.Reset(previous, sample)
 	rates := NewPoolGroupTimedWindowRates(window, elapsed)
+
 	metrics := newPoolGroupMetrics(g.name, sample)
 	budget := newGroupBudgetSnapshot(runtime.Policy.Budget, sample)
 	pressure := newGroupPressureSnapshot(runtime.Policy.Pressure, sample)
 	scoreEvaluator := NewPoolGroupScoreEvaluator(runtime.Policy.Score)
 	scores := scoreEvaluator.ScoreValues(rates, budget, pressure)
 	partitionScores := g.groupPartitionScores(window, elapsed, scoreEvaluator)
+
 	partitionBudgetAllocation := g.coordinatorPartitionBudgetReport(generation, runtime, window, partitionScores)
 	partitionBudgetTargets := partitionBudgetAllocation.Targets
 	skippedPartitions := dst.SkippedPartitions[:0]
@@ -107,6 +114,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 		Published:  false,
 	}
 	var err error
+
 	if len(partitionBudgetTargets) > 0 && !partitionBudgetAllocation.Allocation.Feasible {
 		budgetPublication.FailureReason = partitionBudgetAllocation.Allocation.Reason
 	} else if len(partitionBudgetTargets) > 0 {
@@ -127,10 +135,12 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 			budgetPublication.FailureReason = policyUpdateFailureSkippedChild
 		}
 	}
+
 	publishedGeneration := NoGeneration
 	if budgetPublication.Published {
 		publishedGeneration = generation
 	}
+
 	statusKind := ControllerCycleStatusApplied
 	appliedGeneration := generation
 	statusReason := ""
@@ -148,6 +158,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	g.coordinator.previousSampleTime = now
 	g.coordinator.hasPreviousSample = true
 	coordinatorGeneration := g.coordinator.generation.Advance()
+
 	status := g.coordinator.status.publish(statusKind, generation, appliedGeneration, statusReason)
 	*dst = PoolGroupCoordinatorReport{
 		Status:                 status,
