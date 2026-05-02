@@ -279,9 +279,10 @@ func BenchmarkPoolPartitionTickOverlapRejected(b *testing.B) {
 	partition.controller.cycleGate.running.Store(false)
 }
 
-// BenchmarkPoolPartitionControllerStatusSequenceApplied measures retained
-// status publication for repeated applied manual cycles without retaining full
-// controller reports.
+// BenchmarkPoolPartitionControllerStatusSequenceApplied measures the retained
+// status-store publish path for repeated applied manual cycles. It deliberately
+// avoids TickInto so the benchmark isolates lightweight status bookkeeping from
+// sampling, scoring, budget publication, and full report construction.
 func BenchmarkPoolPartitionControllerStatusSequenceApplied(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 1)
 

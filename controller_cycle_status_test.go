@@ -20,6 +20,7 @@ import (
 	"errors"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -611,11 +612,7 @@ func TestControllerStatusFailureReasonPolicy(t *testing.T) {
 }
 
 func TestControllerStatusDoesNotExposeRawErrorText(t *testing.T) {
-	err := newError(ErrClosed, errPoolClosed)
-	reason := controllerCycleFailureReasonForError(err, controllerCycleReasonFailed)
-	if reason == err.Error() {
-		t.Fatalf("status reason exposed raw error text: %q", reason)
-	}
+	assertControllerStatusDoesNotExposeRawErrorText(t)
 }
 
 func TestControllerCycleReasonsAreStable(t *testing.T) {
@@ -628,14 +625,14 @@ func TestControllerCycleReasonsAreStable(t *testing.T) {
 		controllerCycleReasonNoWork,
 	}
 	for _, reason := range reasons {
-		if reason == "" || reason[:len("controller_cycle_")] != "controller_cycle_" {
+		if !strings.HasPrefix(reason, "controller_cycle_") {
 			t.Fatalf("controller cycle reason = %q, want stable controller_cycle_ prefix", reason)
 		}
 	}
 }
 
 func TestControllerStatusDoesNotUseRawErrorText(t *testing.T) {
-	TestControllerStatusDoesNotExposeRawErrorText(t)
+	assertControllerStatusDoesNotExposeRawErrorText(t)
 }
 
 func TestBudgetPublicationReasonsDoNotUseRawErrorTextOnKnownErrorPaths(t *testing.T) {
@@ -682,12 +679,16 @@ func TestPoolPartitionTickReportStatusMatchesRetainedStatusFailed(t *testing.T) 
 	assertControllerStatusMatchesReport(t, partition.ControllerStatus(), report.Status)
 }
 
-func TestPoolPartitionTickReportStatusMatchesRetainedStatusUnpublished(t *testing.T) {
-	partition := testNewPoolPartition(t, "primary")
-	status := partition.controller.status.publish(ControllerCycleStatusUnpublished, Generation(7), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
+func TestControllerCycleStatusStoreReportStatusMatchesRetainedStatusUnpublished(t *testing.T) {
+	var store controllerCycleStatusStore
+
+	// Partition currently reaches non-publication through real failed or applied
+	// TickInto paths; this keeps report/status equality coverage for the
+	// retained unpublished status without adding production-only failure hooks.
+	status := store.publish(ControllerCycleStatusUnpublished, Generation(7), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
 	report := PartitionControllerReport{Status: status}
 
-	assertControllerStatusMatchesReport(t, partition.ControllerStatus(), report.Status)
+	assertControllerStatusMatchesReport(t, store.load(), report.Status)
 }
 
 func TestPoolPartitionTickReportStatusMatchesRetainedStatusAlreadyRunning(t *testing.T) {
@@ -726,11 +727,15 @@ func TestPoolGroupTickReportStatusMatchesRetainedStatusAlreadyRunning(t *testing
 	assertControllerStatusMatchesReport(t, group.ControllerStatus(), report.Status)
 }
 
-func TestPoolPartitionControllerStatusSequenceAppliedFailedApplied(t *testing.T) {
-	partition := testNewPoolPartition(t, "primary")
-	first := partition.controller.status.publish(ControllerCycleStatusApplied, Generation(1), Generation(1), "")
-	failed := partition.controller.status.publish(ControllerCycleStatusFailed, Generation(2), NoGeneration, controllerCycleReasonFailed)
-	applied := partition.controller.status.publish(ControllerCycleStatusApplied, Generation(3), Generation(3), "")
+func TestControllerCycleStatusStoreSequenceAppliedFailedApplied(t *testing.T) {
+	var store controllerCycleStatusStore
+
+	// This is a status-store unit sequence, not a runtime TickInto sequence. It
+	// keeps the counter and LastSuccessfulGeneration contract focused on the
+	// retained lightweight state machine.
+	first := store.publish(ControllerCycleStatusApplied, Generation(1), Generation(1), "")
+	failed := store.publish(ControllerCycleStatusFailed, Generation(2), NoGeneration, controllerCycleReasonFailed)
+	applied := store.publish(ControllerCycleStatusApplied, Generation(3), Generation(3), "")
 
 	assertControllerCycleStatus(t, first, ControllerCycleStatusApplied, Generation(1), Generation(1), "")
 	assertControllerCycleStatus(t, failed, ControllerCycleStatusFailed, Generation(2), NoGeneration, controllerCycleReasonFailed)
@@ -740,12 +745,16 @@ func TestPoolPartitionControllerStatusSequenceAppliedFailedApplied(t *testing.T)
 	}
 }
 
-func TestPoolPartitionControllerStatusSequenceUnpublishedStreakApplied(t *testing.T) {
-	partition := testNewPoolPartition(t, "primary")
-	partition.controller.status.publish(ControllerCycleStatusApplied, Generation(1), Generation(1), "")
-	first := partition.controller.status.publish(ControllerCycleStatusUnpublished, Generation(2), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
-	second := partition.controller.status.publish(ControllerCycleStatusUnpublished, Generation(3), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
-	applied := partition.controller.status.publish(ControllerCycleStatusApplied, Generation(4), Generation(4), "")
+func TestControllerCycleStatusStoreSequenceUnpublishedStreakApplied(t *testing.T) {
+	var store controllerCycleStatusStore
+
+	// Repeated unpublished cycles are diagnostic-only but still important for
+	// future scheduler-readiness; the store tracks that streak until an applied
+	// cycle proves the owner made forward progress again.
+	store.publish(ControllerCycleStatusApplied, Generation(1), Generation(1), "")
+	first := store.publish(ControllerCycleStatusUnpublished, Generation(2), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
+	second := store.publish(ControllerCycleStatusUnpublished, Generation(3), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
+	applied := store.publish(ControllerCycleStatusApplied, Generation(4), Generation(4), "")
 
 	if first.ConsecutiveUnpublished != 1 || second.ConsecutiveUnpublished != 2 {
 		t.Fatalf("unpublished streak = %d, %d; want 1, 2", first.ConsecutiveUnpublished, second.ConsecutiveUnpublished)
@@ -755,11 +764,15 @@ func TestPoolPartitionControllerStatusSequenceUnpublishedStreakApplied(t *testin
 	}
 }
 
-func TestPoolPartitionControllerStatusSequenceOverlapPreservesCounters(t *testing.T) {
-	partition := testNewPoolPartition(t, "primary")
-	partition.controller.status.publish(ControllerCycleStatusFailed, Generation(1), NoGeneration, controllerCycleReasonFailed)
+func TestControllerCycleStatusStoreSequenceOverlapPreservesCounters(t *testing.T) {
+	var store controllerCycleStatusStore
 
-	overlap := partition.controller.status.publish(ControllerCycleStatusAlreadyRunning, NoGeneration, NoGeneration, controllerCycleReasonAlreadyRunning)
+	// AlreadyRunning reports orchestration overlap. It must not change the
+	// computation counters because no controller sample, publication, or skip
+	// decision actually ran.
+	store.publish(ControllerCycleStatusFailed, Generation(1), NoGeneration, controllerCycleReasonFailed)
+
+	overlap := store.publish(ControllerCycleStatusAlreadyRunning, NoGeneration, NoGeneration, controllerCycleReasonAlreadyRunning)
 	if overlap.ConsecutiveFailures != 1 || overlap.ConsecutiveSkipped != 0 || overlap.ConsecutiveUnpublished != 0 {
 		t.Fatalf("overlap status = %+v, want computation counters preserved", overlap)
 	}
@@ -780,13 +793,16 @@ func TestPoolPartitionControllerStatusSequenceNilNoOp(t *testing.T) {
 	}
 }
 
-func TestPoolGroupControllerStatusSequenceSkippedSkippedApplied(t *testing.T) {
+func TestPoolGroupControllerStatusReportsSkippedAndAppliedPaths(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	var skipped PoolGroupCoordinatorReport
 	requireGroupNoError(t, group.TickInto(&skipped))
 	var skippedAgain PoolGroupCoordinatorReport
 	requireGroupNoError(t, group.TickInto(&skippedAgain))
 
+	// Applied group publication requires a budgeted group, while the skipped
+	// streak above intentionally uses a no-budget group. This test covers both
+	// owner-level paths without pretending they form one same-owner sequence.
 	appliedGroup := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
 	var applied PoolGroupCoordinatorReport
 	requireGroupNoError(t, appliedGroup.TickInto(&applied))
@@ -797,19 +813,23 @@ func TestPoolGroupControllerStatusSequenceSkippedSkippedApplied(t *testing.T) {
 	assertControllerCycleStatus(t, applied.Status, ControllerCycleStatusApplied, applied.Generation, applied.Generation, "")
 }
 
-func TestPoolGroupControllerStatusSequenceUnpublishedApplied(t *testing.T) {
-	group, unpublished := runGroupTickUnpublishedByClosedChild(t)
+func TestPoolGroupControllerStatusReportsUnpublishedAndAppliedPaths(t *testing.T) {
+	_, unpublished := runGroupTickUnpublishedByClosedChild(t)
 	assertControllerCycleStatus(t, unpublished.Status, ControllerCycleStatusUnpublished, unpublished.Generation, NoGeneration, policyUpdateFailureSkippedChild)
 
+	// The unpublished path closes a child partition. A fresh budgeted group keeps
+	// the applied-path assertion explicit without adding test-only repair hooks.
 	appliedGroup := testNewBudgetedPoolGroup(t, 1*MiB, "alpha", "beta")
 	var applied PoolGroupCoordinatorReport
 	requireGroupNoError(t, appliedGroup.TickInto(&applied))
 	assertControllerCycleStatus(t, applied.Status, ControllerCycleStatusApplied, applied.Generation, applied.Generation, "")
-	_ = group
 }
 
-func TestPoolGroupControllerStatusSequenceFailedApplied(t *testing.T) {
+func TestPoolGroupControllerStatusSequenceFailedSkipped(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
+
+	// Seed the retained status store with a previous failed cycle, then drive a
+	// real no-work TickInto on the same group to prove skipped resets failures.
 	group.coordinator.status.publish(ControllerCycleStatusFailed, Generation(1), NoGeneration, controllerCycleReasonFailed)
 	var report PoolGroupCoordinatorReport
 	requireGroupNoError(t, group.TickInto(&report))
@@ -819,13 +839,13 @@ func TestPoolGroupControllerStatusSequenceFailedApplied(t *testing.T) {
 	}
 }
 
-func TestPoolGroupControllerStatusSequenceOverlapPreservesCounters(t *testing.T) {
-	group := testNewPoolGroup(t, "alpha")
-	group.coordinator.status.publish(ControllerCycleStatusFailed, Generation(1), NoGeneration, controllerCycleReasonFailed)
+func TestControllerCycleStatusStoreSequenceOverlapPreservesUnpublishedCounters(t *testing.T) {
+	var store controllerCycleStatusStore
 
-	overlap := group.coordinator.status.publish(ControllerCycleStatusAlreadyRunning, NoGeneration, NoGeneration, controllerCycleReasonAlreadyRunning)
-	if overlap.ConsecutiveFailures != 1 || overlap.ConsecutiveSkipped != 0 || overlap.ConsecutiveUnpublished != 0 {
-		t.Fatalf("overlap status = %+v, want computation counters preserved", overlap)
+	store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)
+	overlap := store.publish(ControllerCycleStatusAlreadyRunning, NoGeneration, NoGeneration, controllerCycleReasonAlreadyRunning)
+	if overlap.ConsecutiveFailures != 0 || overlap.ConsecutiveSkipped != 0 || overlap.ConsecutiveUnpublished != 1 {
+		t.Fatalf("overlap status = %+v, want unpublished counter preserved", overlap)
 	}
 }
 
@@ -1122,6 +1142,16 @@ func assertControllerStatusMatchesReport(t *testing.T, retained, reported Contro
 	t.Helper()
 	if !reflect.DeepEqual(retained, reported) {
 		t.Fatalf("retained status = %+v, want report status %+v", retained, reported)
+	}
+}
+
+func assertControllerStatusDoesNotExposeRawErrorText(t *testing.T) {
+	t.Helper()
+
+	err := newError(ErrClosed, errPoolClosed)
+	reason := controllerCycleFailureReasonForError(err, controllerCycleReasonFailed)
+	if reason == err.Error() {
+		t.Fatalf("status reason exposed raw error text: %q", reason)
 	}
 }
 

@@ -189,8 +189,9 @@ func BenchmarkPoolGroupTickOverlapRejected(b *testing.B) {
 	group.coordinator.cycleGate.running.Store(false)
 }
 
-// BenchmarkPoolGroupControllerStatusSequenceSkipped measures repeated no-work
-// skipped status publication for manual group coordinator cycles.
+// BenchmarkPoolGroupControllerStatusSequenceSkipped measures repeated full
+// TickInto calls that reach the no-work skipped path. Unlike the status-store
+// microbenchmark, this includes coordinator generation and report construction.
 func BenchmarkPoolGroupControllerStatusSequenceSkipped(b *testing.B) {
 	group := benchmarkPoolGroup(b, 1)
 	var report PoolGroupCoordinatorReport
