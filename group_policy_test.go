@@ -21,32 +21,35 @@ import (
 	"time"
 )
 
-// TestPoolGroupPolicyDoesNotNormalizeUnsupportedCoordinatorScheduler verifies
-// Normalize keeps reserved scheduler fields exactly as the caller supplied them.
-// Validation, not normalization, is responsible for rejecting unsupported
-// automatic coordinator configuration.
-func TestPoolGroupPolicyDoesNotNormalizeUnsupportedCoordinatorScheduler(t *testing.T) {
+// TestPoolGroupPolicyNormalizesEnabledCoordinatorScheduler verifies that the
+// opt-in scheduler receives a deterministic default cadence when the caller sets
+// Enabled without a TickInterval.
+func TestPoolGroupPolicyNormalizesEnabledCoordinatorScheduler(t *testing.T) {
 	policy := PoolGroupPolicy{
 		Coordinator: PoolGroupCoordinatorPolicy{Enabled: true},
 		Budget:      PartitionBudgetPolicy{MaxRetainedBytes: MiB},
 	}
+
 	normalized := policy.Normalize()
-	if normalized != policy {
-		t.Fatalf("Normalize() = %#v, want unchanged %#v", normalized, policy)
+	if !normalized.Coordinator.Enabled || normalized.Coordinator.TickInterval != defaultGroupCoordinatorTickInterval {
+		t.Fatalf("Normalize() coordinator = %+v, want enabled default interval %s",
+			normalized.Coordinator, defaultGroupCoordinatorTickInterval)
 	}
 }
 
-// TestPoolGroupPolicyRejectsAutomaticCoordinator rejects accepted-but-inert
-// automatic coordination until PoolGroup owns a real scheduler runtime.
-func TestPoolGroupPolicyRejectsAutomaticCoordinator(t *testing.T) {
+// TestPoolGroupPolicyAcceptsAutomaticCoordinator keeps the policy contract
+// honest now that PoolGroup owns an opt-in scheduler runtime. Enabled is no
+// longer accepted-but-inert: Normalize assigns a real cadence and construction
+// starts the scheduler after the group is fully initialized.
+func TestPoolGroupPolicyAcceptsAutomaticCoordinator(t *testing.T) {
 	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true}}
-	err := policy.Validate()
-	requireGroupErrorIs(t, err, ErrInvalidPolicy)
+
+	requireGroupNoError(t, policy.Validate())
 }
 
 // TestPoolGroupPolicyRejectsCoordinatorTickIntervalWithoutScheduler rejects
-// reserved cadence values because current group controller cycles are manual
-// foreground Tick/TickInto calls, not timer-driven background work.
+// a dormant interval when the scheduler is disabled. A cadence without Enabled
+// would imply background work that the group will not start.
 func TestPoolGroupPolicyRejectsCoordinatorTickIntervalWithoutScheduler(t *testing.T) {
 	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{TickInterval: time.Second}}
 	err := policy.Validate()
@@ -55,14 +58,14 @@ func TestPoolGroupPolicyRejectsCoordinatorTickIntervalWithoutScheduler(t *testin
 
 // TestPoolGroupPolicyValidateRejectsNegativeCoordinatorInterval locks validation.
 func TestPoolGroupPolicyValidateRejectsNegativeCoordinatorInterval(t *testing.T) {
-	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{TickInterval: -time.Second}}
+	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true, TickInterval: -time.Second}}
 	err := policy.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidPolicy)
 }
 
 // TestDefaultPoolGroupPolicyIsManual keeps the zero group policy valid and
-// explicitly scheduler-free. Manual foreground Tick and TickInto remain the
-// supported orchestration surface for this policy.
+// explicitly scheduler-free. Manual foreground Tick and TickInto remain
+// supported, and no scheduler fields are enabled or filled by default.
 func TestDefaultPoolGroupPolicyIsManual(t *testing.T) {
 	policy := DefaultPoolGroupPolicy()
 	if policy.Coordinator.Enabled || policy.Coordinator.TickInterval != 0 {
@@ -71,9 +74,8 @@ func TestDefaultPoolGroupPolicyIsManual(t *testing.T) {
 	requireGroupNoError(t, policy.Validate())
 }
 
-// TestPoolGroupPolicyIsZero verifies that reserved scheduler fields still
-// participate in value-model equality and zero-policy detection even though
-// validation rejects them until automatic coordination exists.
+// TestPoolGroupPolicyIsZero verifies that scheduler fields participate in
+// value-model equality and zero-policy detection.
 func TestPoolGroupPolicyIsZero(t *testing.T) {
 	if !DefaultPoolGroupPolicy().IsZero() {
 		t.Fatalf("default policy should be zero")

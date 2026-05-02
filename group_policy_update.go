@@ -130,6 +130,9 @@ func (g *PoolGroup) PublishPolicy(policy PoolGroupPolicy) (PoolGroupPolicyPublic
 	if err := validateGroupPolicyPublicationCandidate(normalized, &result); err != nil {
 		return result, err
 	}
+	if err := validateGroupPolicySchedulerPublicationCompatibility(runtime.Policy, normalized, &result); err != nil {
+		return result, err
+	}
 
 	// Build group-to-partition targets without mutating the group or children.
 	// Infeasible hard-budget targets are reported here and never published.
@@ -286,6 +289,29 @@ func validateGroupPolicyPublicationCandidate(
 		return err
 	}
 	return nil
+}
+
+// validateGroupPolicySchedulerPublicationCompatibility rejects live coordinator
+// scheduler toggles for this integration stage.
+//
+// PoolGroup starts the coordinator scheduler during construction and stops it
+// during Close. PublishPolicy can change retained-budget, pressure, and scoring
+// values, but it does not start, stop, or retime the scheduler because that
+// would change goroutine ownership after construction. Rejecting the diff keeps
+// scheduler policy observable and explicit instead of silently leaving the
+// previous scheduler runtime running.
+func validateGroupPolicySchedulerPublicationCompatibility(
+	previous PoolGroupPolicy,
+	next PoolGroupPolicy,
+	result *PoolGroupPolicyPublicationResult,
+) error {
+	previous = previous.Normalize()
+	next = next.Normalize()
+	if previous.Coordinator == next.Coordinator {
+		return nil
+	}
+	result.FailureReason = policyUpdateFailureSchedulerChange
+	return newError(ErrInvalidPolicy, policyUpdateFailureSchedulerChange)
 }
 
 // groupPolicyPartitionBudgetBatch is the all-or-observable group publication

@@ -33,17 +33,21 @@ func (g *PoolGroup) IsClosed() bool { g.mustBeInitialized(); return g.lifecycle.
 //
 // Close closes every group-owned PoolPartition and aggregates close errors.
 //
-// Close first owns runtimeMu so in-flight group-routed foreground operations
-// finish before Closing is published. BeginClose then gates cleanup: only the
-// caller that moves the group into Closing closes child partitions and publishes
-// Closed. If Closing is already visible after runtimeMu is owned, no other
-// group Close cleanup can still be running, so this caller may finish the
-// already-started shutdown. Concurrent Close callers wait on runtimeMu, then
-// return nil without duplicating child cleanup. Close is not a graceful drain
-// controller, does not wait beyond partition Close behavior, does not coordinate
-// physical trim, and does not coordinate with a background group scheduler.
+// Close first stops the opt-in coordinator scheduler outside runtimeMu so a
+// scheduled TickInto cannot be blocked on runtimeMu.RLock while Close waits for
+// scheduler shutdown. It then owns runtimeMu so in-flight group-routed
+// foreground operations finish before Closing is published. BeginClose gates
+// cleanup: only the caller that moves the group into Closing closes child
+// partitions and publishes Closed. If Closing is already visible after runtimeMu
+// is owned, no other group Close cleanup can still be running, so this caller
+// may finish the already-started shutdown. Concurrent Close callers wait on
+// runtimeMu, then return nil without duplicating child cleanup. Close is not a
+// graceful drain controller, does not wait beyond partition Close behavior, and
+// does not coordinate physical trim.
 func (g *PoolGroup) Close() error {
 	g.mustBeInitialized()
+
+	g.stopCoordinatorScheduler()
 
 	g.runtimeMu.Lock()
 	defer g.runtimeMu.Unlock()

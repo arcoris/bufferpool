@@ -43,8 +43,11 @@ const (
 // aggregating partition samples, bounded windows, rates, metrics, snapshots,
 // and foreground coordinator reports. TickInto may publish partition retained
 // budgets into owned PoolPartitions and SetPressure propagates pressure signals
-// to partitions. It deliberately does not execute physical trim, scan shards
-// directly, compute class EWMA, or start background coordinator goroutines.
+// to partitions. The optional coordinator scheduler is owner-local and calls the
+// same TickInto path as manual callers; it does not tick partitions
+// automatically, duplicate coordinator logic, retain full reports, or involve
+// Pool.Get/Pool.Put. PoolGroup deliberately does not execute physical trim, scan
+// shards directly, or compute class EWMA.
 //
 // Responsibility boundary:
 //
@@ -103,15 +106,46 @@ type PoolGroup struct {
 
 	// coordinator owns applied group-local state mutated only by TickInto.
 	coordinator groupCoordinator
+
+	// coordinatorScheduler owns the optional background dispatch loop for
+	// PoolGroupPolicy.Coordinator.Enabled. It is separate from groupCoordinator
+	// because Close owns group lifecycle and must stop scheduled ticks before
+	// child partitions are closed.
+	coordinatorScheduler controllerSchedulerRuntime
 }
 
 // NewPoolGroup constructs and activates a PoolGroup.
 //
 // NewPoolGroup constructs owned PoolPartitions from explicit partitions or from
-// group-level Pool assignments. It does not start background work. Runtime
-// partition budget publication happens only when callers explicitly invoke
+// group-level Pool assignments. It starts background work only when the group
+// policy explicitly enables the opt-in coordinator scheduler. Runtime partition
+// budget publication otherwise happens only when callers explicitly invoke
 // TickInto/Tick.
 func NewPoolGroup(config PoolGroupConfig) (*PoolGroup, error) {
+	return newPoolGroup(config, nil)
+}
+
+// newPoolGroupWithCoordinatorSchedulerTickerFactory constructs a group with a
+// test-supplied scheduler ticker factory.
+//
+// The helper is intentionally unexported so production callers cannot bypass
+// policy validation or own scheduler wiring. Tests use it to drive opt-in group
+// scheduling deterministically without real timers or sleeps.
+func newPoolGroupWithCoordinatorSchedulerTickerFactory(
+	config PoolGroupConfig,
+	tickerFactory controllerSchedulerTickerFactory,
+) (*PoolGroup, error) {
+	return newPoolGroup(config, tickerFactory)
+}
+
+// newPoolGroup contains the shared construction path for public and
+// deterministic-test constructors.
+//
+// Scheduler startup is deliberately last: partition registry, pool directory,
+// runtime snapshot, coordinator state, and lifecycle activation must all be
+// complete before a scheduled TickInto can observe the group. If startup fails,
+// the already-created group is closed through the normal hard-close path.
+func newPoolGroup(config PoolGroupConfig, tickerFactory controllerSchedulerTickerFactory) (*PoolGroup, error) {
 	normalized := config.Normalize()
 	if err := normalized.Validate(); err != nil {
 		return nil, err
@@ -142,6 +176,10 @@ func NewPoolGroup(config PoolGroupConfig) (*PoolGroup, error) {
 	group.generation.Store(InitialGeneration)
 	group.publishRuntimeSnapshot(newGroupRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	group.lifecycle.Activate()
+	if err := group.startCoordinatorScheduler(tickerFactory); err != nil {
+		_ = group.Close()
+		return nil, err
+	}
 	return group, nil
 }
 
