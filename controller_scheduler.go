@@ -80,6 +80,11 @@ type controllerSchedulerStartInput struct {
 // does not decide whether a PoolPartition or PoolGroup should enable
 // scheduling. Owner integration calls Start explicitly after construction policy
 // validation and calls Stop before cleanup locks that Tick may need.
+//
+// The primitive can be started again after Stop because that is a lifecycle-safe
+// property of the internal runtime. Owner-level live scheduler toggles remain a
+// separate policy contract and are intentionally rejected by PublishPolicy in
+// the current integration.
 type controllerSchedulerRuntime struct {
 	mu       sync.Mutex
 	running  bool

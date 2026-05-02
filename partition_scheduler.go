@@ -24,7 +24,9 @@ import "errors"
 // partition is fully initialized and active, and it dispatches through
 // schedulerTick so scheduled cycles use exactly the same TickInto path as manual
 // callers. A disabled controller policy is a no-op and keeps the default manual
-// partition behavior unchanged.
+// partition behavior unchanged. PublishPolicy intentionally does not use this
+// helper; live scheduler enable, disable, and interval retiming are not part of
+// the current owner policy contract.
 func (p *PoolPartition) startControllerScheduler(tickerFactory controllerSchedulerTickerFactory) error {
 	policy := p.config.Policy.Normalize().Controller
 	if !policy.Enabled {
@@ -54,7 +56,9 @@ func (p *PoolPartition) stopControllerScheduler() {
 // The report is intentionally stack-local and discarded immediately. TickInto is
 // still responsible for publishing lightweight ControllerStatus, enforcing the
 // no-overlap gate, applying budgets, running bounded trim, and returning any
-// lifecycle error to the scheduler runtime.
+// lifecycle error to the scheduler runtime. ControllerStatus remains the last
+// controller-cycle outcome; lifecycle queries remain responsible for telling
+// callers whether the partition itself is closed.
 func (p *PoolPartition) schedulerTick() error {
 	var report PartitionControllerReport
 	return p.TickInto(&report)

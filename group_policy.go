@@ -59,6 +59,8 @@ type PoolGroupPolicy struct {
 // lightweight ControllerStatus. The group scheduler does not tick partitions
 // automatically, does not scan Pool shard/class internals, does not execute Pool
 // trim directly, and does not replace manual foreground Tick/TickInto calls.
+// Live PublishPolicy updates reject coordinator scheduler mode or interval
+// changes in this stage so construction remains the only activation point.
 type PoolGroupCoordinatorPolicy struct {
 	// Enabled starts the opt-in group-level coordinator scheduler.
 	Enabled bool

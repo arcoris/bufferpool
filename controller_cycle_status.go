@@ -114,6 +114,12 @@ func (s ControllerCycleStatus) String() string {
 // controller reports are still returned by TickInto; this value only answers
 // whether the last manual cycle applied, skipped, failed, or was rejected before
 // overlap.
+//
+// This is not an owner lifecycle snapshot. PoolPartition.Lifecycle,
+// PoolGroup.Lifecycle, and IsClosed remain the source of truth for owner
+// shutdown. Close stops any opt-in scheduler and closes the owner, but it does
+// not rewrite ControllerStatus unless a foreground TickInto attempt observes the
+// closed lifecycle and publishes a Closed controller-cycle status.
 type ControllerCycleStatusSnapshot struct {
 	// Status is the last published foreground cycle outcome.
 	Status ControllerCycleStatus

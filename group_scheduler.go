@@ -24,7 +24,9 @@ import "errors"
 // group is fully initialized and active, and it dispatches through schedulerTick
 // so scheduled cycles use exactly the same TickInto path as manual callers. A
 // disabled coordinator policy is a no-op and keeps the default manual group
-// behavior unchanged.
+// behavior unchanged. PublishPolicy intentionally does not use this helper; live
+// scheduler enable, disable, and interval retiming are not part of the current
+// owner policy contract.
 func (g *PoolGroup) startCoordinatorScheduler(tickerFactory controllerSchedulerTickerFactory) error {
 	policy := g.config.Policy.Normalize().Coordinator
 	if !policy.Enabled {
@@ -56,6 +58,9 @@ func (g *PoolGroup) stopCoordinatorScheduler() {
 // no-overlap gate, publishing partition budget targets, and returning lifecycle
 // errors to the scheduler runtime. This method does not tick partitions
 // directly, call Pool.Get/Pool.Put, scan Pool internals, or execute Pool trim.
+// ControllerStatus remains the last coordinator-cycle outcome; lifecycle
+// queries remain responsible for telling callers whether the group itself is
+// closed.
 func (g *PoolGroup) schedulerTick() error {
 	var report PoolGroupCoordinatorReport
 	return g.TickInto(&report)

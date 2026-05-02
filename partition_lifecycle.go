@@ -50,6 +50,8 @@ func (p *PoolPartition) IsClosed() bool { p.mustBeInitialized(); return p.lifecy
 // does not coordinate with PoolGroup. If the opt-in controller scheduler is
 // running, Close stops it before taking foregroundMu for child cleanup so a
 // scheduled TickInto cannot deadlock behind the close gate while Close waits.
+// Close updates lifecycle state; it does not rewrite ControllerStatus unless a
+// later foreground TickInto observes the closed lifecycle and publishes Closed.
 func (p *PoolPartition) Close() error {
 	p.mustBeInitialized()
 	p.closeMu.Lock()

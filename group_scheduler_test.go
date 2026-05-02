@@ -21,7 +21,6 @@ import (
 	"errors"
 	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -164,13 +163,7 @@ func TestPoolGroupSchedulerDoesNotRetainFullReport(t *testing.T) {
 		return status.Status == ControllerCycleStatusSkipped
 	})
 
-	groupType := reflect.TypeOf(PoolGroup{})
-	for index := 0; index < groupType.NumField(); index++ {
-		field := groupType.Field(index)
-		if strings.Contains(strings.ToLower(field.Name), "report") {
-			t.Fatalf("PoolGroup field %q suggests scheduler report retention", field.Name)
-		}
-	}
+	assertPoolGroupDoesNotHaveReportFields(t)
 }
 
 // TestPoolGroupSchedulerContinuesAfterTickFailure verifies the internal
@@ -215,11 +208,12 @@ func TestPoolGroupSchedulerContinuesAfterTickFailure(t *testing.T) {
 	}
 }
 
-// TestPoolGroupSchedulerContinuesAfterFailedTick pins the owner-level
-// expectation for non-closed TickInto errors: TickInto publishes Failed status,
-// the scheduler runtime observes a non-closed error, and the next tick is still
-// accepted.
-func TestPoolGroupSchedulerContinuesAfterFailedTick(t *testing.T) {
+// TestPoolGroupSchedulerRuntimeContinuesAfterSyntheticFailedTick verifies the
+// scheduler runtime continues after a non-closed Tick error. The synthetic Tick
+// publishes the same Failed status shape as a production TickInto failure, but
+// it intentionally avoids production-only corruption hooks; real TickInto
+// publication failures are covered by controller status tests.
+func TestPoolGroupSchedulerRuntimeContinuesAfterSyntheticFailedTick(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	ticker := newManualControllerSchedulerTicker()
 	statuses := make(chan ControllerCycleStatusSnapshot, 2)
@@ -482,7 +476,22 @@ func TestPoolGroupSchedulerCallsOnlyTickIntoAST(t *testing.T) {
 	if !facts.hasCall("TickInto") {
 		t.Fatal("group_scheduler.go must call TickInto")
 	}
-	for _, forbidden := range []string{"Get", "Put", "Trim", "TrimClass", "TrimShard", "PublishPolicy", "PublishPressure", "Acquire", "Release"} {
+	for _, forbidden := range []string{
+		"Get",
+		"Put",
+		"Trim",
+		"TrimClass",
+		"TrimShard",
+		"PublishPolicy",
+		"PublishPressure",
+		"Acquire",
+		"Release",
+		"classState",
+		"bucket",
+		"shard",
+		"shards",
+		"mustClassStateFor",
+	} {
 		if facts.hasCall(forbidden) || facts.hasSelector(forbidden) {
 			t.Fatalf("group_scheduler.go AST references %q; scheduler wrapper must dispatch only through TickInto", forbidden)
 		}
@@ -856,11 +865,10 @@ func assertPoolGroupSchedulerStopped(t *testing.T, group *PoolGroup, name string
 func assertPoolGroupDoesNotHaveReportFields(t *testing.T) {
 	t.Helper()
 
-	groupType := reflect.TypeOf(PoolGroup{})
-	for index := 0; index < groupType.NumField(); index++ {
-		field := groupType.Field(index)
-		if strings.Contains(strings.ToLower(field.Name), "report") {
-			t.Fatalf("PoolGroup field %q suggests scheduler report retention", field.Name)
-		}
-	}
+	assertTypeHasNoReportRetentionFields(
+		t,
+		reflect.TypeOf(PoolGroup{}),
+		"PoolGroup",
+		map[string]struct{}{"scoreEvaluator": {}},
+	)
 }

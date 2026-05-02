@@ -43,7 +43,9 @@ func (g *PoolGroup) IsClosed() bool { g.mustBeInitialized(); return g.lifecycle.
 // may finish the already-started shutdown. Concurrent Close callers wait on
 // runtimeMu, then return nil without duplicating child cleanup. Close is not a
 // graceful drain controller, does not wait beyond partition Close behavior, and
-// does not coordinate physical trim.
+// does not coordinate physical trim. Close updates lifecycle state; it does not
+// rewrite ControllerStatus unless a later foreground TickInto observes the
+// closed lifecycle and publishes Closed.
 func (g *PoolGroup) Close() error {
 	g.mustBeInitialized()
 

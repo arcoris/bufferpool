@@ -21,7 +21,6 @@ import (
 	"errors"
 	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -164,17 +163,7 @@ func TestPoolPartitionSchedulerDoesNotRetainFullReport(t *testing.T) {
 		return status.Status == ControllerCycleStatusApplied
 	})
 
-	// The partition scheduler may retain only the lightweight runtime and the
-	// controller status already owned by partitionController. Full TickInto
-	// reports, samples, windows, score slices, and trim candidates must stay
-	// caller-owned or stack-local to schedulerTick.
-	partitionType := reflect.TypeOf(PoolPartition{})
-	for index := 0; index < partitionType.NumField(); index++ {
-		field := partitionType.Field(index)
-		if strings.Contains(strings.ToLower(field.Name), "report") {
-			t.Fatalf("PoolPartition field %q suggests scheduler report retention", field.Name)
-		}
-	}
+	assertPoolPartitionDoesNotHaveReportFields(t)
 }
 
 // TestPoolPartitionSchedulerContinuesAfterTickFailure verifies the internal
@@ -219,11 +208,12 @@ func TestPoolPartitionSchedulerContinuesAfterTickFailure(t *testing.T) {
 	}
 }
 
-// TestPoolPartitionSchedulerContinuesAfterFailedTick pins the owner-level
-// expectation for non-closed TickInto errors: TickInto publishes Failed status,
-// the scheduler runtime observes a non-closed error, and the next tick is still
-// accepted.
-func TestPoolPartitionSchedulerContinuesAfterFailedTick(t *testing.T) {
+// TestPoolPartitionSchedulerRuntimeContinuesAfterSyntheticFailedTick verifies
+// the scheduler runtime continues after a non-closed Tick error. The synthetic
+// Tick publishes the same Failed status shape as a production TickInto failure,
+// but it intentionally avoids production-only corruption hooks; real TickInto
+// publication failures are covered by controller status tests.
+func TestPoolPartitionSchedulerRuntimeContinuesAfterSyntheticFailedTick(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 	ticker := newManualControllerSchedulerTicker()
 	statuses := make(chan ControllerCycleStatusSnapshot, 2)
@@ -822,11 +812,5 @@ func assertPoolPartitionSchedulerStopped(t *testing.T, partition *PoolPartition,
 func assertPoolPartitionDoesNotHaveReportFields(t *testing.T) {
 	t.Helper()
 
-	partitionType := reflect.TypeOf(PoolPartition{})
-	for index := 0; index < partitionType.NumField(); index++ {
-		field := partitionType.Field(index)
-		if strings.Contains(strings.ToLower(field.Name), "report") {
-			t.Fatalf("PoolPartition field %q suggests scheduler report retention", field.Name)
-		}
-	}
+	assertTypeHasNoReportRetentionFields(t, reflect.TypeOf(PoolPartition{}), "PoolPartition", nil)
 }
