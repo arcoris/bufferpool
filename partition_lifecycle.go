@@ -47,11 +47,15 @@ func (p *PoolPartition) IsClosed() bool { p.mustBeInitialized(); return p.lifecy
 //
 // This is not a graceful drain controller. It does not wait for active leases
 // beyond any previous CloseGracefully attempt, does not run background trim, and
-// does not coordinate with PoolGroup.
+// does not coordinate with PoolGroup. If the opt-in controller scheduler is
+// running, Close stops it before taking foregroundMu for child cleanup so a
+// scheduled TickInto cannot deadlock behind the close gate while Close waits.
 func (p *PoolPartition) Close() error {
 	p.mustBeInitialized()
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
+
+	p.stopControllerScheduler()
 
 	p.lockForegroundClose()
 	defer p.foregroundMu.Unlock()

@@ -47,6 +47,12 @@ const (
 	// policyUpdateFailureTrimFailed is reserved for policy contraction paths that
 	// successfully publish policy state but fail during bounded cleanup.
 	policyUpdateFailureTrimFailed = "policy_update_trim_failed"
+
+	// policyUpdateFailureSchedulerChange reports live policy attempts that would
+	// start, stop, or retime a construction-time scheduler. Scheduler runtime is
+	// owner lifecycle state in this stage, so live policy publication rejects
+	// those changes instead of silently changing goroutine ownership.
+	policyUpdateFailureSchedulerChange = "policy_update_scheduler_change"
 )
 
 // policyUpdateFailureReasonForError maps an error class to stable publication
@@ -71,7 +77,8 @@ func policyUpdateFailureReasonForError(err error, fallback string) string {
 		case policyUpdateFailureShapeChange,
 			policyUpdateFailureOwnershipChange,
 			policyUpdateFailureInfeasibleBudget,
-			policyUpdateFailureSkippedChild:
+			policyUpdateFailureSkippedChild,
+			policyUpdateFailureSchedulerChange:
 			return fallback
 		default:
 			return policyUpdateFailureInvalid

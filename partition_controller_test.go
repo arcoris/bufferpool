@@ -26,8 +26,9 @@ import (
 // TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration verifies tick report coherence.
 func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T) {
 	config := testPartitionConfig("primary")
-	// Manual Tick remains available with scheduler-reserved controller fields
-	// disabled; enabling them would now request unsupported background work.
+	// Keep the opt-in scheduler disabled here so the test measures one explicit
+	// manual Tick call. Scheduler dispatch uses the same TickInto path and has
+	// separate integration coverage.
 	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}
 	partition, err := NewPoolPartition(config)
 	requirePartitionNoError(t, err)

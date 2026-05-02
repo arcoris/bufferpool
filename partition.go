@@ -38,8 +38,10 @@ const (
 // explicit partition-local controller ticks. TickInto may update partition
 // controller state and publish class budgets into owned Pools, but the data
 // plane remains local: Pool.Get, Pool.Put, shard, and bucket paths do not call
-// the controller. PoolPartition deliberately does not implement PoolGroup,
-// global coordination, background goroutines, physical trim, or pressure
+// the controller. The optional controller scheduler is owner-local and calls the
+// same TickInto path as manual callers; it does not duplicate controller logic,
+// retain full reports, or involve Pool.Get/Pool.Put. PoolPartition deliberately
+// does not implement PoolGroup, global coordination, physical trim, or pressure
 // propagation.
 type PoolPartition struct {
 	// lifecycle gates partition-level work and hard close.
@@ -85,12 +87,42 @@ type PoolPartition struct {
 	// controller owns adaptive partition-local state mutated only by TickInto.
 	controller partitionController
 
+	// controllerScheduler owns the optional background dispatch loop for
+	// PartitionPolicy.Controller.Enabled. It is separate from partitionController
+	// because Close owns runtime lifecycle and must stop scheduled ticks before
+	// child resources are cleaned up.
+	controllerScheduler controllerSchedulerRuntime
+
 	// leases owns checked-out ownership records for partition acquisitions.
 	leases *LeaseRegistry
 }
 
 // NewPoolPartition constructs and activates a PoolPartition.
 func NewPoolPartition(config PoolPartitionConfig) (*PoolPartition, error) {
+	return newPoolPartition(config, nil)
+}
+
+// newPoolPartitionWithControllerSchedulerTickerFactory constructs a partition
+// with a test-supplied scheduler ticker factory.
+//
+// The helper is intentionally unexported so production callers cannot bypass
+// policy validation or own scheduler wiring. Tests use it to drive opt-in
+// scheduling deterministically without real timers or sleeps.
+func newPoolPartitionWithControllerSchedulerTickerFactory(
+	config PoolPartitionConfig,
+	tickerFactory controllerSchedulerTickerFactory,
+) (*PoolPartition, error) {
+	return newPoolPartition(config, tickerFactory)
+}
+
+// newPoolPartition contains the shared construction path for public and
+// deterministic-test constructors.
+//
+// Scheduler startup is deliberately last: registry, LeaseRegistry, runtime
+// snapshot, controller state, and lifecycle activation must all be complete
+// before a scheduled TickInto can observe the partition. If startup fails, the
+// already-created partition is closed through the normal hard-close path.
+func newPoolPartition(config PoolPartitionConfig, tickerFactory controllerSchedulerTickerFactory) (*PoolPartition, error) {
 	normalized := config.Normalize()
 	if err := normalized.Validate(); err != nil {
 		return nil, err
@@ -115,6 +147,10 @@ func NewPoolPartition(config PoolPartitionConfig) (*PoolPartition, error) {
 	partition.generation.Store(InitialGeneration)
 	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(InitialGeneration, normalized.Policy))
 	partition.lifecycle.Activate()
+	if err := partition.startControllerScheduler(tickerFactory); err != nil {
+		_ = partition.Close()
+		return nil, err
+	}
 	return partition, nil
 }
 

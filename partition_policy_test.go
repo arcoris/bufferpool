@@ -21,21 +21,19 @@ import (
 	"time"
 )
 
-// TestPartitionPolicyRejectsAutomaticController keeps reserved scheduler
-// fields honest. PoolPartition has manual foreground Tick and TickInto, but it
-// does not own a background controller runtime yet, so Enabled must not validate
-// as an inert no-op configuration.
-func TestPartitionPolicyRejectsAutomaticController(t *testing.T) {
+// TestPartitionPolicyAcceptsAutomaticController keeps the policy contract honest
+// now that PoolPartition owns an opt-in scheduler runtime. Enabled is no longer
+// accepted-but-inert: Normalize assigns a real cadence and construction starts
+// the scheduler after the partition is fully initialized.
+func TestPartitionPolicyAcceptsAutomaticController(t *testing.T) {
 	policy := PartitionPolicy{Controller: PartitionControllerPolicy{Enabled: true}}
 
-	err := policy.Validate()
-	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
+	requirePartitionNoError(t, policy.Validate())
 }
 
-// TestPartitionPolicyRejectsControllerTickIntervalWithoutScheduler rejects
-// timer cadence values until a real scheduler owns goroutines, timers, and
-// lifecycle integration. A non-zero interval would otherwise imply work that the
-// current manual-only runtime never starts.
+// TestPartitionPolicyRejectsControllerTickIntervalWithoutScheduler rejects a
+// dormant interval when the scheduler is disabled. A cadence without Enabled
+// would imply background work that the partition will not start.
 func TestPartitionPolicyRejectsControllerTickIntervalWithoutScheduler(t *testing.T) {
 	policy := PartitionPolicy{Controller: PartitionControllerPolicy{TickInterval: time.Second}}
 
@@ -43,24 +41,24 @@ func TestPartitionPolicyRejectsControllerTickIntervalWithoutScheduler(t *testing
 	requirePartitionErrorIs(t, err, ErrInvalidPolicy)
 }
 
-// TestPartitionPolicyDoesNotNormalizeUnsupportedControllerScheduler verifies
-// Normalize does not complete scheduler defaults while scheduling is
-// unsupported. Keeping the caller-provided value intact makes validation reject
-// unsupported automation instead of turning it into a valid-looking policy.
-func TestPartitionPolicyDoesNotNormalizeUnsupportedControllerScheduler(t *testing.T) {
+// TestPartitionPolicyNormalizesEnabledControllerScheduler verifies that the
+// opt-in scheduler receives a deterministic default cadence when the caller sets
+// Enabled without a TickInterval.
+func TestPartitionPolicyNormalizesEnabledControllerScheduler(t *testing.T) {
 	policy := PartitionPolicy{
 		Controller: PartitionControllerPolicy{Enabled: true},
 		Budget:     PartitionBudgetPolicy{MaxRetainedBytes: MiB},
 	}
 
 	normalized := policy.Normalize()
-	if normalized != policy {
-		t.Fatalf("Normalize() = %#v, want unchanged scheduler fields in %#v", normalized, policy)
+	if !normalized.Controller.Enabled || normalized.Controller.TickInterval != defaultPartitionControllerTickInterval {
+		t.Fatalf("Normalize() controller = %+v, want enabled default interval %s",
+			normalized.Controller, defaultPartitionControllerTickInterval)
 	}
 }
 
 // TestDefaultPartitionPolicyIsManual pins the default partition policy as
-// explicit manual orchestration. Manual Tick and TickInto remain supported, but
+// explicit manual orchestration. Manual Tick and TickInto remain supported, and
 // no scheduler fields are enabled or filled by default.
 func TestDefaultPartitionPolicyIsManual(t *testing.T) {
 	policy := DefaultPartitionPolicy()

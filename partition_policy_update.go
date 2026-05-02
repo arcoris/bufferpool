@@ -136,6 +136,9 @@ func (p *PoolPartition) PublishPolicy(policy PartitionPolicy) (PoolPartitionPoli
 	if err := validatePartitionPolicyPublicationCandidate(normalized, &result); err != nil {
 		return result, err
 	}
+	if err := validatePartitionPolicySchedulerPublicationCompatibility(runtime.Policy, normalized, &result); err != nil {
+		return result, err
+	}
 	if err := p.validateOwnedPoolRuntimePoliciesForPolicyPublication(&result); err != nil {
 		return result, err
 	}
@@ -239,6 +242,29 @@ func validatePartitionPolicyPublicationCandidate(
 		return err
 	}
 	return nil
+}
+
+// validatePartitionPolicySchedulerPublicationCompatibility rejects live
+// scheduler toggles for this integration stage.
+//
+// PoolPartition starts the controller scheduler during construction and stops it
+// during Close. PublishPolicy can change retained-budget, pressure, and trim
+// values, but it does not start, stop, or retime the scheduler because that
+// would change goroutine ownership after construction. Rejecting the diff keeps
+// scheduler policy observable and explicit instead of silently leaving the
+// previous scheduler runtime running.
+func validatePartitionPolicySchedulerPublicationCompatibility(
+	previous PartitionPolicy,
+	next PartitionPolicy,
+	result *PoolPartitionPolicyPublicationResult,
+) error {
+	previous = previous.Normalize()
+	next = next.Normalize()
+	if previous.Controller == next.Controller {
+		return nil
+	}
+	result.FailureReason = policyUpdateFailureSchedulerChange
+	return newError(ErrInvalidPolicy, policyUpdateFailureSchedulerChange)
 }
 
 // validateOwnedPoolRuntimePoliciesForPolicyPublication verifies that every

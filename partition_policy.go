@@ -18,17 +18,26 @@ package bufferpool
 
 import "time"
 
+const (
+	// defaultPartitionControllerTickInterval is the first opt-in scheduler
+	// cadence for PoolPartition. It is used only when Controller.Enabled is true
+	// and the caller leaves TickInterval unset. Manual Tick and TickInto do not
+	// depend on this value.
+	defaultPartitionControllerTickInterval = time.Second
+)
+
 // PartitionPolicy defines partition-level control-plane behavior.
 //
 // Pool Policy describes local retained-storage behavior. PartitionPolicy
 // describes how a partition samples owned Pools, interprets aggregate retained
-// plus active memory, and plans future control-plane work. Current
-// PoolPartition does not start background goroutines, timers, or tickers.
-// Manual Tick and TickInto remain available even when scheduler fields are zero.
+// plus active memory, and plans future control-plane work. PoolPartition is
+// manual by default; automatic controller ticks run only when Controller.Enabled
+// is explicitly true. Manual Tick and TickInto remain available regardless of
+// scheduler policy.
 type PartitionPolicy struct {
-	// Controller reserves future automatic scheduling policy. The current
-	// runtime is manual-only, so Validate rejects enabled scheduling and any
-	// non-zero interval instead of accepting inert configuration.
+	// Controller configures the partition-local controller scheduler. Disabled
+	// policy is manual-only. Enabled policy starts an opt-in owner-local
+	// scheduler that calls the same TickInto path used by manual callers.
 	Controller PartitionControllerPolicy
 
 	// Budget configures partition-local retained, active, and owned limits.
@@ -41,19 +50,21 @@ type PartitionPolicy struct {
 	Trim PartitionTrimPolicy
 }
 
-// PartitionControllerPolicy reserves future automatic controller settings.
+// PartitionControllerPolicy configures opt-in automatic partition controller ticks.
 //
-// The fields intentionally remain part of the policy value model so a future
-// opt-in scheduler can publish the same shape. Until that scheduler runtime is
-// integrated, Enabled and non-zero TickInterval are rejected to prevent a caller
-// from configuring an accepted-but-inert background controller. Manual
-// foreground Tick and TickInto calls do not depend on these fields.
+// The scheduler is disabled by default. When enabled, PoolPartition starts an
+// owner-local scheduler after construction is fully initialized; each scheduled
+// event calls TickInto and discards the full report after TickInto publishes its
+// lightweight ControllerStatus. The scheduler never enters Pool.Get or Pool.Put
+// and does not replace manual foreground Tick/TickInto calls.
 type PartitionControllerPolicy struct {
-	// Enabled is reserved for future automatic scheduling and is rejected today.
+	// Enabled starts the opt-in partition-local controller scheduler.
 	Enabled bool
 
-	// TickInterval is reserved for a future automatic scheduling cadence and is
-	// rejected when non-zero while the runtime remains manual-only.
+	// TickInterval is the scheduler cadence. When Enabled is true and
+	// TickInterval is zero, Normalize applies defaultPartitionControllerTickInterval.
+	// When Enabled is false, TickInterval must stay zero so a disabled scheduler
+	// cannot carry a misleading dormant cadence.
 	TickInterval time.Duration
 }
 
@@ -75,11 +86,12 @@ func DefaultPartitionPolicy() PartitionPolicy { return PartitionPolicy{} }
 
 // Normalize returns p with supported partition defaults applied.
 //
-// Scheduler fields are deliberately not completed here. Completing
-// Controller.TickInterval while automatic scheduling is unsupported would make
-// an inert scheduler policy look valid, so validation handles those fields
-// explicitly.
+// Scheduler defaults are completed only for explicit opt-in scheduling. Disabled
+// policy remains manual-only and does not receive a dormant interval.
 func (p PartitionPolicy) Normalize() PartitionPolicy {
+	if p.Controller.Enabled && p.Controller.TickInterval == 0 {
+		p.Controller.TickInterval = defaultPartitionControllerTickInterval
+	}
 	p.Trim = p.Trim.Normalize()
 	return p
 }
@@ -87,15 +99,14 @@ func (p PartitionPolicy) Normalize() PartitionPolicy {
 // Validate validates partition policy values.
 func (p PartitionPolicy) Validate() error {
 	p = p.Normalize()
-	if p.Controller.TickInterval < 0 {
-		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval must not be negative")
-	}
 	if p.Controller.Enabled {
-		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: automatic controller is not supported")
+		if p.Controller.TickInterval <= 0 {
+			return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval must be positive")
+		}
+	} else if p.Controller.TickInterval != 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval requires enabled controller scheduler")
 	}
-	if p.Controller.TickInterval != 0 {
-		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval is not supported without automatic scheduling")
-	}
+
 	if err := p.Budget.Validate(); err != nil {
 		return err
 	}
