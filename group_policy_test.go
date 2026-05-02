@@ -21,23 +21,33 @@ import (
 	"time"
 )
 
-func TestPoolGroupPolicyNormalize(t *testing.T) {
-	policy := PoolGroupPolicy{Budget: PartitionBudgetPolicy{MaxRetainedBytes: MiB}}
+// TestPoolGroupPolicyDoesNotNormalizeUnsupportedCoordinatorScheduler verifies
+// Normalize keeps reserved scheduler fields exactly as the caller supplied them.
+// Validation, not normalization, is responsible for rejecting unsupported
+// automatic coordinator configuration.
+func TestPoolGroupPolicyDoesNotNormalizeUnsupportedCoordinatorScheduler(t *testing.T) {
+	policy := PoolGroupPolicy{
+		Coordinator: PoolGroupCoordinatorPolicy{Enabled: true},
+		Budget:      PartitionBudgetPolicy{MaxRetainedBytes: MiB},
+	}
 	normalized := policy.Normalize()
 	if normalized != policy {
 		t.Fatalf("Normalize() = %#v, want unchanged %#v", normalized, policy)
 	}
 }
 
-// TestPoolGroupPolicyValidateRejectsEnabledCoordinator rejects no-op automation.
-func TestPoolGroupPolicyValidateRejectsEnabledCoordinator(t *testing.T) {
+// TestPoolGroupPolicyRejectsAutomaticCoordinator rejects accepted-but-inert
+// automatic coordination until PoolGroup owns a real scheduler runtime.
+func TestPoolGroupPolicyRejectsAutomaticCoordinator(t *testing.T) {
 	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{Enabled: true}}
 	err := policy.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidPolicy)
 }
 
-// TestPoolGroupPolicyValidateRejectsCoordinatorInterval rejects inert cadence.
-func TestPoolGroupPolicyValidateRejectsCoordinatorInterval(t *testing.T) {
+// TestPoolGroupPolicyRejectsCoordinatorTickIntervalWithoutScheduler rejects
+// reserved cadence values because current group controller cycles are manual
+// foreground Tick/TickInto calls, not timer-driven background work.
+func TestPoolGroupPolicyRejectsCoordinatorTickIntervalWithoutScheduler(t *testing.T) {
 	policy := PoolGroupPolicy{Coordinator: PoolGroupCoordinatorPolicy{TickInterval: time.Second}}
 	err := policy.Validate()
 	requireGroupErrorIs(t, err, ErrInvalidPolicy)
@@ -50,11 +60,20 @@ func TestPoolGroupPolicyValidateRejectsNegativeCoordinatorInterval(t *testing.T)
 	requireGroupErrorIs(t, err, ErrInvalidPolicy)
 }
 
-// TestPoolGroupPolicyValidateAcceptsDefault keeps the zero policy usable.
-func TestPoolGroupPolicyValidateAcceptsDefault(t *testing.T) {
-	requireGroupNoError(t, DefaultPoolGroupPolicy().Validate())
+// TestDefaultPoolGroupPolicyIsManual keeps the zero group policy valid and
+// explicitly scheduler-free. Manual foreground Tick and TickInto remain the
+// supported orchestration surface for this policy.
+func TestDefaultPoolGroupPolicyIsManual(t *testing.T) {
+	policy := DefaultPoolGroupPolicy()
+	if policy.Coordinator.Enabled || policy.Coordinator.TickInterval != 0 {
+		t.Fatalf("default group coordinator policy = %+v, want manual scheduler-free policy", policy.Coordinator)
+	}
+	requireGroupNoError(t, policy.Validate())
 }
 
+// TestPoolGroupPolicyIsZero verifies that reserved scheduler fields still
+// participate in value-model equality and zero-policy detection even though
+// validation rejects them until automatic coordination exists.
 func TestPoolGroupPolicyIsZero(t *testing.T) {
 	if !DefaultPoolGroupPolicy().IsZero() {
 		t.Fatalf("default policy should be zero")

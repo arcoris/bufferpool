@@ -20,7 +20,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-	"time"
 )
 
 // TestDefaultPoolPartitionConfigAllowsEmptyPools verifies default config shape.
@@ -45,8 +44,7 @@ func TestPoolPartitionConfigNormalizeCompletesDefaultsAndCopiesPools(t *testing.
 	config := PoolPartitionConfig{
 		Name: "  partition-a  ",
 		Policy: PartitionPolicy{
-			Controller: PartitionControllerPolicy{Enabled: true},
-			Trim:       PartitionTrimPolicy{Enabled: true, MaxBytesPerCycle: 4 * KiB},
+			Trim: PartitionTrimPolicy{Enabled: true, MaxBytesPerCycle: 4 * KiB},
 		},
 		Pools: []PartitionPoolConfig{{Name: " primary ", Config: PoolConfig{Name: " explicit-pool "}}},
 	}
@@ -56,8 +54,8 @@ func TestPoolPartitionConfigNormalizeCompletesDefaultsAndCopiesPools(t *testing.
 	if normalized.Name != "partition-a" {
 		t.Fatalf("normalized partition name = %q, want partition-a", normalized.Name)
 	}
-	if normalized.Policy.Controller.TickInterval != time.Second {
-		t.Fatalf("controller tick interval = %s, want %s", normalized.Policy.Controller.TickInterval, time.Second)
+	if normalized.Policy.Controller.Enabled || normalized.Policy.Controller.TickInterval != 0 {
+		t.Fatalf("controller scheduler policy = %+v, want unsupported fields left disabled", normalized.Policy.Controller)
 	}
 	if normalized.Policy.Trim.MaxPoolsPerCycle != defaultPartitionTrimMaxPoolsPerCycle {
 		t.Fatalf("trim max pools per cycle = %d, want %d", normalized.Policy.Trim.MaxPoolsPerCycle, defaultPartitionTrimMaxPoolsPerCycle)

@@ -24,18 +24,18 @@ func TestPartitionRuntimeSnapshotPublication(t *testing.T) {
 
 	requirePartitionPanic(t, func() { partition.publishRuntimeSnapshot(nil) })
 
-	policy := PartitionPolicy{Controller: PartitionControllerPolicy{Enabled: true}}
+	policy := PartitionPolicy{Budget: PartitionBudgetPolicy{MaxOwnedBytes: 64 * KiB}}
 	partition.publishRuntimeSnapshot(newPartitionRuntimeSnapshot(Generation(10), policy))
 
 	snapshot := partition.currentRuntimeSnapshot()
 	if snapshot.Generation != Generation(10) {
 		t.Fatalf("runtime generation = %s, want 10", snapshot.Generation)
 	}
-	if !snapshot.Policy.Controller.Enabled {
-		t.Fatalf("runtime policy controller should be enabled")
+	if snapshot.Policy.Controller.Enabled || snapshot.Policy.Controller.TickInterval != 0 {
+		t.Fatalf("runtime controller scheduler policy = %+v, want manual scheduler-free policy", snapshot.Policy.Controller)
 	}
-	if snapshot.Policy.Controller.TickInterval != defaultPartitionControllerTickInterval {
-		t.Fatalf("runtime policy tick interval = %s, want default", snapshot.Policy.Controller.TickInterval)
+	if snapshot.Policy.Budget.MaxOwnedBytes != 64*KiB {
+		t.Fatalf("runtime owned budget = %s, want 64 KiB", snapshot.Policy.Budget.MaxOwnedBytes)
 	}
 }
 

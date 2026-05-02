@@ -18,21 +18,17 @@ package bufferpool
 
 import "time"
 
-const (
-	// defaultPartitionControllerTickInterval is used when automatic scheduling
-	// is enabled in policy, even though current PoolPartition exposes only
-	// manual ticks.
-	defaultPartitionControllerTickInterval = time.Second
-)
-
 // PartitionPolicy defines partition-level control-plane behavior.
 //
 // Pool Policy describes local retained-storage behavior. PartitionPolicy
 // describes how a partition samples owned Pools, interprets aggregate retained
 // plus active memory, and plans future control-plane work. Current
-// PoolPartition does not start background goroutines.
+// PoolPartition does not start background goroutines, timers, or tickers.
+// Manual Tick and TickInto remain available even when scheduler fields are zero.
 type PartitionPolicy struct {
-	// Controller configures explicit tick behavior and future scheduling policy.
+	// Controller reserves future automatic scheduling policy. The current
+	// runtime is manual-only, so Validate rejects enabled scheduling and any
+	// non-zero interval instead of accepting inert configuration.
 	Controller PartitionControllerPolicy
 
 	// Budget configures partition-local retained, active, and owned limits.
@@ -45,16 +41,19 @@ type PartitionPolicy struct {
 	Trim PartitionTrimPolicy
 }
 
-// PartitionControllerPolicy defines explicit controller tick behavior.
+// PartitionControllerPolicy reserves future automatic controller settings.
 //
-// Enabled reserves policy space for future automatic/background scheduling.
-// Current PoolPartition has no background goroutine, and manual Tick remains
-// available whenever the partition lifecycle is active.
+// The fields intentionally remain part of the policy value model so a future
+// opt-in scheduler can publish the same shape. Until that scheduler runtime is
+// integrated, Enabled and non-zero TickInterval are rejected to prevent a caller
+// from configuring an accepted-but-inert background controller. Manual
+// foreground Tick and TickInto calls do not depend on these fields.
 type PartitionControllerPolicy struct {
-	// Enabled reserves policy space for future automatic scheduling.
+	// Enabled is reserved for future automatic scheduling and is rejected today.
 	Enabled bool
 
-	// TickInterval is the future automatic scheduling cadence.
+	// TickInterval is reserved for a future automatic scheduling cadence and is
+	// rejected when non-zero while the runtime remains manual-only.
 	TickInterval time.Duration
 }
 
@@ -74,11 +73,13 @@ type PartitionBudgetPolicy struct {
 // DefaultPartitionPolicy returns the default explicit-control policy.
 func DefaultPartitionPolicy() PartitionPolicy { return PartitionPolicy{} }
 
-// Normalize returns p with unset controller defaults completed.
+// Normalize returns p with supported partition defaults applied.
+//
+// Scheduler fields are deliberately not completed here. Completing
+// Controller.TickInterval while automatic scheduling is unsupported would make
+// an inert scheduler policy look valid, so validation handles those fields
+// explicitly.
 func (p PartitionPolicy) Normalize() PartitionPolicy {
-	if p.Controller.Enabled && p.Controller.TickInterval == 0 {
-		p.Controller.TickInterval = defaultPartitionControllerTickInterval
-	}
 	p.Trim = p.Trim.Normalize()
 	return p
 }
@@ -86,8 +87,14 @@ func (p PartitionPolicy) Normalize() PartitionPolicy {
 // Validate validates partition policy values.
 func (p PartitionPolicy) Validate() error {
 	p = p.Normalize()
-	if p.Controller.Enabled && p.Controller.TickInterval <= 0 {
-		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval must be positive")
+	if p.Controller.TickInterval < 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval must not be negative")
+	}
+	if p.Controller.Enabled {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: automatic controller is not supported")
+	}
+	if p.Controller.TickInterval != 0 {
+		return newError(ErrInvalidPolicy, "bufferpool.PartitionPolicy: controller tick interval is not supported without automatic scheduling")
 	}
 	if err := p.Budget.Validate(); err != nil {
 		return err

@@ -26,7 +26,8 @@ import (
 // TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration verifies tick report coherence.
 func TestPoolPartitionTickReportsCurrentStateAndAdvancesGeneration(t *testing.T) {
 	config := testPartitionConfig("primary")
-	config.Policy.Controller = PartitionControllerPolicy{Enabled: true}
+	// Manual Tick remains available with scheduler-reserved controller fields
+	// disabled; enabling them would now request unsupported background work.
 	config.Policy.Trim = PartitionTrimPolicy{Enabled: true, MaxPoolsPerCycle: 1, MaxBytesPerCycle: 4 * KiB}
 	partition, err := NewPoolPartition(config)
 	requirePartitionNoError(t, err)

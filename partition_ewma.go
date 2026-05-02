@@ -28,10 +28,10 @@ const (
 	// defaultPartitionEWMAHalfLife is the default real-time half-life for
 	// partition controller smoothing.
 	//
-	// One default manual tick interval halves the previous signal weight. This
-	// keeps smoothing responsive without replaying fake ticks when a foreground
-	// controller call is delayed.
-	defaultPartitionEWMAHalfLife = defaultPartitionControllerTickInterval
+	// One second halves the previous signal weight. This keeps smoothing
+	// responsive without implying that the partition controller has a background
+	// scheduler cadence; EWMA is still updated only by manual foreground ticks.
+	defaultPartitionEWMAHalfLife = time.Second
 )
 
 // PoolPartitionEWMAConfig configures partition-local controller smoothing.

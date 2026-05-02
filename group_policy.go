@@ -22,11 +22,13 @@ import "time"
 //
 // PoolGroupPolicy describes how a group interprets aggregate partition state and
 // how manual TickInto distributes retained-budget targets. It does not authorize
-// automatic scheduling, background goroutines, trim execution, or pressure
-// propagation.
+// automatic scheduling, background goroutines, timers, tickers, trim execution,
+// or pressure propagation. Manual Tick and TickInto remain available even when
+// scheduler fields are zero.
 type PoolGroupPolicy struct {
-	// Coordinator reserves automatic scheduling policy. Current PoolGroup only
-	// supports manual foreground coordinator cycles through Tick and TickInto.
+	// Coordinator reserves future automatic scheduling policy. The current
+	// runtime is manual-only, so Validate rejects enabled scheduling and any
+	// non-zero interval instead of accepting inert configuration.
 	Coordinator PoolGroupCoordinatorPolicy
 
 	// Budget configures group aggregate retained, active, and owned limits.
@@ -43,21 +45,29 @@ type PoolGroupPolicy struct {
 
 // PoolGroupCoordinatorPolicy reserves future automatic coordination settings.
 //
-// The current PoolGroup implementation does not start goroutines, timers, or
-// tickers. Validate rejects enabled or scheduled coordinator policy until a
-// real automatic coordinator exists.
+// The fields intentionally remain part of the policy value model so a future
+// opt-in scheduler can publish the same shape. Until that scheduler runtime is
+// integrated, Enabled and non-zero TickInterval are rejected to prevent a caller
+// from configuring an accepted-but-inert background coordinator. Manual
+// foreground Tick and TickInto calls do not depend on these fields.
 type PoolGroupCoordinatorPolicy struct {
 	// Enabled is reserved for future automatic coordination and is rejected today.
 	Enabled bool
 
-	// TickInterval is reserved for a future automatic scheduling cadence.
+	// TickInterval is reserved for a future automatic scheduling cadence and is
+	// rejected when non-zero while the runtime remains manual-only.
 	TickInterval time.Duration
 }
 
 // DefaultPoolGroupPolicy returns the default manual group policy.
 func DefaultPoolGroupPolicy() PoolGroupPolicy { return PoolGroupPolicy{} }
 
-// Normalize returns p unchanged.
+// Normalize returns p with supported group defaults applied.
+//
+// Scheduler fields are deliberately not completed here. Completing
+// Coordinator.TickInterval while automatic scheduling is unsupported would make
+// an inert scheduler policy look valid, so validation handles those fields
+// explicitly.
 func (p PoolGroupPolicy) Normalize() PoolGroupPolicy {
 	return p
 }
