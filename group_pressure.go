@@ -24,6 +24,11 @@ package bufferpool
 // keeps group reports from exposing partition vocabulary as the public concept.
 type PoolGroupPressureSnapshot PartitionPressureSnapshot
 
+// newGroupPressureSnapshot projects group aggregate sample usage against pressure policy.
+func newGroupPressureSnapshot(policy PartitionPressurePolicy, sample PoolGroupSample) PoolGroupPressureSnapshot {
+	return PoolGroupPressureSnapshot(newPartitionPressureSnapshot(policy, sample.Aggregate))
+}
+
 // PoolGroupPressurePublication reports one group pressure publication.
 //
 // AppliedPartitions and SkippedPartitions make propagation explicit. The group

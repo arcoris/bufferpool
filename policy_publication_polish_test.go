@@ -648,6 +648,9 @@ func TestPoolScoreCodeDoesNotReferencePartitionOrGroupAST(t *testing.T) {
 // partition or Pool control paths and must not be recomputed from PoolGroup.
 func TestGroupDoesNotComputeClassOrShardScoresAST(t *testing.T) {
 	for _, file := range []string{
+		"group_budget_allocator.go",
+		"group_budget_publication.go",
+		"group_budget_snapshot.go",
 		"group_coordinator.go",
 		"group_coordinator_apply.go",
 		"group_coordinator_commit.go",
@@ -683,6 +686,9 @@ func TestGroupDoesNotComputeClassOrShardScoresAST(t *testing.T) {
 // class, shard, bucket, or trim structures.
 func TestPoolGroupTickDoesNotScanPoolShardsOrClasses(t *testing.T) {
 	for _, file := range []string{
+		"group_budget_allocator.go",
+		"group_budget_publication.go",
+		"group_budget_snapshot.go",
 		"group_coordinator.go",
 		"group_coordinator_apply.go",
 		"group_coordinator_commit.go",
@@ -727,6 +733,9 @@ func TestPartitionOwnsClassAndPoolScoringAST(t *testing.T) {
 // trim-victim scoring directly.
 func TestAdaptiveTrimScoringDoesNotScanFromGroup(t *testing.T) {
 	for _, file := range []string{
+		"group_budget_allocator.go",
+		"group_budget_publication.go",
+		"group_budget_snapshot.go",
 		"group_coordinator.go",
 		"group_coordinator_apply.go",
 		"group_coordinator_commit.go",

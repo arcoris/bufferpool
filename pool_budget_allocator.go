@@ -16,6 +16,11 @@
 
 package bufferpool
 
+// pool_budget_allocator.go owns Pool-local class-budget planning and
+// publication. The pure allocation helpers return class targets and feasibility
+// diagnostics; the apply helpers mutate class budgets only after validation and
+// Pool control admission. Pool.Get and Pool.Put do not call this file.
+
 const (
 	// errPoolBudgetTargetClassMissing reports a class budget target whose
 	// ClassID cannot index this Pool's immutable class table.

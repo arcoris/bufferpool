@@ -18,19 +18,10 @@ package bufferpool
 
 import "errors"
 
-// PoolGroupBudgetSnapshot describes aggregate group budget usage.
-//
-// The group currently evaluates budget pressure by projecting its aggregate
-// partition sample through partition-shaped retained-byte policy fields. This
-// type gives report-facing group APIs group vocabulary while keeping the shared
-// internal math reusable and explicit.
-type PoolGroupBudgetSnapshot PartitionBudgetSnapshot
-
-// IsOverBudget reports whether the aggregate group sample exceeds any enabled
-// retained-byte budget limit.
-func (s PoolGroupBudgetSnapshot) IsOverBudget() bool {
-	return PartitionBudgetSnapshot(s).IsOverBudget()
-}
+// group_budget_publication.go owns group-to-partition retained-budget
+// publication. These helpers may mutate child partition runtime policy through
+// the PoolGroup ownership boundary, and callers must already hold the lifecycle
+// gates described by each helper.
 
 // PartitionBudgetTarget is a retained-memory budget publication for one
 // group-owned partition.
@@ -55,25 +46,6 @@ type PartitionBudgetTarget struct {
 	// MaxRetainedBytes is the upper clamp used while computing the target. A zero
 	// value means the allocator treated the partition as unbounded above.
 	MaxRetainedBytes Size
-}
-
-// partitionBudgetAllocationInput is one group-to-partition allocation input.
-type partitionBudgetAllocationInput struct {
-	PartitionName     string
-	BaseRetainedBytes Size
-	MinRetainedBytes  Size
-	MaxRetainedBytes  Size
-	Score             float64
-}
-
-// partitionBudgetAllocationReport describes group-to-partition target
-// feasibility.
-type partitionBudgetAllocationReport struct {
-	// Targets are deterministic partition targets derived from the allocation.
-	Targets []PartitionBudgetTarget
-
-	// Allocation reports whether child minimums fit the parent group target.
-	Allocation budgetAllocationReport
 }
 
 // PoolGroupBudgetPublicationReport describes one group-to-partition budget
@@ -111,33 +83,6 @@ func (r PoolGroupBudgetPublicationReport) CanPublish() bool {
 		r.Allocation.Feasible &&
 		len(r.SkippedPartitions) == 0 &&
 		r.FailureReason == ""
-}
-
-// computePartitionBudgetTargets computes group-to-partition budget targets for
-// advisory callers that do not publish runtime state.
-//
-// Applied coordinator code must use computePartitionBudgetTargetsReport so
-// feasibility does not disappear before hard-budget publication.
-func (g *PoolGroup) computePartitionBudgetTargets(
-	generation Generation,
-	retainedBytes Size,
-	inputs []partitionBudgetAllocationInput,
-) []PartitionBudgetTarget {
-	g.mustBeInitialized()
-
-	return allocatePartitionBudgetTargets(generation, retainedBytes, inputs)
-}
-
-// computePartitionBudgetTargetsReport computes group-to-partition budget targets
-// together with feasibility diagnostics for applied coordinator paths.
-func (g *PoolGroup) computePartitionBudgetTargetsReport(
-	generation Generation,
-	retainedBytes Size,
-	inputs []partitionBudgetAllocationInput,
-) partitionBudgetAllocationReport {
-	g.mustBeInitialized()
-
-	return allocatePartitionBudgetTargetsReport(generation, retainedBytes, inputs)
 }
 
 // applyPartitionBudgetTargets publishes retained-byte targets into group-owned
@@ -205,46 +150,4 @@ func (g *PoolGroup) publishPartitionBudgetTargets(
 	}
 
 	return skipped, nil
-}
-
-// allocatePartitionBudgetTargets applies the common base-plus-adaptive allocator
-// to group-local partitions.
-func allocatePartitionBudgetTargets(
-	generation Generation,
-	retainedBytes Size,
-	inputs []partitionBudgetAllocationInput,
-) []PartitionBudgetTarget {
-	return allocatePartitionBudgetTargetsReport(generation, retainedBytes, inputs).Targets
-}
-
-// allocatePartitionBudgetTargetsReport applies the common allocator and returns
-// feasibility diagnostics for hard-budget callers.
-func allocatePartitionBudgetTargetsReport(
-	generation Generation,
-	retainedBytes Size,
-	inputs []partitionBudgetAllocationInput,
-) partitionBudgetAllocationReport {
-	allocationInputs := make([]budgetAllocationInput, len(inputs))
-	for index, input := range inputs {
-		allocationInputs[index] = budgetAllocationInput{
-			BaseBytes: input.BaseRetainedBytes.Bytes(),
-			MinBytes:  input.MinRetainedBytes.Bytes(),
-			MaxBytes:  input.MaxRetainedBytes.Bytes(),
-			Score:     input.Score,
-		}
-	}
-
-	allocation := allocateBudgetTargetsReport(retainedBytes.Bytes(), allocationInputs)
-	targets := make([]PartitionBudgetTarget, len(inputs))
-	for index, result := range allocation.Results {
-		targets[index] = PartitionBudgetTarget{
-			Generation:       generation,
-			PartitionName:    inputs[index].PartitionName,
-			RetainedBytes:    SizeFromBytes(result.AssignedBytes),
-			MinRetainedBytes: inputs[index].MinRetainedBytes,
-			MaxRetainedBytes: inputs[index].MaxRetainedBytes,
-		}
-	}
-
-	return partitionBudgetAllocationReport{Targets: targets, Allocation: allocation}
 }

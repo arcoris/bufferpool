@@ -252,13 +252,3 @@ func (c *groupCoordinatorCycleEvaluation) report(
 		SkippedPartitions:      c.skippedPartitions,
 	}
 }
-
-// newGroupBudgetSnapshot projects group aggregate sample usage against group limits.
-func newGroupBudgetSnapshot(policy PartitionBudgetPolicy, sample PoolGroupSample) PoolGroupBudgetSnapshot {
-	return PoolGroupBudgetSnapshot(newPartitionBudgetSnapshot(policy, sample.Aggregate))
-}
-
-// newGroupPressureSnapshot projects group aggregate sample usage against pressure policy.
-func newGroupPressureSnapshot(policy PartitionPressurePolicy, sample PoolGroupSample) PoolGroupPressureSnapshot {
-	return PoolGroupPressureSnapshot(newPartitionPressureSnapshot(policy, sample.Aggregate))
-}

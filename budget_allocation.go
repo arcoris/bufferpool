@@ -21,6 +21,11 @@ import (
 	"math/bits"
 )
 
+// budget_allocation.go owns the generic retained-byte allocation algorithm.
+// Callers provide owner-specific inputs and receive deterministic assignments
+// plus feasibility diagnostics. This file is pure planning: it does not publish
+// runtime snapshots, enter lifecycle gates, or mutate Pool/Partition/Group state.
+
 const (
 	// budgetAllocationScoreScale converts normalized floating-point score values
 	// into deterministic integer weights.
