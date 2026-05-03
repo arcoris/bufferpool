@@ -16,8 +16,6 @@
 
 package bufferpool
 
-import "time"
-
 // Tick performs one explicit foreground group coordinator cycle.
 //
 // Tick samples group state, computes a bounded window against the previous group
@@ -53,10 +51,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	defer g.runtimeMu.RUnlock()
 
 	if !g.lifecycle.AllowsWork() {
-		status := g.coordinator.status.publish(ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
-		if dst != nil {
-			*dst = PoolGroupCoordinatorReport{Status: status, Lifecycle: g.lifecycle.Load()}
-		}
+		g.finishClosedGroupCoordinatorCycle(dst)
 		return newError(ErrClosed, errGroupClosed)
 	}
 
@@ -65,13 +60,7 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	}
 
 	if !g.coordinator.cycleGate.begin() {
-		status := g.coordinator.status.publish(
-			ControllerCycleStatusAlreadyRunning,
-			NoGeneration,
-			NoGeneration,
-			controllerCycleReasonAlreadyRunning,
-		)
-		*dst = PoolGroupCoordinatorReport{Status: status, Lifecycle: g.lifecycle.Load()}
+		g.finishAlreadyRunningGroupCoordinatorCycle(dst)
 		return nil
 	}
 	defer g.coordinator.cycleGate.end()
@@ -79,106 +68,16 @@ func (g *PoolGroup) TickInto(dst *PoolGroupCoordinatorReport) error {
 	g.coordinator.mu.Lock()
 	defer g.coordinator.mu.Unlock()
 
-	generation := g.generation.Advance()
-	runtime := g.currentRuntimeSnapshot()
-	now := clockNow(g.coordinator.clock)
-
-	sample := dst.Sample
-	g.sampleWithRuntimeAndGeneration(&sample, runtime, generation)
-
-	previous := sample
-	elapsed := time.Duration(0)
-	if g.coordinator.hasPreviousSample {
-		previous = g.coordinator.previousSample
-		elapsed = clockElapsed(g.coordinator.previousSampleTime, now)
+	cycle := g.evaluateGroupCoordinatorCycle(dst)
+	budgetPublication, err := g.publishGroupCoordinatorBudgets(&cycle, dst.SkippedPartitions[:0])
+	if err != nil {
+		g.finishFailedGroupCoordinatorCycle(dst, &cycle, err)
+		return err
 	}
 
-	window := dst.Window
-	window.Reset(previous, sample)
-	rates := NewPoolGroupTimedWindowRates(window, elapsed)
-
-	metrics := newPoolGroupMetrics(g.name, sample)
-	budget := newGroupBudgetSnapshot(runtime.Policy.Budget, sample)
-	pressure := newGroupPressureSnapshot(runtime.Policy.Pressure, sample)
-	scoreEvaluator := NewPoolGroupScoreEvaluator(runtime.Policy.Score)
-	scores := scoreEvaluator.ScoreValues(rates, budget, pressure)
-	partitionScores := g.groupPartitionScores(window, elapsed, scoreEvaluator)
-
-	partitionBudgetAllocation := g.coordinatorPartitionBudgetReport(generation, runtime, window, partitionScores)
-	partitionBudgetTargets := partitionBudgetAllocation.Targets
-	skippedPartitions := dst.SkippedPartitions[:0]
-	budgetPublication := PoolGroupBudgetPublicationReport{
-		Generation: generation,
-		Allocation: newBudgetAllocationDiagnostics(partitionBudgetAllocation.Allocation),
-		Targets:    partitionBudgetTargets,
-		Published:  false,
-	}
-	var err error
-
-	if len(partitionBudgetTargets) > 0 && !partitionBudgetAllocation.Allocation.Feasible {
-		budgetPublication.FailureReason = partitionBudgetAllocation.Allocation.Reason
-	} else if len(partitionBudgetTargets) > 0 {
-		skippedPartitions, err = g.publishPartitionBudgetTargets(partitionBudgetTargets, skippedPartitions)
-		if err != nil {
-			status := g.coordinator.status.publish(
-				ControllerCycleStatusFailed,
-				generation,
-				NoGeneration,
-				controllerCycleFailureReasonForError(err, controllerCycleReasonFailed),
-			)
-			*dst = PoolGroupCoordinatorReport{Status: status, Generation: generation, Lifecycle: g.lifecycle.Load()}
-			return err
-		}
-		budgetPublication.SkippedPartitions = skippedPartitions
-		budgetPublication.Published = len(skippedPartitions) == 0
-		if !budgetPublication.Published {
-			budgetPublication.FailureReason = policyUpdateFailureSkippedChild
-		}
-	}
-
-	publishedGeneration := NoGeneration
-	if budgetPublication.Published {
-		publishedGeneration = generation
-	}
-
-	statusKind := ControllerCycleStatusApplied
-	appliedGeneration := generation
-	statusReason := ""
-	if len(partitionBudgetTargets) == 0 {
-		statusKind = ControllerCycleStatusSkipped
-		appliedGeneration = NoGeneration
-		statusReason = controllerCycleReasonNoWork
-	} else if !budgetPublication.Published {
-		statusKind = ControllerCycleStatusUnpublished
-		appliedGeneration = NoGeneration
-		statusReason = controllerCycleUnpublishedFailureReason(budgetPublication.FailureReason)
-	}
-
-	g.coordinator.previousSample = copyPoolGroupSampleInto(g.coordinator.previousSample, sample)
-	g.coordinator.previousSampleTime = now
-	g.coordinator.hasPreviousSample = true
-	coordinatorGeneration := g.coordinator.generation.Advance()
-
-	status := g.coordinator.status.publish(statusKind, generation, appliedGeneration, statusReason)
-	*dst = PoolGroupCoordinatorReport{
-		Status:                 status,
-		Generation:             generation,
-		CoordinatorGeneration:  coordinatorGeneration,
-		PolicyGeneration:       sample.PolicyGeneration,
-		PublishedGeneration:    publishedGeneration,
-		Lifecycle:              g.lifecycle.Load(),
-		Sample:                 sample,
-		Metrics:                metrics,
-		Window:                 window,
-		Rates:                  rates,
-		Budget:                 budget,
-		Pressure:               pressure,
-		Scores:                 scores,
-		PartitionScores:        partitionScores,
-		PartitionBudgetTargets: partitionBudgetTargets,
-		BudgetPublication:      budgetPublication,
-		SkippedPartitions:      skippedPartitions,
-	}
+	decision := selectGroupCoordinatorStatus(&cycle, budgetPublication)
+	coordinatorGeneration := g.commitGroupCoordinatorCycle(&cycle)
+	g.finishGroupCoordinatorCycle(dst, &cycle, budgetPublication, decision, coordinatorGeneration)
 	return nil
 }
 

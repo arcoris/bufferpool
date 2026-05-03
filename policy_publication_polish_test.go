@@ -647,7 +647,16 @@ func TestPoolScoreCodeDoesNotReferencePartitionOrGroupAST(t *testing.T) {
 // partition-scoring layer. Class, Pool, and trim-victim scores are owned by
 // partition or Pool control paths and must not be recomputed from PoolGroup.
 func TestGroupDoesNotComputeClassOrShardScoresAST(t *testing.T) {
-	for _, file := range []string{"group_coordinator.go", "group_coordinator_apply.go", "group_policy_update.go"} {
+	for _, file := range []string{
+		"group_coordinator.go",
+		"group_coordinator_apply.go",
+		"group_coordinator_commit.go",
+		"group_coordinator_cycle.go",
+		"group_coordinator_evaluation.go",
+		"group_coordinator_publication.go",
+		"group_coordinator_report.go",
+		"group_policy_update.go",
+	} {
 		facts := parsePolicyPublicationASTFacts(t, file)
 		for _, forbidden := range []string{
 			"NewPoolClassScore",
@@ -673,7 +682,15 @@ func TestGroupDoesNotComputeClassOrShardScoresAST(t *testing.T) {
 // partitions and publish partition targets, but it must not inspect Pool-local
 // class, shard, bucket, or trim structures.
 func TestPoolGroupTickDoesNotScanPoolShardsOrClasses(t *testing.T) {
-	for _, file := range []string{"group_coordinator.go", "group_coordinator_apply.go"} {
+	for _, file := range []string{
+		"group_coordinator.go",
+		"group_coordinator_apply.go",
+		"group_coordinator_commit.go",
+		"group_coordinator_cycle.go",
+		"group_coordinator_evaluation.go",
+		"group_coordinator_publication.go",
+		"group_coordinator_report.go",
+	} {
 		facts := parsePolicyPublicationASTFacts(t, file)
 		for _, forbidden := range []string{
 			"PoolTrimPlan",
@@ -709,7 +726,16 @@ func TestPartitionOwnsClassAndPoolScoringAST(t *testing.T) {
 // partition targets, but it cannot inspect Pool shard/class internals or invoke
 // trim-victim scoring directly.
 func TestAdaptiveTrimScoringDoesNotScanFromGroup(t *testing.T) {
-	for _, file := range []string{"group_coordinator.go", "group_coordinator_apply.go", "group_policy_update.go"} {
+	for _, file := range []string{
+		"group_coordinator.go",
+		"group_coordinator_apply.go",
+		"group_coordinator_commit.go",
+		"group_coordinator_cycle.go",
+		"group_coordinator_evaluation.go",
+		"group_coordinator_publication.go",
+		"group_coordinator_report.go",
+		"group_policy_update.go",
+	} {
 		facts := parsePolicyPublicationASTFacts(t, file)
 		for _, forbidden := range []string{
 			"NewTrimVictimScore",

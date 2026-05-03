@@ -19,9 +19,10 @@ package bufferpool
 import "time"
 
 // group_coordinator_report.go owns report models and report assembly helpers
-// for explicit PoolGroup coordinator cycles. The helpers may project samples
-// into report diagnostics, but coordinator state mutation, child publication,
-// and retained status publication remain in TickInto.
+// for explicit PoolGroup coordinator cycles. The finish helpers publish retained
+// cycle status and copy the current cycle diagnostics into caller-owned reports,
+// but they do not commit coordinator sample state, publish child partition
+// targets, execute trim, or mutate runtime policy.
 
 // PoolGroupCoordinatorReport describes one explicit foreground group coordinator
 // cycle.
@@ -146,6 +147,109 @@ func NewPoolGroupControllerEvaluation(
 		Window: window,
 		Rates:  rates,
 		Scores: evaluator.ScoreValues(rates, budget, pressure),
+	}
+}
+
+// finishClosedGroupCoordinatorCycle records that lifecycle admission failed.
+//
+// Closed status is published even when dst is nil, matching the existing
+// lifecycle-observed TickInto semantics. The report remains minimal because no
+// coordinator evaluation or child publication is allowed after closure.
+func (g *PoolGroup) finishClosedGroupCoordinatorCycle(dst *PoolGroupCoordinatorReport) {
+	status := g.coordinator.status.publish(ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
+	if dst != nil {
+		*dst = PoolGroupCoordinatorReport{Status: status, Lifecycle: g.lifecycle.Load()}
+	}
+}
+
+// finishAlreadyRunningGroupCoordinatorCycle reports explicit overlap rejection.
+//
+// The cycle gate rejects a second foreground coordinator cycle before it can
+// block on coordinator.mu. No generation advances, child publication, or sample
+// commit happens on this path.
+func (g *PoolGroup) finishAlreadyRunningGroupCoordinatorCycle(dst *PoolGroupCoordinatorReport) {
+	status := g.coordinator.status.publish(
+		ControllerCycleStatusAlreadyRunning,
+		NoGeneration,
+		NoGeneration,
+		controllerCycleReasonAlreadyRunning,
+	)
+	*dst = PoolGroupCoordinatorReport{Status: status, Lifecycle: g.lifecycle.Load()}
+}
+
+// finishFailedGroupCoordinatorCycle reports a returned publication error.
+//
+// Returned publication errors are Failed cycles and intentionally keep the same
+// minimal diagnostic surface as the pre-refactor implementation: the attempted
+// generation and lifecycle are reported, but coordinator observation state is
+// not committed and full evaluation diagnostics are not published as successful
+// cycle data.
+func (g *PoolGroup) finishFailedGroupCoordinatorCycle(
+	dst *PoolGroupCoordinatorReport,
+	cycle *groupCoordinatorCycleEvaluation,
+	err error,
+) {
+	status := g.coordinator.status.publish(
+		ControllerCycleStatusFailed,
+		cycle.generation,
+		NoGeneration,
+		controllerCycleFailureReasonForError(err, controllerCycleReasonFailed),
+	)
+	*dst = PoolGroupCoordinatorReport{Status: status, Generation: cycle.generation, Lifecycle: g.lifecycle.Load()}
+}
+
+// finishGroupCoordinatorCycle publishes status and builds the final report.
+//
+// This helper runs after evaluation/publication and after the coordinator commit
+// for every non-error path. It does not mutate coordinator state itself; it only
+// publishes the lightweight retained status and copies the cycle's diagnostic
+// values into dst.
+func (g *PoolGroup) finishGroupCoordinatorCycle(
+	dst *PoolGroupCoordinatorReport,
+	cycle *groupCoordinatorCycleEvaluation,
+	budgetPublication PoolGroupBudgetPublicationReport,
+	decision groupCoordinatorCycleStatusDecision,
+	coordinatorGeneration Generation,
+) {
+	status := g.coordinator.status.publish(
+		decision.statusKind,
+		cycle.generation,
+		decision.appliedGeneration,
+		decision.failureReason,
+	)
+	*dst = cycle.report(status, g.lifecycle.Load(), budgetPublication, decision, coordinatorGeneration)
+}
+
+// report builds a full group coordinator report from one transient cycle.
+//
+// Full samples, scores, and partition target diagnostics stay in the returned
+// report only. ControllerStatus retains just the lightweight status snapshot, so
+// scheduler-driven ticks do not keep heavy reports alive after TickInto returns.
+func (c *groupCoordinatorCycleEvaluation) report(
+	status PoolGroupControllerStatus,
+	lifecycle LifecycleState,
+	budgetPublication PoolGroupBudgetPublicationReport,
+	decision groupCoordinatorCycleStatusDecision,
+	coordinatorGeneration Generation,
+) PoolGroupCoordinatorReport {
+	return PoolGroupCoordinatorReport{
+		Status:                 status,
+		Generation:             c.generation,
+		CoordinatorGeneration:  coordinatorGeneration,
+		PolicyGeneration:       c.sample.PolicyGeneration,
+		PublishedGeneration:    decision.publishedGeneration,
+		Lifecycle:              lifecycle,
+		Sample:                 c.sample,
+		Metrics:                c.metrics,
+		Window:                 c.window,
+		Rates:                  c.rates,
+		Budget:                 c.budget,
+		Pressure:               c.pressure,
+		Scores:                 c.scores,
+		PartitionScores:        c.partitionScores,
+		PartitionBudgetTargets: c.partitionBudgetTargets,
+		BudgetPublication:      budgetPublication,
+		SkippedPartitions:      c.skippedPartitions,
 	}
 }
 
