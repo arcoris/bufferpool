@@ -41,8 +41,10 @@ const (
 // the controller. The optional controller scheduler is owner-local and calls the
 // same TickInto path as manual callers; it does not duplicate controller logic,
 // retain full reports, or involve Pool.Get/Pool.Put. PoolPartition deliberately
-// does not implement PoolGroup, global coordination, physical trim, or pressure
-// propagation.
+// does not implement PoolGroup or global coordination. Partition pressure,
+// budget publication, and bounded trim remain partition-local control-plane
+// responsibilities that operate through owned Pool boundaries rather than Pool
+// hot paths.
 type PoolPartition struct {
 	// lifecycle gates partition-level work and hard close.
 	lifecycle AtomicLifecycle

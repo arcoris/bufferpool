@@ -26,7 +26,7 @@ const (
 	defaultGroupCoordinatorTickInterval = time.Second
 )
 
-// PoolGroupPolicy defines group-level manual control behavior.
+// PoolGroupPolicy defines group-level control behavior.
 //
 // PoolGroupPolicy describes how a group interprets aggregate partition state and
 // how TickInto distributes retained-budget targets. PoolGroup is manual by
@@ -60,7 +60,8 @@ type PoolGroupPolicy struct {
 // automatically, does not scan Pool shard/class internals, does not execute Pool
 // trim directly, and does not replace manual foreground Tick/TickInto calls.
 // Live PublishPolicy updates reject coordinator scheduler mode or interval
-// changes in this stage so construction remains the only activation point.
+// changes in the current integration so construction remains the only activation
+// point.
 type PoolGroupCoordinatorPolicy struct {
 	// Enabled starts the opt-in group-level coordinator scheduler.
 	Enabled bool

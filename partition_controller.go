@@ -21,9 +21,8 @@ package bufferpool
 // The current implementation samples active Pools, computes window deltas,
 // updates partition-owned EWMA state, scores active Pool classes, publishes class
 // budgets into owned Pools, and executes bounded physical trim when the trim
-// plan is enabled. It does not start background scheduling. Controller.Enabled
-// controls future automatic scheduling; manual Tick remains available when the
-// partition is active.
+// plan is enabled. Controller.Enabled controls the opt-in scheduler wrapper;
+// manual Tick remains available when the partition is active.
 //
 // Tick returns a detailed diagnostic/report value and may allocate per-Pool
 // sample/report storage. Controller sampling uses the active/dirty registry and

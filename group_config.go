@@ -62,13 +62,14 @@ const (
 //
 // PoolGroupConfig is the construction boundary above PoolPartition. It composes
 // group policy, partitioning policy, group-level Pool configs, and optional
-// explicit PoolPartition configs. It contains no runtime state and does not
-// describe background coordination.
+// explicit PoolPartition configs. It contains no runtime state; scheduler
+// fields are construction policy that NewPoolGroup translates into owner-local
+// runtime only after validation and full initialization.
 type PoolGroupConfig struct {
 	// Name is diagnostic metadata for this group.
 	Name string
 
-	// Policy defines group-level manual control behavior.
+	// Policy defines group-level control behavior.
 	Policy PoolGroupPolicy
 
 	// Partitioning controls automatic partition count and Pool placement when

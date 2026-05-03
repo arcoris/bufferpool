@@ -727,10 +727,9 @@ func TestPartitionOwnsClassAndPoolScoringAST(t *testing.T) {
 	}
 }
 
-// TestAdaptiveTrimScoringDoesNotScanFromGroup duplicates the trim-specific
-// boundary with final-stage naming: group policy/coordinator code may publish
-// partition targets, but it cannot inspect Pool shard/class internals or invoke
-// trim-victim scoring directly.
+// TestAdaptiveTrimScoringDoesNotScanFromGroup pins the trim-specific boundary:
+// group policy/coordinator code may publish partition targets, but it cannot
+// inspect Pool shard/class internals or invoke trim-victim scoring directly.
 func TestAdaptiveTrimScoringDoesNotScanFromGroup(t *testing.T) {
 	for _, file := range []string{
 		"group_budget_allocator.go",

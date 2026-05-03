@@ -20,13 +20,13 @@ import "errors"
 
 // startControllerScheduler starts the opt-in partition-local controller scheduler.
 //
-// The scheduler is construction-time only in this stage. It is started after the
-// partition is fully initialized and active, and it dispatches through
-// schedulerTick so scheduled cycles use exactly the same TickInto path as manual
-// callers. A disabled controller policy is a no-op and keeps the default manual
-// partition behavior unchanged. PublishPolicy intentionally does not use this
-// helper; live scheduler enable, disable, and interval retiming are not part of
-// the current owner policy contract.
+// The scheduler is construction-time only in the current integration. It is
+// started after the partition is fully initialized and active, and it dispatches
+// through schedulerTick so scheduled cycles use exactly the same TickInto path
+// as manual callers. A disabled controller policy is a no-op and keeps the
+// default manual partition behavior unchanged. PublishPolicy intentionally does
+// not use this helper; live scheduler enable, disable, and interval retiming are
+// not part of the current owner policy contract.
 func (p *PoolPartition) startControllerScheduler(tickerFactory controllerSchedulerTickerFactory) error {
 	policy := p.config.Policy.Normalize().Controller
 	if !policy.Enabled {

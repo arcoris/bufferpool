@@ -58,7 +58,7 @@ type PartitionPolicy struct {
 // lightweight ControllerStatus. The scheduler never enters Pool.Get or Pool.Put
 // and does not replace manual foreground Tick/TickInto calls. Live
 // PublishPolicy updates reject controller scheduler mode or interval changes in
-// this stage so construction remains the only activation point.
+// the current integration so construction remains the only activation point.
 type PartitionControllerPolicy struct {
 	// Enabled starts the opt-in partition-local controller scheduler.
 	Enabled bool

@@ -249,7 +249,7 @@ func validatePartitionPolicyPublicationCandidate(
 }
 
 // validatePartitionPolicySchedulerPublicationCompatibility rejects live
-// scheduler toggles for this integration stage.
+// scheduler toggles for the current integration.
 //
 // PoolPartition starts the controller scheduler during construction and stops it
 // during Close. PublishPolicy can change retained-budget, pressure, and trim

@@ -54,7 +54,7 @@ const (
 //   - group.go owns the PoolGroup type, construction, metadata accessors, and
 //     receiver validation;
 //   - group_config.go owns construction config normalization and validation;
-//   - group_policy.go owns manual group coordinator policy;
+//   - group_policy.go owns group control policy;
 //   - group_lifecycle.go owns hard close behavior;
 //   - group_registry.go owns the immutable partition registry;
 //   - group_runtime.go owns group runtime policy snapshots;
@@ -63,7 +63,7 @@ const (
 //   - group_rate.go owns aggregate rate projection;
 //   - group_score*.go owns score value projection;
 //   - group_snapshot.go and group_metrics.go own diagnostics;
-//   - group_coordinator*.go and group_controller_report.go own foreground
+//   - group_coordinator*.go and group_coordinator_report.go own foreground
 //     coordinator state, budget publication, and reports.
 //
 // Copying:

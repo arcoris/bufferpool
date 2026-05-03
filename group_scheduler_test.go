@@ -25,9 +25,9 @@ import (
 	"time"
 )
 
-// TestDefaultPoolGroupDoesNotStartScheduler is the final-stage name for the
-// default manual-mode invariant. It intentionally repeats the assertion instead
-// of calling another Test function so failure output points at this contract.
+// TestDefaultPoolGroupDoesNotStartScheduler pins the default manual-mode
+// invariant. It intentionally repeats the assertion instead of calling another
+// Test function so failure output points at this contract.
 func TestDefaultPoolGroupDoesNotStartScheduler(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
@@ -369,8 +369,8 @@ func TestPoolGroupSchedulerCloseWhileManualTickRunning(t *testing.T) {
 	assertPoolGroupSchedulerStopped(t, group, "closed group")
 }
 
-// TestPoolGroupSchedulerManualTickOverlap is the final-stage name for the
-// scheduler/manual no-overlap contract. The scheduled tick owns the cycle gate;
+// TestPoolGroupSchedulerManualTickOverlap pins the scheduler/manual no-overlap
+// contract. The scheduled tick owns the cycle gate;
 // the manual tick observes AlreadyRunning and does not publish a second cycle.
 func TestPoolGroupSchedulerManualTickOverlap(t *testing.T) {
 	group, ticker := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
@@ -532,7 +532,7 @@ func TestPoolGroupPublishPolicyDoesNotSilentlyStartScheduler(t *testing.T) {
 
 // TestPoolGroupPublishPolicyRejectsSchedulerEnableChange pins the compatibility
 // decision separately from the runtime side-effect assertion: scheduler
-// enablement is construction-time policy in this stage.
+// enablement is construction-time policy in the current integration.
 func TestPoolGroupPublishPolicyRejectsSchedulerEnableChange(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	policy := group.Policy()
@@ -561,8 +561,8 @@ func TestPoolGroupPublishPolicyRejectsSchedulerModeChange(t *testing.T) {
 	}
 }
 
-// TestPoolGroupPublishPolicyDoesNotStartScheduler is the final-stage name for
-// the live-enable side-effect invariant.
+// TestPoolGroupPublishPolicyDoesNotStartScheduler pins the live-enable
+// side-effect invariant.
 func TestPoolGroupPublishPolicyDoesNotStartScheduler(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 	policy := group.Policy()
@@ -576,7 +576,7 @@ func TestPoolGroupPublishPolicyDoesNotStartScheduler(t *testing.T) {
 
 // TestPoolGroupPublishPolicyRejectsSchedulerIntervalChange verifies that a
 // running group scheduler cannot be retimed through live policy publication in
-// this stage.
+// the current integration.
 func TestPoolGroupPublishPolicyRejectsSchedulerIntervalChange(t *testing.T) {
 	group, _ := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
 	policy := group.Policy()
@@ -610,8 +610,8 @@ func TestPoolGroupPublishPolicyDoesNotSilentlyStopScheduler(t *testing.T) {
 	}
 }
 
-// TestPoolGroupPublishPolicyDoesNotStopScheduler is the final-stage name for
-// the live-disable side-effect invariant.
+// TestPoolGroupPublishPolicyDoesNotStopScheduler pins the live-disable
+// side-effect invariant.
 func TestPoolGroupPublishPolicyDoesNotStopScheduler(t *testing.T) {
 	group, _ := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
 	policy := group.Policy()
@@ -624,8 +624,8 @@ func TestPoolGroupPublishPolicyDoesNotStopScheduler(t *testing.T) {
 	}
 }
 
-// TestPoolGroupSchedulerDoesNotRetainFullReports is the final-stage plural name
-// for the report-retention invariant.
+// TestPoolGroupSchedulerDoesNotRetainFullReports pins the scheduler
+// report-retention invariant.
 func TestPoolGroupSchedulerDoesNotRetainFullReports(t *testing.T) {
 	group, ticker := newScheduledGroupWithManualTicker(t, time.Second, "alpha")
 

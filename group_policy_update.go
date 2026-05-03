@@ -296,7 +296,7 @@ func validateGroupPolicyPublicationCandidate(
 }
 
 // validateGroupPolicySchedulerPublicationCompatibility rejects live coordinator
-// scheduler toggles for this integration stage.
+// scheduler toggles for the current integration.
 //
 // PoolGroup starts the coordinator scheduler during construction and stops it
 // during Close. PublishPolicy can change retained-budget, pressure, and scoring

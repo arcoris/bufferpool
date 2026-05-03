@@ -110,10 +110,10 @@ func newPoolPartitionClassActivity(window PoolPartitionClassWindow, elapsed time
 // poolPartitionClassScore returns the budget-allocation score for one Pool
 // class.
 //
-// The score is intentionally simple in this stage: activity is increased by
-// demand signals, gently rewarded for useful hits, and reduced for larger class
-// sizes so equal event rates do not automatically move all memory to large
-// buffers. It is a local partition-controller input, not a public policy.
+// The score is intentionally compact: activity is increased by demand signals,
+// gently rewarded for useful hits, and reduced for larger class sizes so equal
+// event rates do not automatically move all memory to large buffers. It is a
+// local partition-controller input, not a public policy.
 func poolPartitionClassScore(class PoolPartitionClassSample, activity poolPartitionClassActivity, ewma PoolClassEWMAState) float64 {
 	baseActivity := activity.Activity
 	if ewma.Initialized {

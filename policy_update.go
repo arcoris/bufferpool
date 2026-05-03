@@ -50,8 +50,8 @@ const (
 
 	// policyUpdateFailureSchedulerChange reports live policy attempts that would
 	// start, stop, or retime a construction-time scheduler. Scheduler runtime is
-	// owner lifecycle state in this stage, so live policy publication rejects
-	// those changes instead of silently changing goroutine ownership.
+	// owner lifecycle state in the current integration, so live policy publication
+	// rejects those changes instead of silently changing goroutine ownership.
 	policyUpdateFailureSchedulerChange = "policy_update_scheduler_change"
 )
 
@@ -279,9 +279,9 @@ type PolicyUpdateCompatibility struct {
 // PolicyPublicationStatus identifies the coarse outcome of a policy publication
 // attempt.
 //
-// The status is shared report vocabulary. Stage-specific owners will decide how
-// to populate it when they begin publishing policy into Pool, PoolPartition, and
-// PoolGroup runtime snapshots.
+// The status is shared report vocabulary. Owner-specific publication code
+// populates it after validation, lifecycle admission, runtime publication, and
+// any child publication state are known.
 type PolicyPublicationStatus uint8
 
 const (
@@ -320,9 +320,9 @@ func (s PolicyPublicationStatus) String() string {
 // PolicyPublicationDiagnostics carries reusable fields for policy publication
 // reports.
 //
-// The type is a foundation for later owner-specific publication APIs. It avoids
-// hiding policy contraction, runtime publication, trim intent, or failure reason
-// behind a bare error return.
+// The type keeps owner-specific publication APIs from hiding policy contraction,
+// runtime publication, trim intent, or failure reason behind a bare error
+// return.
 type PolicyPublicationDiagnostics struct {
 	// PreviousGeneration is the runtime policy generation observed before the
 	// attempted publication.

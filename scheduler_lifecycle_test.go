@@ -317,20 +317,18 @@ func TestDefaultPoolGroupPolicySchedulerManual(t *testing.T) {
 	requireGroupNoError(t, policy.Validate())
 }
 
-// TestPartitionSchedulerPolicyRejectsDormantInterval duplicates the exact
-// partition scheduler-policy contract with final-stage naming. A disabled
-// scheduler may not carry a dormant interval because construction will not start
-// background work for it.
+// TestPartitionSchedulerPolicyRejectsDormantInterval pins the exact partition
+// scheduler-policy contract. A disabled scheduler may not carry a dormant
+// interval because construction will not start background work for it.
 func TestPartitionSchedulerPolicyRejectsDormantInterval(t *testing.T) {
 	policy := DefaultPartitionPolicy()
 	policy.Controller.TickInterval = time.Second
 	requirePartitionErrorIs(t, policy.Validate(), ErrInvalidPolicy)
 }
 
-// TestPoolGroupSchedulerPolicyRejectsDormantInterval duplicates the exact group
-// scheduler-policy contract with final-stage naming. A disabled scheduler may
-// not carry a dormant interval because construction will not start background
-// work for it.
+// TestPoolGroupSchedulerPolicyRejectsDormantInterval pins the exact group
+// scheduler-policy contract. A disabled scheduler may not carry a dormant
+// interval because construction will not start background work for it.
 func TestPoolGroupSchedulerPolicyRejectsDormantInterval(t *testing.T) {
 	policy := DefaultPoolGroupPolicy()
 	policy.Coordinator.TickInterval = time.Second

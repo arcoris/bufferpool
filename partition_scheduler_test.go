@@ -25,9 +25,9 @@ import (
 	"time"
 )
 
-// TestDefaultPoolPartitionDoesNotStartScheduler is the final-stage name for the
-// default manual-mode invariant. It intentionally repeats the assertion instead
-// of calling another Test function so failure output points at this contract.
+// TestDefaultPoolPartitionDoesNotStartScheduler pins the default manual-mode
+// invariant. It intentionally repeats the assertion instead of calling another
+// Test function so failure output points at this contract.
 func TestDefaultPoolPartitionDoesNotStartScheduler(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 
@@ -369,8 +369,8 @@ func TestPoolPartitionSchedulerCloseWhileManualTickRunning(t *testing.T) {
 	assertPoolPartitionSchedulerStopped(t, partition, "closed partition")
 }
 
-// TestPoolPartitionSchedulerManualTickOverlap is the final-stage name for the
-// scheduler/manual no-overlap contract. The scheduled tick owns the cycle gate;
+// TestPoolPartitionSchedulerManualTickOverlap pins the scheduler/manual
+// no-overlap contract. The scheduled tick owns the cycle gate;
 // the manual tick observes AlreadyRunning and does not publish a second cycle.
 func TestPoolPartitionSchedulerManualTickOverlap(t *testing.T) {
 	partition, ticker := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
@@ -479,7 +479,7 @@ func TestPoolPartitionPublishPolicyDoesNotSilentlyStartScheduler(t *testing.T) {
 
 // TestPoolPartitionPublishPolicyRejectsSchedulerEnableChange pins the
 // compatibility decision separately from the runtime side-effect assertion:
-// scheduler enablement is construction-time policy in this stage.
+// scheduler enablement is construction-time policy in the current integration.
 func TestPoolPartitionPublishPolicyRejectsSchedulerEnableChange(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 	policy := partition.Policy()
@@ -508,8 +508,8 @@ func TestPoolPartitionPublishPolicyRejectsSchedulerModeChange(t *testing.T) {
 	}
 }
 
-// TestPoolPartitionPublishPolicyDoesNotStartScheduler is the final-stage name
-// for the live-enable side-effect invariant.
+// TestPoolPartitionPublishPolicyDoesNotStartScheduler pins the live-enable
+// side-effect invariant.
 func TestPoolPartitionPublishPolicyDoesNotStartScheduler(t *testing.T) {
 	partition := testNewPoolPartition(t, "primary")
 	policy := partition.Policy()
@@ -523,7 +523,7 @@ func TestPoolPartitionPublishPolicyDoesNotStartScheduler(t *testing.T) {
 
 // TestPoolPartitionPublishPolicyRejectsSchedulerIntervalChange verifies that a
 // running partition scheduler cannot be retimed through live policy publication
-// in this stage.
+// in the current integration.
 func TestPoolPartitionPublishPolicyRejectsSchedulerIntervalChange(t *testing.T) {
 	partition, _ := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
 	policy := partition.Policy()
@@ -557,8 +557,8 @@ func TestPoolPartitionPublishPolicyDoesNotSilentlyStopScheduler(t *testing.T) {
 	}
 }
 
-// TestPoolPartitionPublishPolicyDoesNotStopScheduler is the final-stage name
-// for the live-disable side-effect invariant.
+// TestPoolPartitionPublishPolicyDoesNotStopScheduler pins the live-disable
+// side-effect invariant.
 func TestPoolPartitionPublishPolicyDoesNotStopScheduler(t *testing.T) {
 	partition, _ := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
 	policy := partition.Policy()
@@ -571,8 +571,8 @@ func TestPoolPartitionPublishPolicyDoesNotStopScheduler(t *testing.T) {
 	}
 }
 
-// TestPoolPartitionSchedulerDoesNotRetainFullReports is the final-stage plural
-// name for the report-retention invariant.
+// TestPoolPartitionSchedulerDoesNotRetainFullReports pins the scheduler
+// report-retention invariant.
 func TestPoolPartitionSchedulerDoesNotRetainFullReports(t *testing.T) {
 	partition, ticker := newScheduledPartitionWithManualTicker(t, time.Second, "primary")
 

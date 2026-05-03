@@ -20,13 +20,13 @@ import "errors"
 
 // startCoordinatorScheduler starts the opt-in group-level coordinator scheduler.
 //
-// The scheduler is construction-time only in this stage. It is started after the
-// group is fully initialized and active, and it dispatches through schedulerTick
-// so scheduled cycles use exactly the same TickInto path as manual callers. A
-// disabled coordinator policy is a no-op and keeps the default manual group
-// behavior unchanged. PublishPolicy intentionally does not use this helper; live
-// scheduler enable, disable, and interval retiming are not part of the current
-// owner policy contract.
+// The scheduler is construction-time only in the current integration. It is
+// started after the group is fully initialized and active, and it dispatches
+// through schedulerTick so scheduled cycles use exactly the same TickInto path
+// as manual callers. A disabled coordinator policy is a no-op and keeps the
+// default manual group behavior unchanged. PublishPolicy intentionally does not
+// use this helper; live scheduler enable, disable, and interval retiming are not
+// part of the current owner policy contract.
 func (g *PoolGroup) startCoordinatorScheduler(tickerFactory controllerSchedulerTickerFactory) error {
 	policy := g.config.Policy.Normalize().Coordinator
 	if !policy.Enabled {
