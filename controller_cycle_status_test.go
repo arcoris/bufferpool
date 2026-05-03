@@ -35,7 +35,9 @@ func TestPoolPartitionControllerStatusInitial(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusCountsConsecutiveUnpublished(t *testing.T) {
+// Store-level status tests bypass owner TickInto deliberately. They isolate the
+// lightweight retained state machine from partition/group runtime side effects.
+func TestControllerCycleStatusStoreCountsConsecutiveUnpublished(t *testing.T) {
 	var store controllerCycleStatusStore
 
 	first := store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)
@@ -49,7 +51,7 @@ func TestControllerCycleStatusCountsConsecutiveUnpublished(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusAppliedResetsUnpublished(t *testing.T) {
+func TestControllerCycleStatusStoreAppliedResetsUnpublished(t *testing.T) {
 	var store controllerCycleStatusStore
 	store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)
 
@@ -59,7 +61,7 @@ func TestControllerCycleStatusAppliedResetsUnpublished(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusSkippedResetsUnpublished(t *testing.T) {
+func TestControllerCycleStatusStoreSkippedResetsUnpublished(t *testing.T) {
 	var store controllerCycleStatusStore
 	store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)
 
@@ -69,7 +71,7 @@ func TestControllerCycleStatusSkippedResetsUnpublished(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusFailedResetsUnpublished(t *testing.T) {
+func TestControllerCycleStatusStoreFailedResetsUnpublished(t *testing.T) {
 	var store controllerCycleStatusStore
 	store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)
 
@@ -79,7 +81,7 @@ func TestControllerCycleStatusFailedResetsUnpublished(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusClosedDoesNotChangeCounters(t *testing.T) {
+func TestControllerCycleStatusStoreClosedDoesNotChangeCounters(t *testing.T) {
 	var store controllerCycleStatusStore
 	store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)
 
@@ -89,7 +91,7 @@ func TestControllerCycleStatusClosedDoesNotChangeCounters(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusAlreadyRunningDoesNotChangeCounters(t *testing.T) {
+func TestControllerCycleStatusStoreAlreadyRunningDoesNotChangeCounters(t *testing.T) {
 	var store controllerCycleStatusStore
 	store.publish(ControllerCycleStatusFailed, Generation(1), NoGeneration, controllerCycleReasonFailed)
 
@@ -578,9 +580,12 @@ func TestPoolGroupUnpublishedStatusFallsBackToGenericReason(t *testing.T) {
 	}
 }
 
-func TestPoolPartitionUnpublishedStatusUsesSpecificBudgetReason(t *testing.T) {
+func TestControllerCycleStatusStoreUnpublishedUsesSpecificBudgetReason(t *testing.T) {
 	var store controllerCycleStatusStore
 
+	// This is retained-status policy coverage rather than a partition TickInto
+	// path: partition unpublished runtime coverage requires a non-error
+	// publication refusal, while budget publication errors are Failed.
 	status := store.publish(
 		ControllerCycleStatusUnpublished,
 		Generation(3),
@@ -590,7 +595,7 @@ func TestPoolPartitionUnpublishedStatusUsesSpecificBudgetReason(t *testing.T) {
 	assertControllerCycleStatus(t, status, ControllerCycleStatusUnpublished, Generation(3), NoGeneration, budgetAllocationReasonMinimumsExceedParent)
 }
 
-func TestControllerStatusFailureReasonPolicy(t *testing.T) {
+func TestControllerCycleStatusStoreFailureReasonPolicy(t *testing.T) {
 	var store controllerCycleStatusStore
 
 	applied := store.publish(ControllerCycleStatusApplied, Generation(1), Generation(1), "ignored")
@@ -825,7 +830,7 @@ func TestPoolGroupControllerStatusReportsUnpublishedAndAppliedPaths(t *testing.T
 	assertControllerCycleStatus(t, applied.Status, ControllerCycleStatusApplied, applied.Generation, applied.Generation, "")
 }
 
-func TestPoolGroupControllerStatusSequenceFailedSkipped(t *testing.T) {
+func TestPoolGroupControllerStatusRuntimeSkippedResetsSeededFailure(t *testing.T) {
 	group := testNewPoolGroup(t, "alpha")
 
 	// Seed the retained status store with a previous failed cycle, then drive a
@@ -1024,7 +1029,7 @@ func TestControllerStatusAccessorDoesNotAdvanceGeneration(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusSuccessClearsFailureReason(t *testing.T) {
+func TestControllerCycleStatusStoreSuccessClearsFailureReason(t *testing.T) {
 	var store controllerCycleStatusStore
 	store.publish(ControllerCycleStatusFailed, Generation(1), NoGeneration, controllerCycleReasonFailed)
 
@@ -1034,28 +1039,28 @@ func TestControllerCycleStatusSuccessClearsFailureReason(t *testing.T) {
 	}
 }
 
-func TestControllerCycleStatusClosedReasonStable(t *testing.T) {
+func TestControllerCycleStatusStoreClosedReasonStable(t *testing.T) {
 	var store controllerCycleStatusStore
 
 	status := store.publish(ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
 	assertControllerCycleStatus(t, status, ControllerCycleStatusClosed, NoGeneration, NoGeneration, controllerCycleReasonClosed)
 }
 
-func TestControllerCycleStatusAlreadyRunningReasonStable(t *testing.T) {
+func TestControllerCycleStatusStoreAlreadyRunningReasonStable(t *testing.T) {
 	var store controllerCycleStatusStore
 
 	status := store.publish(ControllerCycleStatusAlreadyRunning, NoGeneration, NoGeneration, controllerCycleReasonAlreadyRunning)
 	assertControllerCycleStatus(t, status, ControllerCycleStatusAlreadyRunning, NoGeneration, NoGeneration, controllerCycleReasonAlreadyRunning)
 }
 
-func TestControllerCycleStatusNoWorkReasonStable(t *testing.T) {
+func TestControllerCycleStatusStoreNoWorkReasonStable(t *testing.T) {
 	var store controllerCycleStatusStore
 
 	status := store.publish(ControllerCycleStatusSkipped, Generation(1), NoGeneration, controllerCycleReasonNoWork)
 	assertControllerCycleStatus(t, status, ControllerCycleStatusSkipped, Generation(1), NoGeneration, controllerCycleReasonNoWork)
 }
 
-func TestControllerCycleStatusUnpublishedReasonStable(t *testing.T) {
+func TestControllerCycleStatusStoreUnpublishedReasonStable(t *testing.T) {
 	var store controllerCycleStatusStore
 
 	status := store.publish(ControllerCycleStatusUnpublished, Generation(1), NoGeneration, controllerCycleReasonUnpublished)

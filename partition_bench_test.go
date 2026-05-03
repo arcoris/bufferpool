@@ -202,9 +202,9 @@ func BenchmarkPoolPartitionTick(b *testing.B) {
 	}
 }
 
-// BenchmarkPoolPartitionTickInto measures reusable applied controller reports.
-// The caller-owned report lets samples, windows, and class detail reuse storage
-// across foreground controller cycles.
+// BenchmarkPoolPartitionTickInto measures full manual TickInto controller
+// cycles with a reusable caller-owned report. The report lets samples, windows,
+// and class detail reuse storage across foreground controller cycles.
 func BenchmarkPoolPartitionTickInto(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 16)
 	report := PartitionControllerReport{
@@ -284,11 +284,12 @@ func BenchmarkPoolPartitionTickOverlapRejected(b *testing.B) {
 	partition.controller.cycleGate.running.Store(false)
 }
 
-// BenchmarkPoolPartitionControllerStatusSequenceApplied measures the retained
-// status-store publish path for repeated applied manual cycles. It deliberately
-// avoids TickInto so the benchmark isolates lightweight status bookkeeping from
-// sampling, scoring, budget publication, and full report construction.
-func BenchmarkPoolPartitionControllerStatusSequenceApplied(b *testing.B) {
+// BenchmarkPoolPartitionControllerStatusStoreSequenceApplied measures the
+// retained status-store publish path for repeated applied manual-cycle results.
+// It deliberately avoids TickInto so the benchmark isolates lightweight status
+// bookkeeping from sampling, scoring, budget publication, and full report
+// construction.
+func BenchmarkPoolPartitionControllerStatusStoreSequenceApplied(b *testing.B) {
 	partition := partitionBenchmarkNew(b, 1)
 
 	b.ReportAllocs()

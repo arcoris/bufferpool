@@ -21,41 +21,54 @@ import (
 	"testing"
 )
 
-func benchmarkPoolGroup(b *testing.B, partitions int) *PoolGroup {
+// benchmarkNewPoolGroup constructs a manual-mode group with deterministic
+// partition names and registers Close cleanup outside the measured loop.
+func benchmarkNewPoolGroup(b *testing.B, partitions int) *PoolGroup {
 	b.Helper()
+
 	partitionNames := make([]string, partitions)
 	for index := range partitionNames {
 		partitionNames[index] = "partition-" + string(rune('a'+index))
 	}
+
 	group, err := NewPoolGroup(testGroupConfig(partitionNames...))
 	if err != nil {
 		b.Fatalf("NewPoolGroup() error = %v", err)
 	}
+
 	b.Cleanup(func() {
 		if closeErr := group.Close(); closeErr != nil {
 			b.Fatalf("PoolGroup.Close() error = %v", closeErr)
 		}
 	})
+
 	return group
 }
 
-func benchmarkBudgetedPoolGroup(b *testing.B, partitions int, retained Size) *PoolGroup {
+// benchmarkNewBudgetedPoolGroup constructs a manual-mode group with a parent
+// retained-byte budget so coordinator ticks have partition targets to publish.
+func benchmarkNewBudgetedPoolGroup(b *testing.B, partitions int, retained Size) *PoolGroup {
 	b.Helper()
+
 	partitionNames := make([]string, partitions)
 	for index := range partitionNames {
 		partitionNames[index] = "partition-" + string(rune('a'+index))
 	}
+
 	config := testGroupConfig(partitionNames...)
 	config.Policy.Budget.MaxRetainedBytes = retained
+
 	group, err := NewPoolGroup(config)
 	if err != nil {
 		b.Fatalf("NewPoolGroup() error = %v", err)
 	}
+
 	b.Cleanup(func() {
 		if closeErr := group.Close(); closeErr != nil {
 			b.Fatalf("PoolGroup.Close() error = %v", closeErr)
 		}
 	})
+
 	return group
 }
 
@@ -75,10 +88,12 @@ func seedPoolGroupActivity(b *testing.B, group *PoolGroup, partitions int) {
 	}
 }
 
+// BenchmarkPoolGroupSample measures the allocation-returning group snapshot
+// path across representative partition counts.
 func BenchmarkPoolGroupSample(b *testing.B) {
 	for _, partitions := range []int{1, 4, 16} {
 		b.Run(fmt.Sprintf("partitions_%d", partitions), func(b *testing.B) {
-			group := benchmarkPoolGroup(b, partitions)
+			group := benchmarkNewPoolGroup(b, partitions)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -88,10 +103,12 @@ func BenchmarkPoolGroupSample(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupSampleInto measures caller-owned group snapshot reuse
+// without adding workload activity inside the timed loop.
 func BenchmarkPoolGroupSampleInto(b *testing.B) {
 	for _, partitions := range []int{1, 4, 16} {
 		b.Run(fmt.Sprintf("partitions_%d", partitions), func(b *testing.B) {
-			group := benchmarkPoolGroup(b, partitions)
+			group := benchmarkNewPoolGroup(b, partitions)
 			var sample PoolGroupSample
 			group.SampleInto(&sample)
 			b.ReportAllocs()
@@ -105,7 +122,7 @@ func BenchmarkPoolGroupSampleInto(b *testing.B) {
 
 // BenchmarkPoolGroupSampleIntoAfterActivity measures reusable sampling with counters.
 func BenchmarkPoolGroupSampleIntoAfterActivity(b *testing.B) {
-	group := benchmarkPoolGroup(b, 4)
+	group := benchmarkNewPoolGroup(b, 4)
 	seedPoolGroupActivity(b, group, 4)
 	var sample PoolGroupSample
 	group.SampleInto(&sample)
@@ -116,8 +133,10 @@ func BenchmarkPoolGroupSampleIntoAfterActivity(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupMetrics measures aggregate metrics over partitions that
+// already have retained and lease counters.
 func BenchmarkPoolGroupMetrics(b *testing.B) {
-	group := benchmarkPoolGroup(b, 4)
+	group := benchmarkNewPoolGroup(b, 4)
 	seedPoolGroupActivity(b, group, 4)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -126,8 +145,10 @@ func BenchmarkPoolGroupMetrics(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupTickInto measures full manual coordinator TickInto cycles
+// with a reusable caller-owned report.
 func BenchmarkPoolGroupTickInto(b *testing.B) {
-	group := benchmarkPoolGroup(b, 4)
+	group := benchmarkNewPoolGroup(b, 4)
 	var report PoolGroupCoordinatorReport
 	_ = group.TickInto(&report)
 	b.ReportAllocs()
@@ -142,7 +163,7 @@ func BenchmarkPoolGroupTickInto(b *testing.B) {
 // BenchmarkPoolGroupTickWithControllerStatus measures one manual foreground
 // coordinator tick with lightweight status publication enabled.
 func BenchmarkPoolGroupTickWithControllerStatus(b *testing.B) {
-	group := benchmarkPoolGroup(b, 4)
+	group := benchmarkNewPoolGroup(b, 4)
 	var report PoolGroupCoordinatorReport
 	_ = group.TickInto(&report)
 
@@ -159,7 +180,7 @@ func BenchmarkPoolGroupTickWithControllerStatus(b *testing.B) {
 // BenchmarkPoolGroupControllerStatus measures the lightweight status accessor
 // without sampling partitions or publishing budget targets.
 func BenchmarkPoolGroupControllerStatus(b *testing.B) {
-	group := benchmarkPoolGroup(b, 1)
+	group := benchmarkNewPoolGroup(b, 1)
 	var report PoolGroupCoordinatorReport
 	_ = group.TickInto(&report)
 
@@ -173,7 +194,7 @@ func BenchmarkPoolGroupControllerStatus(b *testing.B) {
 // BenchmarkPoolGroupTickOverlapRejected measures explicit coordinator
 // no-overlap rejection without waiting on coordinator.mu.
 func BenchmarkPoolGroupTickOverlapRejected(b *testing.B) {
-	group := benchmarkPoolGroup(b, 1)
+	group := benchmarkNewPoolGroup(b, 1)
 	group.coordinator.cycleGate.running.Store(true)
 	var report PoolGroupCoordinatorReport
 
@@ -193,7 +214,7 @@ func BenchmarkPoolGroupTickOverlapRejected(b *testing.B) {
 // TickInto calls that reach the no-work skipped path. Unlike the status-store
 // microbenchmark, this includes coordinator generation and report construction.
 func BenchmarkPoolGroupControllerStatusSequenceSkipped(b *testing.B) {
-	group := benchmarkPoolGroup(b, 1)
+	group := benchmarkNewPoolGroup(b, 1)
 	var report PoolGroupCoordinatorReport
 	_ = group.TickInto(&report)
 
@@ -210,7 +231,7 @@ func BenchmarkPoolGroupControllerStatusSequenceSkipped(b *testing.B) {
 // BenchmarkPoolGroupTickReportStatusConsistency measures one manual coordinator
 // tick plus retained-status read used to assert report/status consistency.
 func BenchmarkPoolGroupTickReportStatusConsistency(b *testing.B) {
-	group := benchmarkPoolGroup(b, 4)
+	group := benchmarkNewPoolGroup(b, 4)
 	var report PoolGroupCoordinatorReport
 	_ = group.TickInto(&report)
 
@@ -224,8 +245,10 @@ func BenchmarkPoolGroupTickReportStatusConsistency(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupTickAppliedCoordinator measures group-level budget
+// publication when the coordinator has feasible partition targets to apply.
 func BenchmarkPoolGroupTickAppliedCoordinator(b *testing.B) {
-	group := benchmarkBudgetedPoolGroup(b, 4, 4*MiB)
+	group := benchmarkNewBudgetedPoolGroup(b, 4, 4*MiB)
 	var report PoolGroupCoordinatorReport
 	_ = group.TickInto(&report)
 	b.ReportAllocs()
@@ -237,10 +260,12 @@ func BenchmarkPoolGroupTickAppliedCoordinator(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupTickManyPartitions measures full coordinator TickInto cost
+// as the number of child partitions grows.
 func BenchmarkPoolGroupTickManyPartitions(b *testing.B) {
 	for _, partitions := range []int{1, 4, 16} {
 		b.Run(fmt.Sprintf("partitions_%d", partitions), func(b *testing.B) {
-			group := benchmarkBudgetedPoolGroup(b, partitions, Size(partitions)*MiB)
+			group := benchmarkNewBudgetedPoolGroup(b, partitions, Size(partitions)*MiB)
 			var report PoolGroupCoordinatorReport
 			_ = group.TickInto(&report)
 			b.ReportAllocs()
@@ -254,6 +279,8 @@ func BenchmarkPoolGroupTickManyPartitions(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupBudgetRedistribution measures pure group-to-partition
+// budget allocation without constructing PoolGroup runtime state.
 func BenchmarkPoolGroupBudgetRedistribution(b *testing.B) {
 	inputs := make([]partitionBudgetAllocationInput, 64)
 	for index := range inputs {
@@ -271,7 +298,7 @@ func BenchmarkPoolGroupBudgetRedistribution(b *testing.B) {
 
 // BenchmarkPoolGroupAcquireRelease measures group routing over partition leases.
 func BenchmarkPoolGroupAcquireRelease(b *testing.B) {
-	group := benchmarkPoolGroup(b, 1)
+	group := benchmarkNewPoolGroup(b, 1)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -312,6 +339,8 @@ func BenchmarkPoolGroupManagedAcquireRelease(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupAcquireByPoolDirectory measures managed pool-name routing
+// through the group directory before lease acquisition.
 func BenchmarkPoolGroupAcquireByPoolDirectory(b *testing.B) {
 	group, err := NewPoolGroup(testManagedGroupConfig("api", "worker", "events", "batch"))
 	if err != nil {
@@ -363,7 +392,7 @@ func BenchmarkPoolGroupAcquireReleaseVsPartitionAcquireRelease(b *testing.B) {
 	})
 
 	b.Run("group", func(b *testing.B) {
-		group := benchmarkPoolGroup(b, 1)
+		group := benchmarkNewPoolGroup(b, 1)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -379,6 +408,8 @@ func BenchmarkPoolGroupAcquireReleaseVsPartitionAcquireRelease(b *testing.B) {
 	})
 }
 
+// BenchmarkPoolGroupPartitionAssignment measures deterministic pool-to-partition
+// assignment planning without constructing the full runtime group.
 func BenchmarkPoolGroupPartitionAssignment(b *testing.B) {
 	pools := make([]string, 64)
 	for index := range pools {
@@ -400,6 +431,8 @@ func BenchmarkPoolGroupPartitionAssignment(b *testing.B) {
 	}
 }
 
+// BenchmarkPoolGroupScoreEvaluatorScoreValues measures the scalar, allocation-
+// light group score path used when diagnostics are not requested.
 func BenchmarkPoolGroupScoreEvaluatorScoreValues(b *testing.B) {
 	evaluator := NewPoolGroupScoreEvaluator(PoolGroupScoreEvaluatorConfig{})
 	rates := PoolGroupWindowRates{Aggregate: PoolPartitionWindowRates{HitRatio: 1, RetainRatio: 1, LeaseOpsPerSecond: 100}}
